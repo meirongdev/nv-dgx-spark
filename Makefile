@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -168,9 +168,3 @@ vllm-tp2-test:
 vllm-tp2-stop:
 	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-tp2-stop.yml \
 		--ssh-extra-args="-i $(SSH_KEY)"
-
-vllm-tp2-benchmark:
-	@echo "vllm-tp2-benchmark is reserved for Task 3 and is not implemented in Task 1 yet." >&2
-	@echo "Task 1 only ships Makefile wiring and scripts/run-vllm-tp2.sh." >&2
-	@echo "Add scripts/vllm-tp2-benchmark.sh in Task 3 before running this target." >&2
-	@exit 1
