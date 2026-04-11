@@ -146,6 +146,10 @@ vllm-monitor:
 	wait
 
 vllm-tp2-deploy:
+	@test -f playbooks/vllm-tp2-deploy.yml || { \
+		echo "Task 2 not implemented: missing playbooks/vllm-tp2-deploy.yml. Add the Task 2 playbook before running 'vllm-tp2-deploy'."; \
+		exit 1; \
+	}
 	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-tp2-deploy.yml \
 		--ssh-extra-args="-i $(SSH_KEY)" \
 		-e "tp2_coordinator=$(TP2_COORDINATOR)" \
@@ -159,6 +163,10 @@ vllm-tp2-deploy:
 		-e "tp2_max_model_len=$(TP2_MAX_MODEL_LEN)"
 
 vllm-tp2-test:
+	@test -f playbooks/vllm-tp2-validate.yml || { \
+		echo "Task 2 not implemented: missing playbooks/vllm-tp2-validate.yml. Add the Task 2 playbook before running 'vllm-tp2-test'."; \
+		exit 1; \
+	}
 	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-tp2-validate.yml \
 		--ssh-extra-args="-i $(SSH_KEY)" \
 		-e "tp2_coordinator=$(TP2_COORDINATOR)" \
@@ -166,5 +174,9 @@ vllm-tp2-test:
 		-e "tp2_port=$(TP2_PORT)"
 
 vllm-tp2-stop:
+	@test -f playbooks/vllm-tp2-stop.yml || { \
+		echo "Task 2 not implemented: missing playbooks/vllm-tp2-stop.yml. Add the Task 2 playbook before running 'vllm-tp2-stop'."; \
+		exit 1; \
+	}
 	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-tp2-stop.yml \
 		--ssh-extra-args="-i $(SSH_KEY)"
