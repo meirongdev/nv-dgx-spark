@@ -21,7 +21,7 @@ ssh_cmd() {
 
 collect_node_snapshot() {
   local host="$1"
-  ssh_cmd "${host}" "printf 'host=%s\n' \"$(hostname)\" && free -h | sed -n '1,2p' && nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu --format=csv,noheader"
+  ssh_cmd "${host}" "printf 'host=%s\n' \"\$(hostname)\" && free -h | sed -n '1,2p' && nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu --format=csv,noheader"
 }
 
 run_case() {
