@@ -170,4 +170,7 @@ vllm-tp2-stop:
 		--ssh-extra-args="-i $(SSH_KEY)"
 
 vllm-tp2-benchmark:
-	bash scripts/vllm-tp2-benchmark.sh "$(TP2_COORDINATOR)" "$(TP2_WORKER)" "$(TP2_MODEL)" "$(TP2_PORT)" "$(SSH_KEY)" "$(SSH_USER)"
+	@echo "vllm-tp2-benchmark is reserved for Task 3 and is not implemented in Task 1 yet." >&2
+	@echo "Task 1 only ships Makefile wiring and scripts/run-vllm-tp2.sh." >&2
+	@echo "Add scripts/vllm-tp2-benchmark.sh in Task 3 before running this target." >&2
+	@exit 1
