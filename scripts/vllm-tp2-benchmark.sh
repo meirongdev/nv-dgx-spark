@@ -7,7 +7,6 @@ MODEL_NAME="${3:?model required}"
 PORT="${4:?port required}"
 SSH_KEY="${5:?ssh key required}"
 SSH_USER="${6:?ssh user required}"
-TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 REPORT_DIR="benchmarks"
 REPORT_FILE="${REPORT_DIR}/dgx-spark-tp2-qwen35a3b-2026-04-11.md"
 
@@ -38,7 +37,7 @@ run_case() {
   http_code="$(printf '%s' "${response}" | tail -n1)"
   body="$(printf '%s' "${response}" | sed '$d')"
   completion_tokens="$(printf '%s' "${body}" | python3 -c 'import sys,json; data=json.load(sys.stdin); print(data.get("usage",{}).get("completion_tokens",0))')"
-  first_text="$(printf '%s' "${body}" | python3 -c 'import sys,json; data=json.load(sys.stdin); print(data["choices"][0]["text"][:80].replace("\n"," "))')"
+  first_text="$(printf '%s' "${body}" | python3 -c 'import sys,json; data=json.load(sys.stdin); choices=data.get("choices") or []; first_choice=choices[0] if choices else {}; text=first_choice.get("text","") if isinstance(first_choice, dict) else ""; error=data.get("error"); error_msg=error.get("message","") if isinstance(error, dict) else (str(error) if error else ""); preview=(text or (("API error: " + error_msg) if error_msg else "")).replace("\n"," "); print(preview[:80])')"
   tokens_per_sec="$(python3 - <<PY
 elapsed_ms = ${elapsed_ms}
 tokens = ${completion_tokens}
