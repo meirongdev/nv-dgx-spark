@@ -1,0 +1,13 @@
+---
+- name: Stop vLLM TP=2 containers
+  hosts: servers
+  become: yes
+  gather_facts: no
+  vars:
+    tp2_container_name: "vllm-tp2"
+
+  tasks:
+    - name: Stop TP=2 container if present
+      ansible.builtin.command: docker rm -f {{ tp2_container_name }}
+      changed_when: true
+      failed_when: false
