@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -180,3 +180,6 @@ vllm-tp2-stop:
 	}
 	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-tp2-stop.yml \
 		--ssh-extra-args="-i $(SSH_KEY)"
+
+vllm-tp2-benchmark:
+	bash scripts/vllm-tp2-benchmark.sh "$(TP2_COORDINATOR)" "$(TP2_WORKER)" "$(TP2_MODEL)" "$(TP2_PORT)" "$(SSH_KEY)" "$(SSH_USER)"
