@@ -20,6 +20,7 @@
     - name: Assert coordinator and worker are in inventory
       ansible.builtin.assert:
         that:
+          - (groups['servers'] | length) == 2
           - tp2_coordinator in groups['servers']
           - tp2_worker in groups['servers']
 
