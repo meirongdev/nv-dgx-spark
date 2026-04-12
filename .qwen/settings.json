@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(medium.com)",
+      "WebFetch(forums.developer.nvidia.com)",
+      "WebFetch(hackernoon.com)",
+      "WebFetch(sourceit.com.sg)",
+      "WebFetch(github.com)",
+      "Bash(mkdir *)",
+      "Bash(make *)",
+      "Bash(uv *)",
+      "Bash(ssh *)",
+      "Bash(curl *)",
+      "Bash(python3 *)",
+      "Bash(time *)",
+      "WebFetch(www.reddit.com)"
+    ]
+  },
+  "$version": 3
+}

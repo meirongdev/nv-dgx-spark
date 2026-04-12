@@ -1,0 +1,71 @@
+[Unit]
+Description=vLLM Inference Server (DGX Spark GB10)
+Documentation=https://docs.vllm.ai
+After=docker.service
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# OOM Protection - lower priority than SSH
+OOMScoreAdjust=500
+
+# Resource limits for unified memory management
+MemoryMax=100G
+MemorySwapMax=0
+
+# Environment file
+EnvironmentFile=/etc/vllm/vllm.env
+
+# Pre-start checks
+ExecStartPre=/usr/bin/docker pull ${VLLM_IMAGE:-nvcr.io/nvidia/vllm:26.01-py3}
+ExecStartPre=/bin/bash -c '/usr/bin/docker stop vllm-server 2>/dev/null || true'
+ExecStartPre=/bin/bash -c '/usr/bin/docker rm vllm-server 2>/dev/null || true'
+
+# Main vLLM container
+ExecStart=/usr/bin/docker run --rm \
+  --name vllm-server \
+  --gpus all \
+  --network host \
+  --ipc=host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  -v /home/admin/.cache/huggingface:/root/.cache/huggingface \
+  -e VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND} \
+  -e VLLM_USE_FLASHINFER_MOE_FP8=${VLLM_USE_FLASHINFER_MOE_FP8} \
+  -e VLLM_FLASHINFER_MOE_BACKEND=${VLLM_FLASHINFER_MOE_BACKEND} \
+  -e VLLM_GPU_MEMORY_UTILIZATION=${VLLM_GPU_MEMORY_UTILIZATION} \
+  -e VLLM_KV_CACHE_DTYPE=${VLLM_KV_CACHE_DTYPE} \
+  -e VLLM_MODEL=${VLLM_MODEL} \
+  -e VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN} \
+  -e VLLM_DTYPE=${VLLM_DTYPE} \
+  -e VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS} \
+  -e CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} \
+  ${VLLM_IMAGE:-nvcr.io/nvidia/vllm:26.01-py3} \
+  vllm serve ${VLLM_MODEL} \
+    --host 0.0.0.0 \
+    --port ${VLLM_PORT:-8000} \
+    --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.7} \
+    --kv-cache-dtype ${VLLM_KV_CACHE_DTYPE:-fp8} \
+    --dtype ${VLLM_DTYPE:-auto} \
+    --max-model-len ${VLLM_MAX_MODEL_LEN:-32768} \
+    --max-num-seqs ${VLLM_MAX_NUM_SEQS:-128} \
+    --trust-remote-code
+
+# Graceful shutdown
+ExecStop=/usr/bin/docker stop -t 30 vllm-server
+TimeoutStartSec=600
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vllm-server
+
+[Install]
+WantedBy=multi-user.target
