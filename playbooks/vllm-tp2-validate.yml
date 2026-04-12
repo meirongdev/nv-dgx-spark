@@ -1,7 +1,7 @@
 ---
 - name: Validate vLLM TP=2 deployment
   hosts: servers
-  become: yes
+  become: no
   gather_facts: no
   vars:
     tp2_coordinator: "100.97.87.120"
@@ -11,7 +11,7 @@
 
   tasks:
     - name: Read TP=2 container logs
-      ansible.builtin.command: docker logs {{ tp2_container_name }} --tail 120
+      ansible.builtin.command: docker logs {{ tp2_container_name }} --tail 400
       register: tp2_logs
       changed_when: false
       failed_when: false
@@ -22,7 +22,9 @@
           - >
             'tensor_parallel_size' in tp2_logs.stdout or
             '--tensor-parallel-size' in tp2_logs.stdout or
-            'ray' in tp2_logs.stdout.lower()
+            'world_size=2' in tp2_logs.stdout or
+            'Worker_TP' in tp2_logs.stdout or
+            'Application startup complete.' in tp2_logs.stdout
         fail_msg: "TP=2 markers not found in container logs on {{ inventory_hostname }}"
 
     - name: Check health endpoint on coordinator

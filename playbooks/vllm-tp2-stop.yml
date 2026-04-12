@@ -1,7 +1,7 @@
 ---
 - name: Stop vLLM TP=2 containers
   hosts: servers
-  become: yes
+  become: no
   gather_facts: no
   vars:
     tp2_container_name: "vllm-tp2"

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TP2_MODEL="${TP2_MODEL:?TP2_MODEL is required}"
-TP2_IMAGE="${TP2_IMAGE:-nvcr.io/nvidia/vllm:26.01-py3}"
+TP2_IMAGE="${TP2_IMAGE:-vllm/vllm-openai:gemma4-cu130}"
 TP2_MASTER_ADDR="${TP2_MASTER_ADDR:?TP2_MASTER_ADDR is required}"
 TP2_MASTER_PORT="${TP2_MASTER_PORT:-29500}"
 TP2_NNODES="${TP2_NNODES:-2}"
@@ -15,6 +15,13 @@ TP2_MAX_MODEL_LEN="${TP2_MAX_MODEL_LEN:-8192}"
 TP2_CONTAINER_NAME="${TP2_CONTAINER_NAME:-vllm-tp2}"
 TP2_NCCL_IFACE="${TP2_NCCL_IFACE:-enp1s0f0np0}"
 TP2_HF_CACHE_DIR="${TP2_HF_CACHE_DIR:-/home/admin/.cache/huggingface}"
+TP2_MODEL_PATH="${TP2_MODEL_PATH:-${TP2_MODEL}}"
+TP2_SERVED_MODEL_NAME="${TP2_SERVED_MODEL_NAME:-${TP2_MODEL}}"
+
+api_args=(--host 0.0.0.0 --port "${TP2_PORT}")
+if [[ "${TP2_NODE_RANK}" != "0" ]]; then
+  api_args=(--headless)
+fi
 
 docker rm -f "${TP2_CONTAINER_NAME}" 2>/dev/null || true
 
@@ -26,6 +33,7 @@ docker run -d \
   --ipc=host \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
+  --entrypoint vllm \
   -v "${TP2_HF_CACHE_DIR}:/root/.cache/huggingface" \
   -e VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASHINFER}" \
   -e VLLM_USE_FLASHINFER_MOE_FP8="${VLLM_USE_FLASHINFER_MOE_FP8:-1}" \
@@ -34,10 +42,10 @@ docker run -d \
   -e GLOO_SOCKET_IFNAME="${TP2_NCCL_IFACE}" \
   -e CUDA_VISIBLE_DEVICES=0 \
   "${TP2_IMAGE}" \
-  vllm serve "${TP2_MODEL}" \
-    --host 0.0.0.0 \
-    --port "${TP2_PORT}" \
-    --distributed-executor-backend ray \
+  serve "${TP2_MODEL_PATH}" \
+    "${api_args[@]}" \
+    --served-model-name "${TP2_SERVED_MODEL_NAME}" \
+    --distributed-executor-backend mp \
     --pipeline-parallel-size "${TP2_PP_SIZE}" \
     --master-addr "${TP2_MASTER_ADDR}" \
     --master-port "${TP2_MASTER_PORT}" \
