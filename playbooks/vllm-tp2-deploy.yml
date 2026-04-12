@@ -65,7 +65,7 @@
         tp2_model_path: >-
           {{ cache_match.stdout
              | dirname
-             | regex_replace('^' ~ tp2_hf_cache_dir, tp2_container_hf_cache_dir) }}
+             | regex_replace('^' ~ (tp2_hf_cache_dir | regex_escape), tp2_container_hf_cache_dir) }}
 
     - name: Copy TP=2 launcher
       ansible.builtin.copy:
