@@ -71,6 +71,17 @@ make all
 | `make vllm-benchmark` | Run inference performance benchmark |
 | `make vllm-monitor` | Monitor unified memory usage (real-time) |
 
+#### tmux Resilient Sessions (SSH Drop Protection)
+
+| Command | Description |
+|---------|-------------|
+| `make tmux-cmd COMMAND="..." SESSION="name"` | Run any command in a named tmux session |
+| `make tmux-vllm-deploy` | Deploy vLLM inside tmux (survives SSH drops) |
+| `make tmux-benchmark` | Run benchmark in tmux session |
+| `make tmux-list HOST=100.97.87.120` | List all tmux sessions on a host |
+| `make tmux-attach HOST=... SESSION=...` | Reattach to a tmux session |
+| `make tmux-kill HOST=... SESSION=...` | Kill a tmux session |
+
 ### Examples
 
 ```bash
@@ -79,6 +90,18 @@ make vllm-deploy
 
 # Deploy with custom model and memory
 make vllm-deploy VLLM_MODEL=Qwen/Qwen3.5-35B-A3B GPU_MEMORY_UTIL=0.75
+
+# Deploy vLLM in tmux (survives SSH disconnection)
+make tmux-vllm-deploy
+
+# Check tmux sessions on a host
+make tmux-list HOST=100.97.87.120
+
+# Reattach to a tmux session
+make tmux-attach HOST=100.97.87.120 SESSION=vllm-deploy
+
+# Run any command in tmux
+make tmux-cmd COMMAND="docker pull nvcr.io/nvidia/vllm:26.01-py3" SESSION="docker-pull"
 
 # Test vLLM deployment
 make vllm-test
@@ -164,6 +187,60 @@ make ping
 - **`scripts/monitor-unified-memory.sh`**: Real-time memory monitoring script
 - **`scripts/validate-gpu.sh`**: GPU passthrough validation script
 
+## tmux Workflow for SSH Resilience
+
+### Why tmux?
+
+When running long deployments on remote servers, SSH disconnections can kill your processes. Using tmux sessions ensures your commands continue running even if your network drops.
+
+**Industry References:**
+- [W&B ML Practitioner Guide](https://wandb.ai/wandb_course/extras/reports/TMUX-Basic-Usage-for-ML-Practitioners--VmlldzoyMjgyMDIx) (2022)
+- [DataMade tmux Best Practices](https://github.com/datamade/how-to/blob/main/shell/tmux-best-practices.md)
+- [tmux-trainsh: GPU Workflow Runner](https://github.com/binbinsh/tmux-trainsh) (2026)
+- [DevOps tmux Best Practices](https://www.markcallen.com/why-every-devops-engineer-should-be-using-tmux/) (2025)
+
+### Common tmux Workflow
+
+```bash
+# 1. Deploy vLLM in a tmux session (safe to disconnect)
+make tmux-vllm-deploy
+
+# 2. Check progress later by reattaching
+make tmux-list HOST=100.97.87.120
+make tmux-attach HOST=100.97.87.120 SESSION=vllm-deploy
+
+# 3. Detach without stopping: Ctrl+B, then D
+
+# 4. Run benchmarks in tmux (survives network issues)
+make tmux-benchmark
+
+# 5. Clean up finished sessions
+make tmux-kill HOST=100.97.87.120 SESSION=vllm-benchmark
+```
+
+### Manual tmux Usage
+
+If you prefer direct SSH + tmux:
+
+```bash
+# SSH into server and create tmux session
+ssh -i ~/.ssh/vgio admin@100.97.87.120
+tmux new -s my-task
+
+# Run your commands inside tmux
+docker run ... vllm-server
+
+# Detach: Ctrl+B, then D
+# Reattach later: tmux attach -t my-task
+```
+
+### tmux Best Practices (Adopted from Industry)
+
+1. **Use named sessions**: `tmux new -s <descriptive-name>`
+2. **Detach properly**: Always use `Ctrl+B, d` (not just close terminal)
+3. **Kill finished sessions**: Clean up to avoid confusion
+4. **Monitor in panes**: Split windows for command + monitoring side-by-side
+
 ## Configuration
 
 - **SSH Key**: `/Users/matthew/.ssh/vgio`
@@ -237,7 +314,14 @@ This runs the monitoring script that tracks:
 
 ## References
 
+### Core Technologies
 - [vLLM Documentation](https://docs.vllm.ai)
 - [NVIDIA DGX Spark User Guide](https://docs.nvidia.com/dgx/dgx-spark/)
 - [FlashInfer Optimization](https://github.com/flashinfer-ai/flashinfer)
 - [DGX Spark vLLM Community](https://forums.developer.nvidia.com/t/vllm-containers/)
+
+### tmux Best Practices (Industry References)
+- [W&B ML Practitioner Guide](https://wandb.ai/wandb_course/extras/reports/TMUX-Basic-Usage-for-ML-Practitioners--VmlldzoyMjgyMDIx) (2022) — tmux for remote ML training workflows
+- [tmux-trainsh: GPU Workflow Runner](https://github.com/binbinsh/tmux-trainsh) (2026) — terminal-first workflow automation for GPU/remote servers
+- [DataMade tmux Conventions](https://github.com/datamade/how-to/blob/main/shell/tmux-best-practices.md) — team conventions for remote server management
+- [DevOps tmux Best Practices](https://www.markcallen.com/why-every-devops-engineer-should-be-using-tmux/) (2025) — session persistence and resilience for DevOps

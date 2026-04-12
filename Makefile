@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -183,3 +183,119 @@ vllm-tp2-stop:
 
 vllm-tp2-benchmark:
 	bash scripts/vllm-tp2-benchmark.sh "$(TP2_COORDINATOR)" "$(TP2_WORKER)" "$(TP2_MODEL)" "$(TP2_PORT)" "$(SSH_KEY)" "$(SSH_USER)"
+
+# ========================================
+# tmux Integration for SSH Resilience
+# ========================================
+# Best practices from:
+# - W&B ML Practitioner Guide (2022)
+# - DataMade Team Conventions
+# - tmux-trainsh Project (2026)
+# - DevOps tmux Best Practices (2025)
+
+# Run any command in a named tmux session on remote hosts
+# Usage: make tmux-cmd COMMAND="docker pull nvcr.io/nvidia/vllm:26.01-py3" SESSION="my-task"
+tmux-cmd:
+ifndef SESSION
+	$(error SESSION is required. Usage: make tmux-cmd COMMAND="..." SESSION="session-name")
+endif
+	@echo "========================================"
+	@echo "Running command in tmux session: $(SESSION)"
+	@echo "========================================"
+	@for host in $(HOSTS); do \
+		echo "--- $$host ---" && \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$host \
+			"tmux new-session -d -s $(SESSION) '$(COMMAND)' 2>/dev/null || \
+			 (tmux kill-session -t $(SESSION) 2>/dev/null; tmux new-session -d -s $(SESSION) '$(COMMAND)') && \
+			 echo 'Command sent to tmux session \"$(SESSION)\"' && \
+			 echo 'Reattach: ssh -i $(SSH_KEY) $(SSH_USER)@$$host \"tmux attach -t $(SESSION)\"' && \
+			 echo 'Detach:  Ctrl+B, then D'"; \
+	done
+
+# Deploy vLLM inside a tmux session (resilient to SSH drops)
+# Usage: make tmux-vllm-deploy [VLLM_MODEL=...] [GPU_MEMORY_UTIL=...]
+tmux-vllm-deploy:
+	@echo "========================================"
+	@echo "Deploying vLLM in tmux session (resilient to SSH drops)"
+	@echo "Image: $(VLLM_IMAGE)"
+	@echo "Model: $(VLLM_MODEL)"
+	@echo "Port: $(VLLM_PORT)"
+	@echo "GPU Memory: $(GPU_MEMORY_UTIL)"
+	@echo "========================================"
+	@for host in $(HOSTS); do \
+		echo "--- $$host ---" && \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$host \
+			"tmux new-session -d -s vllm-deploy \
+				'ansible-playbook -i /home/$(SSH_USER)/inventory.ini /home/$(SSH_USER)/playbooks/vllm-deploy.yml \
+					-e vllm_image=$(VLLM_IMAGE) \
+					-e vllm_model=$(VLLM_MODEL) \
+					-e vllm_port=$(VLLM_PORT) \
+					-e gpu_memory_utilization=$(GPU_MEMORY_UTIL) \
+					2>&1 | tee /tmp/vllm-deploy.log' && \
+			 echo 'vLLM deployment started in tmux session \"vllm-deploy\"' && \
+			 echo 'Watch progress: ssh -i $(SSH_KEY) $(SSH_USER)@$$host \"tmux attach -t vllm-deploy\"' && \
+			 echo 'Check logs:  tail -f /tmp/vllm-deploy.log'"; \
+	done
+
+# Reattach to a tmux session on a specific host
+# Usage: make tmux-attach HOST=100.97.87.120 SESSION=vllm-deploy
+tmux-attach:
+ifndef HOST
+	$(error HOST is required. Usage: make tmux-attach HOST=100.97.87.120 SESSION=session-name)
+endif
+ifndef SESSION
+	$(error SESSION is required. Usage: make tmux-attach HOST=100.97.87.120 SESSION=session-name)
+endif
+	@echo "Attaching to tmux session '$(SESSION)' on $(HOST)..."
+	@echo "Press Ctrl+B, then D to detach without stopping the session"
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(HOST) "tmux attach -t $(SESSION) || echo 'Session not found. Run: make tmux-list HOST=$(HOST)'"
+
+# List all tmux sessions on a specific host
+# Usage: make tmux-list HOST=100.97.87.120
+tmux-list:
+ifndef HOST
+	$(error HOST is required. Usage: make tmux-list HOST=100.97.87.120)
+endif
+	@echo "========================================"
+	@echo "tmux sessions on $(HOST)"
+	@echo "========================================"
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(HOST) \
+		"tmux list-sessions -F '#S (created #S, #W windows, #P panes)' 2>/dev/null || echo 'No active tmux sessions'"
+
+# Kill a tmux session on a specific host
+# Usage: make tmux-kill HOST=100.97.87.120 SESSION=vllm-deploy
+tmux-kill:
+ifndef HOST
+	$(error HOST is required. Usage: make tmux-kill HOST=100.97.87.120 SESSION=session-name)
+endif
+ifndef SESSION
+	$(error SESSION is required. Usage: make tmux-kill HOST=100.97.87.120 SESSION=session-name)
+endif
+	@echo "Killing tmux session '$(SESSION)' on $(HOST)..."
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(HOST) \
+		"tmux kill-session -t $(SESSION) && echo 'Session killed' || echo 'Session not found'"
+
+# Run vLLM benchmark inside a tmux session (long-running, resilient)
+# Usage: make tmux-benchmark [VLLM_MODEL=...] [VLLM_PORT=...]
+tmux-benchmark:
+	@echo "========================================"
+	@echo "Running vLLM benchmark in tmux session"
+	@echo "This will survive SSH disconnection"
+	@echo "========================================"
+	@for host in $(HOSTS); do \
+		echo "--- $$host ---" && \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$host \
+			"tmux new-session -d -s vllm-benchmark \
+				'python3 -c \" \
+import requests, json, time \
+url = \"http://localhost:$(VLLM_PORT)/v1/completions\" \
+payload = { \"model\": \"$(VLLM_MODEL)\", \"prompt\": \"Hello, how are you? \" * 10, \"max_tokens\": 100, \"temperature\": 0.7 } \
+start = time.time() \
+resp = requests.post(url, json=payload) \
+elapsed = time.time() - start \
+print(f\"Response time: {elapsed:.2f}s\") \
+print(f\"Tokens/sec: {len(resp.json().get(\\\"choices\\\", [{}])[0].get(\\\"text\\\", \\\"\\\").split()) / elapsed:.2f}\") \
+\" 2>&1 | tee /tmp/vllm-benchmark.log' && \
+			 echo 'Benchmark started in tmux session \"vllm-benchmark\"' && \
+			 echo 'Check results: tail -f /tmp/vllm-benchmark.log'"; \
+	done

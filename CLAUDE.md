@@ -45,3 +45,33 @@ make clean
 - All Ansible commands use `uv run` to stay within the venv
 - To add/remove hosts: edit the `HOSTS` variable in Makefile, then run `make inventory`
 - SSH strict host key checking is disabled (`StrictHostKeyChecking=no`) intentionally for automation
+
+## tmux Integration (SSH Drop Protection)
+
+The project uses tmux to protect long-running remote commands from SSH disconnections. This is a best practice adopted from ML/DevOps teams ([W&B](https://wandb.ai/wandb_course/extras/reports/TMUX-Basic-Usage-for-ML-Practitioners--VmlldzoyMjgyMDIx), [tmux-trainsh](https://github.com/binbinsh/tmux-trainsh), [DataMade](https://github.com/datamade/how-to/blob/main/shell/tmux-best-practices.md)).
+
+### tmux Commands
+
+```bash
+# Deploy vLLM inside tmux (survives SSH drops)
+make tmux-vllm-deploy
+
+# Run any command in a named tmux session
+make tmux-cmd COMMAND="docker pull ..." SESSION="my-task"
+
+# List tmux sessions on a host
+make tmux-list HOST=100.97.87.120
+
+# Reattach to a session
+make tmux-attach HOST=100.97.87.120 SESSION=vllm-deploy
+
+# Kill a session
+make tmux-kill HOST=100.97.87.120 SESSION=vllm-deploy
+```
+
+### tmux Best Practices
+
+1. Always use named sessions: `tmux new -s <descriptive-name>`
+2. Detach properly: `Ctrl+B, d` (don't just close terminal)
+3. Kill finished sessions to avoid clutter
+4. Long deployments/benchmarks should use `tmux-vllm-deploy` / `tmux-benchmark`
