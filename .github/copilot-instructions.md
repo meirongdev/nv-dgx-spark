@@ -88,3 +88,34 @@ Operational constraints (from CLAUDE.md — important to preserve in automation 
 ---
 
 If more targeted content is desired (e.g., Playbook task/tag map, example `uv run` invocations, or a mapping of Makefile overrides to playbook variables), request the specific area and it will be added.
+
+---
+
+Additions (2026-04-13):
+
+1) Single-test examples
+
+- Run a single named task from the test playbook (start at the named task):
+  - uv run ansible-playbook -i inventory.ini playbooks/vllm-test.yml --start-at-task "Test vLLM health endpoint" --ssh-extra-args="-i /Users/matthew/.ssh/vgio" --limit 100.97.87.120
+
+- Run only one host (limit):
+  - uv run ansible-playbook -i inventory.ini playbooks/vllm-test.yml --limit 100.67.164.92 --ssh-extra-args="-i /Users/matthew/.ssh/vgio"
+
+- Run a focused ad-hoc health check (uri module):
+  - uv run ansible servers -i inventory.ini -m uri -a 'url=http://localhost:8000/health method=GET status_code=200' --ssh-extra-args="-i /Users/matthew/.ssh/vgio" --limit 100.67.164.92
+
+- Run the local benchmarking script for a single host:
+  - ./scripts/vllm-benchmark.sh 100.67.164.92 /Users/matthew/.ssh/vgio admin
+
+- TP=2 / distributed launcher:
+  - See scripts/run-vllm-tp2.sh header for required env vars (TP2_MODEL, TP2_MASTER_ADDR, TP2_NODE_RANK, TP2_NNODES). Use the script to start per-node containers for tensor-pipeline=2 experiments.
+
+2) Makefile env -> playbook variable mapping
+
+- VLLM_IMAGE -> vllm_image (playbooks)
+- VLLM_MODEL -> vllm_model
+- VLLM_PORT -> vllm_port
+- GPU_MEMORY_UTIL -> gpu_memory_utilization
+- TP2_* -> tp2_* (tp2_image, tp2_model, tp2_coordinator, etc.)
+
+If you'd like, I can expand these additions into a dedicated section or produce a full replacement of this file with a more exhaustive Copilot guide.
