@@ -1,14 +1,44 @@
 {# Patched Qwen3.5 chat template: adds 'developer' role support (mapped to system) #}
 {# Codex and other OpenAI-compatible agents send developer role messages that  #}
-{# the upstream Qwen template does not handle. This normalizes them to system. #}
-{%- set ns_norm = namespace(result=[]) %}
+{# the upstream Qwen template does not handle. This merges all leading         #}
+{# system/developer messages into one system message, then keeps the rest.     #}
+{%- set ns_norm = namespace(result=[], merged_system="", done_leading=false) %}
 {%- for m in messages %}
-  {%- if m.role is defined and m.role == "developer" %}
-    {%- set ns_norm.result = ns_norm.result + [{"role": "system", "content": m.content}] %}
+  {%- if not ns_norm.done_leading and (m.role == "system" or m.role == "developer") %}
+    {%- if m.content is string %}
+      {%- if ns_norm.merged_system %}
+        {%- set ns_norm.merged_system = ns_norm.merged_system + "\n\n" + m.content %}
+      {%- else %}
+        {%- set ns_norm.merged_system = m.content %}
+      {%- endif %}
+    {%- elif m.content is iterable %}
+      {%- for c in m.content %}
+        {%- if c.text is defined %}
+          {%- if ns_norm.merged_system %}
+            {%- set ns_norm.merged_system = ns_norm.merged_system + "\n\n" + c.text %}
+          {%- else %}
+            {%- set ns_norm.merged_system = c.text %}
+          {%- endif %}
+        {%- endif %}
+      {%- endfor %}
+    {%- endif %}
   {%- else %}
-    {%- set ns_norm.result = ns_norm.result + [m] %}
+    {%- if not ns_norm.done_leading %}
+      {%- set ns_norm.done_leading = true %}
+      {%- if ns_norm.merged_system %}
+        {%- set ns_norm.result = ns_norm.result + [{"role": "system", "content": ns_norm.merged_system}] %}
+      {%- endif %}
+    {%- endif %}
+    {%- if m.role == "developer" %}
+      {%- set ns_norm.result = ns_norm.result + [{"role": "system", "content": m.content}] %}
+    {%- else %}
+      {%- set ns_norm.result = ns_norm.result + [m] %}
+    {%- endif %}
   {%- endif %}
 {%- endfor %}
+{%- if not ns_norm.done_leading and ns_norm.merged_system %}
+  {%- set ns_norm.result = [{"role": "system", "content": ns_norm.merged_system}] %}
+{%- endif %}
 {%- set messages = ns_norm.result %}
 {# --- End of developer role normalization --- #}
 {%- set image_count = namespace(value=0) %}
