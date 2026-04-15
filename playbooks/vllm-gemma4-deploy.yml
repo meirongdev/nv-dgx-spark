@@ -17,8 +17,8 @@
     vllm_max_num_seqs: "64"
     hf_cache_dir: "/home/admin/.cache/huggingface"
     vllm_launcher_path: "/home/admin/run-vllm-qwen.sh"
-    vllm_patch_script_src: "../scripts/patch-vllm-chat-utils.py"
-    vllm_patch_script_path: "/home/admin/patch-vllm-chat-utils.py"
+    vllm_patch_script_src: "../scripts/patch-vllm-gemma4-parser.py"
+    vllm_patch_script_path: "/home/admin/patch-vllm-gemma4-parser.py"
     vllm_entrypoint_src: "../scripts/vllm-entrypoint.sh"
     vllm_entrypoint_path: "/home/admin/vllm-entrypoint.sh"
 
@@ -53,7 +53,7 @@
         dest: "{{ vllm_launcher_path }}"
         mode: "0755"
 
-    - name: Copy vLLM chat_utils patch script
+    - name: Copy vLLM Gemma4 tool parser patch script
       ansible.builtin.copy:
         src: "{{ vllm_patch_script_src }}"
         dest: "{{ vllm_patch_script_path }}"
