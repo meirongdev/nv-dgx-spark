@@ -18,6 +18,8 @@ VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-64}"
 VLLM_MAX_NUM_BATCHED="${VLLM_MAX_NUM_BATCHED:-8192}"
 VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-}"
+VLLM_PATCH_SCRIPT="${VLLM_PATCH_SCRIPT:-$(dirname "$0")/patch-vllm-chat-utils.py}"
+VLLM_ENTRYPOINT_SCRIPT="${VLLM_ENTRYPOINT_SCRIPT:-$(dirname "$0")/vllm-entrypoint.sh}"
 
 docker rm -f "${VLLM_CONTAINER}" 2>/dev/null || true
 
@@ -27,6 +29,14 @@ CHAT_TEMPLATE_ARG=""
 if [ -n "${VLLM_CHAT_TEMPLATE}" ] && [ -f "${VLLM_CHAT_TEMPLATE}" ]; then
   VOLUMES="${VOLUMES} -v ${VLLM_CHAT_TEMPLATE}:/app/chat-template.jinja2:ro"
   CHAT_TEMPLATE_ARG="--chat-template /app/chat-template.jinja2"
+fi
+
+# Mount patch + entrypoint wrapper for persistent fixes
+ENTRYPOINT_ARG=""
+if [ -f "${VLLM_PATCH_SCRIPT}" ] && [ -f "${VLLM_ENTRYPOINT_SCRIPT}" ]; then
+  VOLUMES="${VOLUMES} -v ${VLLM_PATCH_SCRIPT}:/app/patch-vllm.py:ro"
+  VOLUMES="${VOLUMES} -v ${VLLM_ENTRYPOINT_SCRIPT}:/app/vllm-entrypoint.sh:ro"
+  ENTRYPOINT_ARG="--entrypoint /app/vllm-entrypoint.sh"
 fi
 
 exec docker run -d \
@@ -41,6 +51,7 @@ exec docker run -d \
   -e HF_HUB_OFFLINE=1 \
   -e VLLM_ATTENTION_BACKEND=FLASHINFER \
   -e VLLM_USE_FLASHINFER_MOE_FP8=1 \
+  ${ENTRYPOINT_ARG} \
   "${VLLM_IMAGE}" \
   vllm serve "${VLLM_MODEL}" \
     --served-model-name "${VLLM_SERVED_NAME}" \

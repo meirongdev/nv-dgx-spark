@@ -19,6 +19,10 @@
     vllm_launcher_path: "/home/admin/run-vllm-qwen.sh"
     vllm_chat_template_src: "../config/qwen3.5-chat-template.jinja2"
     vllm_chat_template_path: "/home/admin/qwen3.5-chat-template.jinja2"
+    vllm_patch_script_src: "../scripts/patch-vllm-chat-utils.py"
+    vllm_patch_script_path: "/home/admin/patch-vllm-chat-utils.py"
+    vllm_entrypoint_src: "../scripts/vllm-entrypoint.sh"
+    vllm_entrypoint_path: "/home/admin/vllm-entrypoint.sh"
 
   tasks:
     - name: Disable swap (critical for unified memory)
@@ -47,6 +51,18 @@
         dest: "{{ vllm_chat_template_path }}"
         mode: "0644"
 
+    - name: Copy vLLM chat_utils patch script
+      ansible.builtin.copy:
+        src: "{{ vllm_patch_script_src }}"
+        dest: "{{ vllm_patch_script_path }}"
+        mode: "0644"
+
+    - name: Copy vLLM entrypoint wrapper
+      ansible.builtin.copy:
+        src: "{{ vllm_entrypoint_src }}"
+        dest: "{{ vllm_entrypoint_path }}"
+        mode: "0755"
+
     - name: Stop any previous vLLM container
       ansible.builtin.command: "docker rm -f {{ vllm_container }}"
       changed_when: true
@@ -68,6 +84,8 @@
         VLLM_MAX_NUM_SEQS: "{{ vllm_max_num_seqs }}"
         VLLM_HF_CACHE: "{{ hf_cache_dir }}"
         VLLM_CHAT_TEMPLATE: "{{ vllm_chat_template_path }}"
+        VLLM_PATCH_SCRIPT: "{{ vllm_patch_script_path }}"
+        VLLM_ENTRYPOINT_SCRIPT: "{{ vllm_entrypoint_path }}"
       register: vllm_launch
       changed_when: true
 
