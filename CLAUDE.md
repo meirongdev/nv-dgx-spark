@@ -10,6 +10,20 @@ Ansible-based infrastructure project for managing NVIDIA DGX Spark servers. The 
 
 **Current Stack:** vLLM + Bifrost gateway serving Qwen3.5-122B-A10B (NVFP4, ~72GB per node)
 
+## Model Inventory (as of 2026-04)
+
+| Model | Server 1 | Server 2 | Notes |
+|-------|----------|----------|-------|
+| `bjk110/Qwen3.5-122B-A10B-abliterated-NVFP4` | ✅ 72GB | ✅ 72GB | **Currently deployed** |
+| `nvidia/Qwen3.5-397B-A17B-NVFP4` | ✅ 240GB | ✅ 228GB | Too large for single-server |
+| `Qwen3-235B-A22B-NVFP4` | ✅ 125GB | ❌ | Likely too large (>89.6GB usable at 0.7) |
+| `Qwen/Qwen3.5-35B-A3B` | ❌ tokenizer only | ❌ | No weights cached |
+| `Jackrong/Qwen3.5-35B-A3B-*` | ❌ 20KB metadata | ❌ 4/14 shards (incomplete) | Cannot use |
+
+> **Note:** No complete Qwen3.5-35B is available in vLLM-compatible format on either server.
+> Any Qwen3.5 model still requires the custom chat template (`config/qwen3.5-chat-template.jinja2`)
+> for `developer` role support. Switching model size does not remove this requirement.
+
 ## Common Commands
 
 ```bash
@@ -100,7 +114,23 @@ make bifrost-stop               # Stop Bifrost
 - **vLLM** — inference server on both nodes (port 30000), image: `vllm-node-tf5:latest`
 - **Bifrost** — load balancer on Server 1 (port 8080), routes via 200-subnet
 
-## Key Conventions
+## Known Fixes Applied
+
+### 1. Developer role support (commit b92c6b9, 08877e6)
+Qwen3.5 chat template rejects `developer` role. Fixed via custom Jinja2 template
+(`config/qwen3.5-chat-template.jinja2`) that normalizes `developer` → `system` (leading
+messages) or `user` (mid-conversation).
+
+### 2. Tool call JSON "Extra data" error (commit e02bd72)
+`vllm/entrypoints/chat_utils.py:_postprocess_messages()` calls `json.loads()` on tool
+call arguments in multi-turn history. The qwen3_coder streaming parser can produce
+arguments with trailing bytes, causing `JSONDecodeError: Extra data`.
+
+Fix: wrap with `try/except` + `JSONDecoder.raw_decode()` fallback (ignores trailing data).
+**Persistent:** `scripts/patch-vllm-chat-utils.py` is mounted in the container and run by
+`scripts/vllm-entrypoint.sh` before every vLLM start. Re-applied automatically on restart.
+
+
 
 - All Ansible commands use `uv run` to stay within the venv
 - To add/remove hosts: edit `HOSTS` in Makefile, then run `make inventory`
