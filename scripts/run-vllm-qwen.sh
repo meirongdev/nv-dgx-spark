@@ -12,12 +12,13 @@ VLLM_CONTAINER="${VLLM_CONTAINER:-vllm-qwen}"
 VLLM_SERVED_NAME="${VLLM_SERVED_NAME:-${VLLM_MODEL}}"
 VLLM_HF_CACHE="${VLLM_HF_CACHE:-/home/admin/.cache/huggingface}"
 VLLM_TOOL_PARSER="${VLLM_TOOL_PARSER:-qwen3_coder}"
-VLLM_REASONING_PARSER="${VLLM_REASONING_PARSER:-qwen3}"
+VLLM_REASONING_PARSER="${VLLM_REASONING_PARSER-qwen3}"
 VLLM_KV_DTYPE="${VLLM_KV_DTYPE:-fp8_e4m3}"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-64}"
 VLLM_MAX_NUM_BATCHED="${VLLM_MAX_NUM_BATCHED:-8192}"
 VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-}"
+VLLM_MOE_FP8="${VLLM_MOE_FP8:-}"
 VLLM_PATCH_SCRIPT="${VLLM_PATCH_SCRIPT:-$(dirname "$0")/patch-vllm-chat-utils.py}"
 VLLM_ENTRYPOINT_SCRIPT="${VLLM_ENTRYPOINT_SCRIPT:-$(dirname "$0")/vllm-entrypoint.sh}"
 
@@ -50,7 +51,7 @@ exec docker run -d \
   -e CUDA_VISIBLE_DEVICES=0 \
   -e HF_HUB_OFFLINE=1 \
   -e VLLM_ATTENTION_BACKEND=FLASHINFER \
-  -e VLLM_USE_FLASHINFER_MOE_FP8=1 \
+  ${VLLM_MOE_FP8:+-e VLLM_USE_FLASHINFER_MOE_FP8="${VLLM_MOE_FP8}"} \
   ${ENTRYPOINT_ARG} \
   "${VLLM_IMAGE}" \
   vllm serve "${VLLM_MODEL}" \
@@ -63,10 +64,10 @@ exec docker run -d \
     --trust-remote-code \
     --enable-auto-tool-choice \
     --tool-call-parser "${VLLM_TOOL_PARSER}" \
-    --reasoning-parser "${VLLM_REASONING_PARSER}" \
+    ${VLLM_REASONING_PARSER:+--reasoning-parser "${VLLM_REASONING_PARSER}"} \
     --max-model-len "${VLLM_MAX_MODEL_LEN}" \
     --max-num-seqs "${VLLM_MAX_NUM_SEQS}" \
-    --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED}" \
+    ${VLLM_MAX_NUM_BATCHED:+--max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED}"} \
     --enable-prefix-caching \
     --tensor-parallel-size 1 \
     ${CHAT_TEMPLATE_ARG}

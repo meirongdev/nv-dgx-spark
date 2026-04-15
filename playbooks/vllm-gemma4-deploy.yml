@@ -1,24 +1,22 @@
 ---
-- name: Deploy vLLM (Qwen3.5-122B) on DGX Spark cluster
+- name: Deploy vLLM (Gemma-4-31B-IT) on DGX Spark cluster
   hosts: servers
   become: no
   gather_facts: yes
   vars:
     vllm_image: "vllm-node-tf5:latest"
-    vllm_model: "bjk110/Qwen3.5-122B-A10B-abliterated-NVFP4"
-    vllm_served_name: "Qwen3.5-122B-A10B"
+    vllm_model: "/root/.cache/huggingface/hub/Gemma-4-31B-IT-NVFP4"
+    vllm_served_name: "Gemma-4-31B-IT"
     vllm_port: 30000
     vllm_gpu_mem: "0.70"
     vllm_kv_dtype: "fp8_e4m3"
-    vllm_container: "vllm-qwen"
-    vllm_tool_parser: "qwen3_coder"
-    vllm_reasoning_parser: "qwen3"
+    vllm_container: "vllm-gemma4"
+    vllm_tool_parser: "gemma4"
+    vllm_reasoning_parser: ""
     vllm_max_model_len: "32768"
     vllm_max_num_seqs: "64"
     hf_cache_dir: "/home/admin/.cache/huggingface"
     vllm_launcher_path: "/home/admin/run-vllm-qwen.sh"
-    vllm_chat_template_src: "../config/qwen3.5-chat-template.jinja2"
-    vllm_chat_template_path: "/home/admin/qwen3.5-chat-template.jinja2"
     vllm_patch_script_src: "../scripts/patch-vllm-chat-utils.py"
     vllm_patch_script_path: "/home/admin/patch-vllm-chat-utils.py"
     vllm_entrypoint_src: "../scripts/vllm-entrypoint.sh"
@@ -39,17 +37,21 @@
       ansible.builtin.debug:
         msg: "GPU detected: {{ gpu_name.stdout }}"
 
+    - name: Check Gemma-4-31B-IT-NVFP4 model is present
+      ansible.builtin.stat:
+        path: "{{ hf_cache_dir }}/hub/Gemma-4-31B-IT-NVFP4"
+      register: model_dir
+
+    - name: Fail if model not found
+      ansible.builtin.fail:
+        msg: "Model not found at {{ hf_cache_dir }}/hub/Gemma-4-31B-IT-NVFP4"
+      when: not model_dir.stat.exists
+
     - name: Copy vLLM launcher script
       ansible.builtin.copy:
         src: ../scripts/run-vllm-qwen.sh
         dest: "{{ vllm_launcher_path }}"
         mode: "0755"
-
-    - name: Copy patched chat template (developer role support)
-      ansible.builtin.copy:
-        src: "{{ vllm_chat_template_src }}"
-        dest: "{{ vllm_chat_template_path }}"
-        mode: "0644"
 
     - name: Copy vLLM chat_utils patch script
       ansible.builtin.copy:
@@ -64,11 +66,11 @@
         mode: "0755"
 
     - name: Stop any previous vLLM container
-      ansible.builtin.command: "docker rm -f {{ vllm_container }}"
+      ansible.builtin.command: "docker rm -f {{ vllm_container }} vllm-qwen"
       changed_when: true
       failed_when: false
 
-    - name: Launch vLLM server
+    - name: Launch vLLM server with Gemma-4
       ansible.builtin.command: "{{ vllm_launcher_path }}"
       environment:
         VLLM_MODEL: "{{ vllm_model }}"
@@ -80,17 +82,18 @@
         VLLM_CONTAINER: "{{ vllm_container }}"
         VLLM_TOOL_PARSER: "{{ vllm_tool_parser }}"
         VLLM_REASONING_PARSER: "{{ vllm_reasoning_parser }}"
-        VLLM_MOE_FP8: "1"
+        VLLM_MOE_FP8: ""
         VLLM_MAX_MODEL_LEN: "{{ vllm_max_model_len }}"
         VLLM_MAX_NUM_SEQS: "{{ vllm_max_num_seqs }}"
+        VLLM_MAX_NUM_BATCHED: ""
         VLLM_HF_CACHE: "{{ hf_cache_dir }}"
-        VLLM_CHAT_TEMPLATE: "{{ vllm_chat_template_path }}"
+        VLLM_CHAT_TEMPLATE: ""
         VLLM_PATCH_SCRIPT: "{{ vllm_patch_script_path }}"
         VLLM_ENTRYPOINT_SCRIPT: "{{ vllm_entrypoint_path }}"
       register: vllm_launch
       changed_when: true
 
-    - name: Wait for vLLM API to be ready (up to 15 minutes for 122B model)
+    - name: Wait for vLLM API to be ready (up to 15 minutes for Gemma-4)
       ansible.builtin.uri:
         url: "http://localhost:{{ vllm_port }}/v1/models"
         method: GET
@@ -104,7 +107,7 @@
     - name: Report readiness
       ansible.builtin.debug:
         msg: >-
-          vLLM {{ 'READY' if result.status == 200 else 'NOT READY (check docker logs vllm-qwen)' }}
+          vLLM {{ 'READY' if result.status == 200 else 'NOT READY (check docker logs vllm-gemma4)' }}
           on {{ inventory_hostname }}
 
     - name: Show vLLM status

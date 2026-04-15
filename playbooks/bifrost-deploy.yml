@@ -30,8 +30,7 @@
         docker run -d
         --name {{ bifrost_container_name }}
         --net=host
-        -v {{ bifrost_config_remote_path }}:/app/config.json
-        -e BIFROST_CONFIG_PATH=/app/config.json
+        -v {{ bifrost_config_remote_path }}:/app/data/config.json
         {{ bifrost_image }}
 
     - name: Wait for Bifrost API to be ready

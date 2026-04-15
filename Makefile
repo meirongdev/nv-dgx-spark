@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark remove-thunderbird
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark remove-thunderbird
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -38,6 +38,14 @@ VLLM_QWEN_GPU_MEM ?= 0.70
 VLLM_QWEN_KV_DTYPE ?= fp8_e4m3
 VLLM_QWEN_TOOL_PARSER ?= qwen3_coder
 VLLM_QWEN_REASONING ?= qwen3
+
+# vLLM Gemma4 configuration (native developer role + tool calling)
+VLLM_GEMMA4_IMAGE ?= vllm-node-tf5:latest
+VLLM_GEMMA4_MODEL ?= /root/.cache/huggingface/hub/Gemma-4-31B-IT-NVFP4
+VLLM_GEMMA4_SERVED ?= Gemma-4-31B-IT
+VLLM_GEMMA4_PORT ?= 30000
+VLLM_GEMMA4_GPU_MEM ?= 0.70
+VLLM_GEMMA4_KV_DTYPE ?= fp8_e4m3
 
 # Create virtual environment and install Ansible
 venv:
@@ -440,8 +448,53 @@ endif
 	ssh -i $(SSH_KEY) $(SSH_USER)@$(HOST) "docker logs --tail 100 -f vllm-qwen"
 
 # ========================================
-# Bifrost LLM Gateway (Load Balancing)
+# vLLM Gemma-4-31B-IT Deployment Commands
 # ========================================
+# Gemma 4 natively supports developer role and has built-in gemma4 tool parser.
+# No custom chat template or reasoning parser needed.
+
+# Deploy vLLM Gemma4 on all hosts
+vllm-gemma4-deploy:
+	@echo "========================================"
+	@echo "Deploying vLLM (Gemma-4-31B-IT) on DGX Spark cluster..."
+	@echo "Image: $(VLLM_GEMMA4_IMAGE)"
+	@echo "Model: $(VLLM_GEMMA4_MODEL)"
+	@echo "Served as: $(VLLM_GEMMA4_SERVED)"
+	@echo "Port: $(VLLM_GEMMA4_PORT)"
+	@echo "GPU memory: $(VLLM_GEMMA4_GPU_MEM)"
+	@echo "========================================"
+	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-gemma4-deploy.yml \
+		--ssh-extra-args="-i $(SSH_KEY)" \
+		-e "vllm_image=$(VLLM_GEMMA4_IMAGE)" \
+		-e "vllm_served_name=$(VLLM_GEMMA4_SERVED)" \
+		-e "vllm_port=$(VLLM_GEMMA4_PORT)" \
+		-e "vllm_gpu_mem=$(VLLM_GEMMA4_GPU_MEM)" \
+		-e "vllm_kv_dtype=$(VLLM_GEMMA4_KV_DTYPE)"
+
+# Check vLLM Gemma4 status on all hosts
+vllm-gemma4-status:
+	@echo "========================================"
+	@echo "vLLM Gemma4 Status Check"
+	@echo "========================================"
+	uv run ansible all -i $(INVENTORY) -m shell \
+		-a "echo '--- Container ---' && docker ps --filter name=vllm-gemma4 --format 'table {{.Names}}\t{{.Status}}' && echo '--- API ---' && curl -s http://localhost:$(VLLM_GEMMA4_PORT)/v1/models 2>/dev/null | python3 -m json.tool || echo 'Not responding' && echo '--- GPU ---' && nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader" \
+		--ssh-extra-args="-i $(SSH_KEY)"
+
+# Stop vLLM Gemma4 on all hosts
+vllm-gemma4-stop:
+	@echo "Stopping vLLM Gemma4 on all hosts..."
+	uv run ansible all -i $(INVENTORY) -m shell \
+		-a "docker rm -f vllm-gemma4 2>/dev/null && echo 'vLLM Gemma4 stopped' || echo 'vLLM Gemma4 was not running'" \
+		--ssh-extra-args="-i $(SSH_KEY)"
+
+# View Gemma4 logs on a specific host (usage: make vllm-gemma4-logs HOST=100.97.87.120)
+vllm-gemma4-logs:
+ifndef HOST
+	$(error HOST is required. Usage: make vllm-gemma4-logs HOST=100.97.87.120)
+endif
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(HOST) "docker logs --tail 100 -f vllm-gemma4"
+
+
 # Routes to vLLM backends via 200-subnet:
 # - 192.168.200.101:30000 (Server 1)
 # - 192.168.200.102:30000 (Server 2)
