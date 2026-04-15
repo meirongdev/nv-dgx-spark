@@ -1,0 +1,107 @@
+---
+- name: Deploy Bifrost LLM Gateway
+  hosts: "{{ bifrost_host | default('100.97.87.120') }}"
+  become: no
+  gather_facts: yes
+  vars:
+    bifrost_image: "maximhq/bifrost:latest"
+    bifrost_port: 8080
+    bifrost_container_name: "bifrost-gateway"
+    bifrost_config_remote_path: "/home/admin/bifrost-config.json"
+
+  tasks:
+    - name: Verify docker is installed
+      ansible.builtin.command: docker --version
+      changed_when: false
+
+    - name: Stop any previous Bifrost container
+      ansible.builtin.command: docker rm -f {{ bifrost_container_name }}
+      changed_when: true
+      failed_when: false
+
+    - name: Deploy Bifrost configuration file
+      ansible.builtin.copy:
+        src: ../config/bifrost-config.json
+        dest: "{{ bifrost_config_remote_path }}"
+        mode: "0644"
+
+    - name: Deploy Bifrost container
+      ansible.builtin.command: >
+        docker run -d
+        --name {{ bifrost_container_name }}
+        --net=host
+        -v {{ bifrost_config_remote_path }}:/app/config.json
+        -e BIFROST_CONFIG_PATH=/app/config.json
+        {{ bifrost_image }}
+
+    - name: Wait for Bifrost API to be ready
+      ansible.builtin.uri:
+        url: "http://localhost:{{ bifrost_port }}/api/health"
+        method: GET
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 30
+      delay: 5
+      failed_when: false
+
+    - name: Verify Bifrost providers are registered
+      ansible.builtin.uri:
+        url: "http://localhost:{{ bifrost_port }}/api/providers"
+        method: GET
+        status_code: 200
+      register: providers_result
+      retries: 10
+      delay: 3
+      failed_when: false
+
+    - name: Display Bifrost status
+      ansible.builtin.shell: |
+        echo "=== Bifrost Gateway Status ==="
+        docker ps --filter "name={{ bifrost_container_name }}" --format 'table {{`{{.Names}}`}}\t{{`{{.Status}}`}}\t{{`{{.Ports}}`}}'
+        echo ""
+        echo "=== Registered Providers ==="
+        curl -s http://localhost:{{ bifrost_port }}/api/providers | python3 -m json.tool 2>/dev/null || echo "N/A"
+        echo ""
+        echo "=== Virtual Keys ==="
+        curl -s http://localhost:{{ bifrost_port }}/api/governance/virtual-keys | python3 -m json.tool 2>/dev/null || echo "N/A"
+      register: bifrost_status
+      changed_when: false
+
+    - name: Display Bifrost status
+      ansible.builtin.debug:
+        msg: "{{ bifrost_status.stdout_lines }}"
+
+    - name: Test Bifrost gateway
+      ansible.builtin.shell: |
+        echo "=== Testing Bifrost Gateway ==="
+        echo ""
+        echo "--- Test 1: Health Check ---"
+        curl -s http://localhost:{{ bifrost_port }}/api/health
+        echo ""
+        echo ""
+        echo "--- Test 2: Chat Completions (via virtual key) ---"
+        curl -s http://localhost:{{ bifrost_port }}/v1/chat/completions \
+          -H "Content-Type: application/json" \
+          -H "x-bf-vk: vk-dgx-cluster" \
+          -d '{
+            "model": "Qwen3.5-122B-A10B",
+            "messages": [{"role": "user", "content": "Hello from Bifrost!"}],
+            "max_tokens": 20
+          }' | python3 -m json.tool 2>/dev/null || echo "Test completed"
+        echo ""
+        echo "--- Test 3: Direct provider routing ---"
+        curl -s http://localhost:{{ bifrost_port }}/v1/chat/completions \
+          -H "Content-Type: application/json" \
+          -d '{
+            "model": "vllm-server1/Qwen3.5-122B-A10B",
+            "messages": [{"role": "user", "content": "Direct to server1!"}],
+            "max_tokens": 20
+          }' | python3 -m json.tool 2>/dev/null || echo "Test completed"
+      register: bifrost_test
+      changed_when: false
+      failed_when: false
+
+    - name: Display Bifrost test results
+      ansible.builtin.debug:
+        msg: "{{ bifrost_test.stdout_lines }}"

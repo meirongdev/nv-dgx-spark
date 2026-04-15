@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark remove-thunderbird
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -13,15 +13,31 @@ VLLM_IMAGE ?= nvcr.io/nvidia/vllm:26.01-py3
 VLLM_MODEL ?= Qwen/Qwen2.5-7B-Instruct
 VLLM_PORT ?= 8000
 GPU_MEMORY_UTIL ?= 0.7
+TOOL_CALL_PARSER ?=
 TP2_COORDINATOR ?= 100.97.87.120
 TP2_WORKER ?= 100.67.164.92
-TP2_MODEL ?= Qwen3.5-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled
+TP2_MODEL ?= NVIDIA/Nemotron-3-Super-120B-A12B-NVFP4
 TP2_IMAGE ?= vllm/vllm-openai:gemma4-cu130
-TP2_PORT ?= 8000
+TP2_PORT ?= 8030
 TP2_MASTER_PORT ?= 29500
 TP2_NCCL_IFACE ?= enp1s0f0np0
-TP2_GPU_MEMORY_UTIL ?= 0.7
-TP2_MAX_MODEL_LEN ?= 8192
+TP2_GPU_MEMORY_UTIL ?= 0.75
+TP2_MAX_MODEL_LEN ?= 32768
+
+# Bifrost Gateway configuration
+BIFROST_HOST ?= 100.97.87.120
+BIFROST_PORT ?= 8080
+BIFROST_IMAGE ?= maximhq/bifrost:latest
+
+# vLLM Qwen3.5 configuration (single-node inference with tool calling)
+VLLM_QWEN_IMAGE ?= vllm-node-tf5:latest
+VLLM_QWEN_MODEL ?= bjk110/Qwen3.5-122B-A10B-abliterated-NVFP4
+VLLM_QWEN_SERVED ?= Qwen3.5-122B-A10B
+VLLM_QWEN_PORT ?= 30000
+VLLM_QWEN_GPU_MEM ?= 0.70
+VLLM_QWEN_KV_DTYPE ?= fp8_e4m3
+VLLM_QWEN_TOOL_PARSER ?= qwen3_coder
+VLLM_QWEN_REASONING ?= qwen3
 
 # Create virtual environment and install Ansible
 venv:
@@ -62,6 +78,36 @@ all: venv inventory test
 # Clean up
 clean:
 	rm -rf .venv $(INVENTORY)
+
+# ========================================
+# System Unification Commands
+# ========================================
+
+# Unify kernel and NVIDIA driver versions across all hosts
+unify-system:
+	@echo "========================================"
+	@echo "Unifying system versions across hosts..."
+	@echo "Target: NVIDIA Driver 580.142, Latest HWE Kernel"
+	@echo "========================================"
+	uv run ansible-playbook -i $(INVENTORY) playbooks/unify-system.yml \
+		--ssh-extra-args="-i $(SSH_KEY)"
+
+# Check system versions on all hosts
+unify-status:
+	@echo "========================================"
+	@echo "System Version Status"
+	@echo "========================================"
+	uv run ansible all -i $(INVENTORY) -m shell \
+		-a "bash -c 'echo \"Host: \$$(hostname)\"; echo \"OS: \$$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d \\\")\"; echo \"Kernel: \$$(uname -r)\"; echo \"Driver: \$$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || echo N/A)\"; echo \"\"'" \
+		--ssh-extra-args="-i $(SSH_KEY)"
+
+# Remove Thunderbird from all hosts
+remove-thunderbird:
+	@echo "========================================"
+	@echo "Removing Thunderbird from all hosts..."
+	@echo "========================================"
+	uv run ansible-playbook -i $(INVENTORY) playbooks/remove-thunderbird.yml \
+		--ssh-extra-args="-i $(SSH_KEY)"
 
 # ========================================
 # vLLM Deployment Commands
@@ -299,3 +345,164 @@ print(f\"Tokens/sec: {len(resp.json().get(\\\"choices\\\", [{}])[0].get(\\\"text
 			 echo 'Benchmark started in tmux session \"vllm-benchmark\"' && \
 			 echo 'Check results: tail -f /tmp/vllm-benchmark.log'"; \
 	done
+
+# ========================================
+# Single-Node vLLM Deployment (Stable)
+# ========================================
+# Each server runs independent vLLM instance
+# Avoids cross-node TP=2 hang risks
+
+# Deploy single-node vLLM on all hosts
+vllm-single-deploy:
+	@echo "========================================"
+	@echo "Deploying single-node vLLM on all hosts..."
+	@echo "Image: $(VLLM_IMAGE)"
+	@echo "Model: $(VLLM_MODEL)"
+	@echo "Port: $(VLLM_PORT)"
+	@echo "GPU Memory: $(GPU_MEMORY_UTIL)"
+	@echo "Tool Call Parser: $(TOOL_CALL_PARSER)"
+	@echo "========================================"
+	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-single-deploy.yml \
+		--ssh-extra-args="-i $(SSH_KEY)" \
+		-e "vllm_image=$(VLLM_IMAGE)" \
+		-e "vllm_model=$(VLLM_MODEL)" \
+		-e "vllm_port=$(VLLM_PORT)" \
+		-e "gpu_memory_utilization=$(GPU_MEMORY_UTIL)" \
+		-e "tool_call_parser=$(TOOL_CALL_PARSER)"
+
+# Stop single-node vLLM on all hosts
+vllm-single-stop:
+	@echo "========================================"
+	@echo "Stopping single-node vLLM on all hosts..."
+	@echo "========================================"
+	uv run ansible all -i $(INVENTORY) -m shell \
+		-a "docker rm -f vllm-server 2>/dev/null && echo 'vLLM stopped' || echo 'vLLM was not running'" \
+		--ssh-extra-args="-i $(SSH_KEY)"
+
+# ========================================
+# vLLM Qwen3.5-122B Deployment Commands
+# ========================================
+# Each server runs an independent vLLM instance
+# with Qwen3.5-122B-A10B (NVFP4, ~72GB)
+
+# Deploy vLLM Qwen on all hosts
+vllm-qwen-deploy:
+	@echo "========================================"
+	@echo "Deploying vLLM (Qwen3.5-122B) on DGX Spark cluster..."
+	@echo "Image: $(VLLM_QWEN_IMAGE)"
+	@echo "Model: $(VLLM_QWEN_MODEL)"
+	@echo "Served as: $(VLLM_QWEN_SERVED)"
+	@echo "Port: $(VLLM_QWEN_PORT)"
+	@echo "GPU memory: $(VLLM_QWEN_GPU_MEM)"
+	@echo "KV cache dtype: $(VLLM_QWEN_KV_DTYPE)"
+	@echo "Tool parser: $(VLLM_QWEN_TOOL_PARSER)"
+	@echo "========================================"
+	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-qwen-deploy.yml \
+		--ssh-extra-args="-i $(SSH_KEY)" \
+		-e "vllm_image=$(VLLM_QWEN_IMAGE)" \
+		-e "vllm_model=$(VLLM_QWEN_MODEL)" \
+		-e "vllm_served_name=$(VLLM_QWEN_SERVED)" \
+		-e "vllm_port=$(VLLM_QWEN_PORT)" \
+		-e "vllm_gpu_mem=$(VLLM_QWEN_GPU_MEM)" \
+		-e "vllm_kv_dtype=$(VLLM_QWEN_KV_DTYPE)" \
+		-e "vllm_tool_parser=$(VLLM_QWEN_TOOL_PARSER)" \
+		-e "vllm_reasoning_parser=$(VLLM_QWEN_REASONING)"
+
+# Test vLLM Qwen deployment (health + chat + tool calling)
+vllm-qwen-test:
+	@echo "Testing vLLM Qwen endpoints..."
+	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-qwen-test.yml \
+		--ssh-extra-args="-i $(SSH_KEY)" \
+		-e "vllm_port=$(VLLM_QWEN_PORT)" \
+		-e "vllm_model=$(VLLM_QWEN_SERVED)"
+
+# Check vLLM Qwen status on all hosts
+vllm-qwen-status:
+	@echo "========================================"
+	@echo "vLLM Qwen Status Check"
+	@echo "========================================"
+	uv run ansible all -i $(INVENTORY) -m shell \
+		-a "echo '--- Container ---' && docker ps --filter name=vllm-qwen --format 'table {{.Names}}\t{{.Status}}' && echo '--- API ---' && curl -s http://localhost:$(VLLM_QWEN_PORT)/v1/models 2>/dev/null | python3 -m json.tool || echo 'Not responding' && echo '--- GPU ---' && nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader" \
+		--ssh-extra-args="-i $(SSH_KEY)"
+
+# Stop vLLM Qwen on all hosts
+vllm-qwen-stop:
+	@echo "Stopping vLLM Qwen on all hosts..."
+	uv run ansible all -i $(INVENTORY) -m shell \
+		-a "docker rm -f vllm-qwen 2>/dev/null && echo 'vLLM Qwen stopped' || echo 'vLLM Qwen was not running'" \
+		--ssh-extra-args="-i $(SSH_KEY)"
+
+# View vLLM Qwen logs on a specific host (usage: make vllm-qwen-logs HOST=100.97.87.120)
+vllm-qwen-logs:
+ifndef HOST
+	$(error HOST is required. Usage: make vllm-qwen-logs HOST=100.97.87.120)
+endif
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(HOST) "docker logs --tail 100 -f vllm-qwen"
+
+# ========================================
+# Bifrost LLM Gateway (Load Balancing)
+# ========================================
+# Routes to vLLM backends via 200-subnet:
+# - 192.168.200.101:30000 (Server 1)
+# - 192.168.200.102:30000 (Server 2)
+# <11μs overhead, automatic failover
+
+# Deploy Bifrost gateway
+bifrost-deploy:
+	@echo "========================================"
+	@echo "Deploying Bifrost LLM Gateway..."
+	@echo "Host: $(BIFROST_HOST)"
+	@echo "Port: $(BIFROST_PORT)"
+	@echo "Backends: 192.168.200.101:$(VLLM_QWEN_PORT) + 192.168.200.102:$(VLLM_QWEN_PORT) (vLLM)"
+	@echo "Strategy: Round-robin (50/50) with failover"
+	@echo "========================================"
+	uv run ansible-playbook -i $(INVENTORY) playbooks/bifrost-deploy.yml \
+		--ssh-extra-args="-i $(SSH_KEY)" \
+		-e "bifrost_host=$(BIFROST_HOST)" \
+		-e "bifrost_port=$(BIFROST_PORT)" \
+		-e "bifrost_image=$(BIFROST_IMAGE)"
+
+# Test Bifrost gateway
+bifrost-test:
+	@echo "========================================"
+	@echo "Testing Bifrost Gateway..."
+	@echo "========================================"
+	uv run ansible-playbook -i $(INVENTORY) playbooks/bifrost-test.yml \
+		--ssh-extra-args="-i $(SSH_KEY)" \
+		-e "bifrost_host=$(BIFROST_HOST)" \
+		-e "bifrost_port=$(BIFROST_PORT)"
+
+# Check Bifrost status
+bifrost-status:
+	@echo "========================================"
+	@echo "Bifrost Gateway Status"
+	@echo "========================================"
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(BIFROST_HOST) \
+		"echo '--- Container ---' && docker ps --filter name=bifrost-gateway --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' && echo '' && echo '--- API Health ---' && curl -s http://localhost:$(BIFROST_PORT)/api/health | python3 -m json.tool 2>/dev/null || echo 'Not responding'"
+
+# Stop Bifrost gateway
+bifrost-stop:
+	@echo "========================================"
+	@echo "Stopping Bifrost Gateway..."
+	@echo "========================================"
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(BIFROST_HOST) \
+		"docker rm -f bifrost-gateway 2>/dev/null && echo 'Bifrost stopped' || echo 'Bifrost was not running'"
+
+# ========================================
+# Full Stack (vLLM Qwen + Bifrost)
+# ========================================
+
+# Deploy full stack: vLLM on both servers + Bifrost gateway
+stack-deploy: vllm-qwen-deploy bifrost-deploy
+	@echo "========================================"
+	@echo "Full stack deployed!"
+	@echo "  vLLM: both servers on port $(VLLM_QWEN_PORT)"
+	@echo "  Bifrost: $(BIFROST_HOST):$(BIFROST_PORT)"
+	@echo "  Model: $(VLLM_QWEN_SERVED)"
+	@echo "========================================"
+
+# Stop full stack
+stack-stop: bifrost-stop vllm-qwen-stop
+
+# Check full stack status
+stack-status: vllm-qwen-status bifrost-status

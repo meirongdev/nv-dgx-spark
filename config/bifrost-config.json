@@ -1,0 +1,73 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "providers": {
+    "vllm-server1": {
+      "keys": [
+        {
+          "name": "vllm-s1-key",
+          "value": "dummy",
+          "models": ["Qwen3.5-122B-A10B"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "http://192.168.200.101:30000",
+        "default_request_timeout_in_seconds": 300,
+        "max_retries": 2,
+        "retry_delay_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true,
+          "text_completion": true
+        }
+      }
+    },
+    "vllm-server2": {
+      "keys": [
+        {
+          "name": "vllm-s2-key",
+          "value": "dummy",
+          "models": ["Qwen3.5-122B-A10B"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "http://192.168.200.102:30000",
+        "default_request_timeout_in_seconds": 300,
+        "max_retries": 2,
+        "retry_delay_in_seconds": 5
+      },
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true,
+          "text_completion": true
+        }
+      }
+    }
+  },
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-dgx-cluster",
+        "name": "DGX Spark Cluster (vLLM Qwen3.5-122B)",
+        "provider_configs": [
+          {
+            "provider": "vllm-server1",
+            "allowed_models": ["Qwen3.5-122B-A10B"],
+            "weight": 1.0
+          },
+          {
+            "provider": "vllm-server2",
+            "allowed_models": ["Qwen3.5-122B-A10B"],
+            "weight": 1.0
+          }
+        ]
+      }
+    ]
+  }
+}

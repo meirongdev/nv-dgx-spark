@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# vLLM launcher for DGX Spark (GB10 Blackwell)
+# Usage: VLLM_MODEL=<model> ./run-vllm-qwen.sh
+
+VLLM_MODEL="${VLLM_MODEL:?VLLM_MODEL is required}"
+VLLM_IMAGE="${VLLM_IMAGE:-vllm-node-tf5:latest}"
+VLLM_PORT="${VLLM_PORT:-30000}"
+VLLM_GPU_MEM="${VLLM_GPU_MEM:-0.70}"
+VLLM_CONTAINER="${VLLM_CONTAINER:-vllm-qwen}"
+VLLM_SERVED_NAME="${VLLM_SERVED_NAME:-${VLLM_MODEL}}"
+VLLM_HF_CACHE="${VLLM_HF_CACHE:-/home/admin/.cache/huggingface}"
+VLLM_TOOL_PARSER="${VLLM_TOOL_PARSER:-qwen3_coder}"
+VLLM_REASONING_PARSER="${VLLM_REASONING_PARSER:-qwen3}"
+VLLM_KV_DTYPE="${VLLM_KV_DTYPE:-fp8_e4m3}"
+VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
+VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-64}"
+VLLM_MAX_NUM_BATCHED="${VLLM_MAX_NUM_BATCHED:-8192}"
+
+docker rm -f "${VLLM_CONTAINER}" 2>/dev/null || true
+
+exec docker run -d \
+  --name "${VLLM_CONTAINER}" \
+  --restart unless-stopped \
+  --privileged \
+  --gpus all \
+  --network host \
+  --ipc=host \
+  -v "${VLLM_HF_CACHE}:/root/.cache/huggingface" \
+  -e CUDA_VISIBLE_DEVICES=0 \
+  -e HF_HUB_OFFLINE=1 \
+  -e VLLM_ATTENTION_BACKEND=FLASHINFER \
+  -e VLLM_USE_FLASHINFER_MOE_FP8=1 \
+  "${VLLM_IMAGE}" \
+  vllm serve "${VLLM_MODEL}" \
+    --served-model-name "${VLLM_SERVED_NAME}" \
+    --host 0.0.0.0 \
+    --port "${VLLM_PORT}" \
+    --gpu-memory-utilization "${VLLM_GPU_MEM}" \
+    --kv-cache-dtype "${VLLM_KV_DTYPE}" \
+    --dtype auto \
+    --trust-remote-code \
+    --enable-auto-tool-choice \
+    --tool-call-parser "${VLLM_TOOL_PARSER}" \
+    --reasoning-parser "${VLLM_REASONING_PARSER}" \
+    --max-model-len "${VLLM_MAX_MODEL_LEN}" \
+    --max-num-seqs "${VLLM_MAX_NUM_SEQS}" \
+    --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED}" \
+    --enable-prefix-caching \
+    --tensor-parallel-size 1

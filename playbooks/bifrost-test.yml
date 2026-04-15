@@ -1,0 +1,91 @@
+---
+- name: Test Bifrost LLM Gateway
+  hosts: "{{ bifrost_host | default('100.97.87.120') }}"
+  become: no
+  gather_facts: no
+  vars:
+    bifrost_port: 8080
+    bifrost_model: "Qwen3.5-122B-A10B"
+
+  tasks:
+    - name: Test Bifrost health endpoint
+      ansible.builtin.uri:
+        url: "http://localhost:{{ bifrost_port }}/api/health"
+        method: GET
+        status_code: 200
+      register: health_result
+      failed_when: health_result.status != 200
+
+    - name: Display health status
+      ansible.builtin.debug:
+        msg: "Bifrost is healthy"
+
+    - name: Test chat completions via virtual key
+      ansible.builtin.shell: |
+        curl -s http://localhost:{{ bifrost_port }}/v1/chat/completions \
+          -H "Content-Type: application/json" \
+          -H "x-bf-vk: vk-dgx-cluster" \
+          -d '{
+            "model": "{{ bifrost_model }}",
+            "messages": [{"role": "user", "content": "Explain unified memory in 3 sentences."}],
+            "max_tokens": 100
+          }'
+      register: chat_result
+      failed_when: false
+
+    - name: Display chat response
+      ansible.builtin.debug:
+        msg: "{{ chat_result.stdout | default('No response') }}"
+
+    - name: Test text completions
+      ansible.builtin.shell: |
+        curl -s http://localhost:{{ bifrost_port }}/v1/completions \
+          -H "Content-Type: application/json" \
+          -d '{
+            "model": "vllm-server1/{{ bifrost_model }}",
+            "prompt": "The future of AI is",
+            "max_tokens": 50
+          }'
+      register: completion_result
+      failed_when: false
+
+    - name: Display completion response
+      ansible.builtin.debug:
+        msg: "{{ completion_result.stdout | default('No response') }}"
+
+    - name: Run simple benchmark
+      ansible.builtin.shell: |
+        python3 -c "
+          import requests, json, time
+
+          base_url = 'http://localhost:{{ bifrost_port }}/v1'
+          headers = {'Content-Type': 'application/json', 'x-bf-vk': 'vk-dgx-cluster'}
+
+          print('=== Bifrost Gateway Benchmark ===')
+          print()
+
+          # Test 1: Short generation
+          print('--- Short Generation (20 tokens) ---')
+          for i in range(3):
+              start = time.time()
+              resp = requests.post(f'{base_url}/chat/completions',
+                  headers=headers,
+                  json={'model': '{{ bifrost_model }}',
+                        'messages': [{'role': 'user', 'content': 'Hello'}],
+                        'max_tokens': 20},
+                  timeout=60)
+              elapsed_ms = (time.time() - start) * 1000
+              data = resp.json()
+              tok = data['usage']['completion_tokens']
+              tok_s = tok * 1000 / elapsed_ms if elapsed_ms > 0 else 0
+              print(f'  Run {i+1}: {elapsed_ms:.0f}ms | {tok} tok | {tok_s:.1f} tok/s')
+
+          print()
+          print('=== Benchmark Complete ===')
+        "
+      register: benchmark_result
+      failed_when: false
+
+    - name: Display benchmark results
+      ansible.builtin.debug:
+        msg: "{{ benchmark_result.stdout_lines }}"
