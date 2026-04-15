@@ -17,6 +17,8 @@
     vllm_max_num_seqs: "64"
     hf_cache_dir: "/home/admin/.cache/huggingface"
     vllm_launcher_path: "/home/admin/run-vllm-qwen.sh"
+    vllm_chat_template_src: "../config/qwen3.5-chat-template.jinja2"
+    vllm_chat_template_path: "/home/admin/qwen3.5-chat-template.jinja2"
 
   tasks:
     - name: Disable swap (critical for unified memory)
@@ -39,6 +41,12 @@
         dest: "{{ vllm_launcher_path }}"
         mode: "0755"
 
+    - name: Copy patched chat template (developer role support)
+      ansible.builtin.copy:
+        src: "{{ vllm_chat_template_src }}"
+        dest: "{{ vllm_chat_template_path }}"
+        mode: "0644"
+
     - name: Stop any previous vLLM container
       ansible.builtin.command: "docker rm -f {{ vllm_container }}"
       changed_when: true
@@ -59,6 +67,7 @@
         VLLM_MAX_MODEL_LEN: "{{ vllm_max_model_len }}"
         VLLM_MAX_NUM_SEQS: "{{ vllm_max_num_seqs }}"
         VLLM_HF_CACHE: "{{ hf_cache_dir }}"
+        VLLM_CHAT_TEMPLATE: "{{ vllm_chat_template_path }}"
       register: vllm_launch
       changed_when: true
 

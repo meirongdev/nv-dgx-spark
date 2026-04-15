@@ -17,8 +17,17 @@ VLLM_KV_DTYPE="${VLLM_KV_DTYPE:-fp8_e4m3}"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
 VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-64}"
 VLLM_MAX_NUM_BATCHED="${VLLM_MAX_NUM_BATCHED:-8192}"
+VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-}"
 
 docker rm -f "${VLLM_CONTAINER}" 2>/dev/null || true
+
+# Build volume mounts
+VOLUMES="-v ${VLLM_HF_CACHE}:/root/.cache/huggingface"
+CHAT_TEMPLATE_ARG=""
+if [ -n "${VLLM_CHAT_TEMPLATE}" ] && [ -f "${VLLM_CHAT_TEMPLATE}" ]; then
+  VOLUMES="${VOLUMES} -v ${VLLM_CHAT_TEMPLATE}:/app/chat-template.jinja2:ro"
+  CHAT_TEMPLATE_ARG="--chat-template /app/chat-template.jinja2"
+fi
 
 exec docker run -d \
   --name "${VLLM_CONTAINER}" \
@@ -27,7 +36,7 @@ exec docker run -d \
   --gpus all \
   --network host \
   --ipc=host \
-  -v "${VLLM_HF_CACHE}:/root/.cache/huggingface" \
+  ${VOLUMES} \
   -e CUDA_VISIBLE_DEVICES=0 \
   -e HF_HUB_OFFLINE=1 \
   -e VLLM_ATTENTION_BACKEND=FLASHINFER \
@@ -48,4 +57,5 @@ exec docker run -d \
     --max-num-seqs "${VLLM_MAX_NUM_SEQS}" \
     --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED}" \
     --enable-prefix-caching \
-    --tensor-parallel-size 1
+    --tensor-parallel-size 1 \
+    ${CHAT_TEMPLATE_ARG}
