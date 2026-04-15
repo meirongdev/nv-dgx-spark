@@ -57,7 +57,7 @@
     - name: Display Bifrost status
       ansible.builtin.shell: |
         echo "=== Bifrost Gateway Status ==="
-        docker ps --filter "name={{ bifrost_container_name }}" --format 'table {{`{{.Names}}`}}\t{{`{{.Status}}`}}\t{{`{{.Ports}}`}}'
+        docker ps --filter "name={{ bifrost_container_name }}" --format "table {{{{.Names}}}}\t{{{{.Status}}}}\t{{{{.Ports}}}}"
         echo ""
         echo "=== Registered Providers ==="
         curl -s http://localhost:{{ bifrost_port }}/api/providers | python3 -m json.tool 2>/dev/null || echo "N/A"
