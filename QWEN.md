@@ -264,6 +264,15 @@ make vllm-deploy VLLM_IMAGE=eugr/spark-vllm-docker:latest
 
 # Change port
 make vllm-deploy VLLM_PORT=8001
+
+# Deploy with tool calling support (for OpenClaw / function calling)
+# Supported parsers: qwen3_coder, llama3_json, pythonic, hermes, mistral, etc.
+make vllm-single-deploy \
+  VLLM_MODEL=Qwen/Qwen3.5-35B-A3B \
+  TOOL_CALL_PARSER=qwen3_coder
+
+# Deploy without tool calling (default)
+make vllm-single-deploy
 ```
 
 ## Development Conventions
@@ -287,6 +296,28 @@ make cmd COMMAND="nvidia-smi"
 # Check memory
 make cmd COMMAND="free -h"
 ```
+
+### Tool Calling / OpenClaw Integration
+If OpenClaw returns `400 "auto" tool choice requires --enable-auto-tool-choice`:
+
+```bash
+# Deploy with tool calling enabled for Qwen3.5
+make vllm-single-deploy \
+  VLLM_MODEL=Qwen/Qwen3.5-35B-A3B \
+  TOOL_CALL_PARSER=qwen3_coder
+```
+
+**Supported tool call parsers:**
+
+| Model Family | `TOOL_CALL_PARSER` | Notes |
+|-------------|-------------------|-------|
+| Qwen3 / Qwen3.5 | `qwen3_coder` | Recommended for OpenClaw |
+| Llama 3.1 | `llama3_json` | No parallel tool calls |
+| Llama 3.2 | `pythonic` | Supports parallel calls |
+| Nous Hermes | `hermes` | |
+| Mistral | `mistral` | Requires custom template |
+
+> **Note**: Nemotron 120B may not support native tool calling (not instruction-tuned for it).
 
 ### Out of Memory Errors
 - Ensure `--gpu-memory-utilization` is set to 0.7 (not default 0.9)

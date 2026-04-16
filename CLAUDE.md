@@ -8,7 +8,164 @@ Ansible-based infrastructure project for managing NVIDIA DGX Spark servers. The 
 
 **Target Hosts:** `100.97.87.120`, `100.67.164.92` (SSH user: `admin`, key: `~/.ssh/vgio`)
 
-**Current Stack:** vLLM + Bifrost gateway serving Qwen3.5-122B-A10B (NVFP4, ~72GB per node)
+**Current Stack:** vLLM serving Gemma-4-31B-IT (NVFP4) on both servers + LLM Gateway (FastAPI reverse proxy) on port 8080
+
+## Connecting Codex to the DGX Cluster
+
+### Direct connection (testing / single-user)
+
+Connect Codex directly to vLLM on server 1, bypassing the gateway:
+
+```bash
+export DGX_SPARK_API_KEY=dummy    # vLLM accepts any key when --api-key not set
+codex --profile dgx-direct
+```
+
+Codex profile `dgx-direct` points to `http://100.97.87.120:30000/v1` — vLLM on server 1.  
+Use this to verify a new model deployment works before enabling the gateway.
+
+### Gateway connection (production / multi-user)
+
+```bash
+export DGX_SPARK_API_KEY=dummy
+codex --profile dgx
+```
+
+Codex profile `dgx` uses the LLM Gateway at `http://100.97.87.120:8080/v1`.  
+The gateway routes `/v1/responses*` (Codex stateful API) exclusively to server 1, and
+load-balances `/v1/chat/completions` across both servers.
+
+## Common Commands
+
+```bash
+# Setup: create venv, generate inventory, test connections
+make all
+
+# Install Ansible into venv
+make venv
+
+# Test SSH connectivity
+make ping
+
+# Run ad-hoc command on all hosts
+make cmd COMMAND="uptime"
+```
+
+## vLLM + LLM Gateway Stack
+
+```bash
+# Deploy full stack (vLLM Gemma-4 on both servers + LLM Gateway)
+make stack-deploy
+
+# Check status of everything
+make stack-status
+
+# Stop full stack
+make stack-stop
+
+# Individual vLLM operations (Gemma-4)
+make vllm-gemma4-deploy            # Deploy vLLM Gemma-4-31B-IT on all hosts
+make vllm-gemma4-status            # Check vLLM containers + API
+make vllm-gemma4-stop              # Stop vLLM on all hosts
+make vllm-gemma4-logs HOST=100.97.87.120
+
+# LLM Gateway operations
+make gateway-deploy                 # Build and deploy FastAPI gateway on Server 1
+make gateway-test                   # Test health endpoint + models list
+make gateway-status                 # Check gateway container + health
+make gateway-stop                   # Stop gateway
+```
+
+### LLM Gateway Routing Logic
+
+The gateway (`gateway/app.py`) routes as follows:
+
+| Endpoint | Routing | Reason |
+|----------|---------|--------|
+| `/v1/responses*` | Server 1 only (sticky) | OpenAI Responses API is stateful — `previous_response_id` references an in-memory response store on the server that created the response. Cross-server routing causes 404. |
+| `/v1/chat/completions` | Round-robin server 1 + 2 | Stateless — any server can handle any request |
+| Everything else | Server 1 (fallback) | Health, models, embeddings, etc. |
+
+### vLLM Gemma-4 Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VLLM_GEMMA4_PORT` | `30000` | API port |
+| `VLLM_GEMMA4_GPU_MEM` | `0.70` | GPU memory fraction |
+| `VLLM_GEMMA4_KV_DTYPE` | `fp8_e4m3` | KV cache dtype |
+| `GATEWAY_HOST` | `100.97.87.120` | Gateway host |
+| `GATEWAY_PORT` | `8080` | Gateway port |
+| `VLLM_SERVER1_URL` | `http://192.168.200.101:30000` | Server 1 backend URL |
+| `VLLM_SERVER2_URL` | `http://192.168.200.102:30000` | Server 2 backend URL |
+
+### Critical: Unified Memory Constraints
+
+- DGX Spark GB10 has 128GB unified memory shared between CPU and GPU
+- **Swap MUST be disabled** (`swapoff -a`) — the deploy playbook handles this
+- Set `VLLM_GEMMA4_GPU_MEM=0.70` to leave headroom (~89.6GB for model + KV cache)
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    DGX Spark Cluster                        │
+│                                                             │
+│  ┌──────────────────┐   200Gbps internal   ┌─────────────┐ │
+│  │  Server 1         │  ◄───────────────►  │  Server 2   │ │
+│  │  192.168.200.101  │  (enp1s0f0np0)      │192.168.200.102│ │
+│  │  vLLM :30000      │                     │ vLLM :30000  │ │
+│  │  Gemma-4-31B-IT   │                     │ Gemma-4-31B  │ │
+│  │  + Gateway :8080  │                     │              │ │
+│  └──────────────────┘                      └─────────────┘ │
+│          ↑ /v1/responses (sticky)                          │
+│          ↕ /v1/chat/completions (round-robin both)         │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ Tailscale VPN (100.x)
+                  ┌────────▼──────────┐
+                  │   Mac (client)    │
+                  │  codex --profile dgx          → :8080 (gateway)
+                  │  codex --profile dgx-direct   → :30000 (direct)
+                  └───────────────────┘
+```
+
+## Known Fixes Applied
+
+### 1. Gemma-4 skip_special_tokens (commit 175b12b)
+`ResponsesRequest` defaults `skip_special_tokens=True`, which strips the `<|tool_call>` delimiters
+Gemma-4 uses in its tool call format, producing garbled output (`call:shell{command:...}`).
+
+Fix: `scripts/patch-vllm-gemma4-parser.py` patches `adjust_request()` in `gemma4_tool_parser.py`
+to set `skip_special_tokens=False` for both `ChatCompletionRequest` and `ResponsesRequest`.
+Applied at container startup by `vllm-entrypoint.sh`.
+
+### 2. Responses API stateful routing (this session)
+OpenAI Responses API stores each response in vLLM's in-memory `response_store`. The next request
+includes `previous_response_id` which references that store. Bifrost's round-robin routing sent
+turn 2 to the wrong server → 404 `"Response not found"` → Codex showed errors.
+
+Fix: Replaced Bifrost with a custom FastAPI gateway (`gateway/`) that routes all `/v1/responses*`
+traffic to server 1 exclusively, while still load-balancing `/v1/chat/completions`.
+
+### 3. Developer role support (earlier)
+Qwen3.5 chat template rejects `developer` role. Fixed via custom Jinja2 template.
+
+## Key Conventions
+
+- All Ansible commands use `uv run` to stay within the venv
+- To add/remove hosts: edit `HOSTS` in Makefile, then run `make inventory`
+- SSH strict host key checking disabled for automation
+- Gateway uses 200-subnet internal IPs for low-latency backend routing
+- vLLM image `vllm-node-tf5:latest` is pre-built on servers (compatible with driver 580.142)
+
+## tmux Integration (SSH Drop Protection)
+
+```bash
+make tmux-cmd COMMAND="docker pull ..." SESSION="my-task"
+make tmux-list HOST=100.97.87.120
+make tmux-attach HOST=100.97.87.120 SESSION=vllm-deploy
+make tmux-kill HOST=100.97.87.120 SESSION=vllm-deploy
+```
+
 
 ## Model Inventory (as of 2026-04)
 

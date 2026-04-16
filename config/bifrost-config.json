@@ -48,8 +48,8 @@
           "chat_completion": true,
           "chat_completion_stream": true,
           "text_completion": true,
-          "responses": true,
-          "responses_stream": true
+          "responses": false,
+          "responses_stream": false
         }
       }
     }
@@ -58,8 +58,20 @@
     "virtual_keys": [
       {
         "id": "vk-dgx-cluster",
-        "name": "DGX Spark Cluster (vLLM Gemma-4-31B-IT)",
+        "name": "DGX Spark Cluster (vLLM Gemma-4-31B-IT) — Codex/stateful",
         "value": "sk-bf-dgx-spark-cluster-2026",
+        "provider_configs": [
+          {
+            "provider": "vllm-server1",
+            "allowed_models": ["Gemma-4-31B-IT"],
+            "weight": 1.0
+          }
+        ]
+      },
+      {
+        "id": "vk-dgx-chat",
+        "name": "DGX Spark Cluster (vLLM Gemma-4-31B-IT) — chat load-balanced",
+        "value": "sk-bf-dgx-chat-2026",
         "provider_configs": [
           {
             "provider": "vllm-server1",

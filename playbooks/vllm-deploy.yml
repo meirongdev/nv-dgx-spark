@@ -168,9 +168,9 @@
         --ulimit memlock=-1
         --ulimit stack=67108864
         -v /home/{{ ssh_user }}/.cache/huggingface:/root/.cache/huggingface
-        -e VLLM_ATTENTION_BACKEND={{ lookup('env', 'VLLM_ATTENTION_BACKEND') | default('FLASHINFER') }}
-        -e VLLM_USE_FLASHINFER_MOE_FP8={{ lookup('env', 'VLLM_USE_FLASHINFER_MOE_FP8') | default('1') }}
-        -e VLLM_FLASHINFER_MOE_BACKEND={{ lookup('env', 'VLLM_FLASHINFER_MOE_BACKEND') | default('latency') }}
+        -e VLLM_ATTENTION_BACKEND=FLASHINFER
+        -e VLLM_USE_FLASHINFER_MOE_FP8=1
+        -e VLLM_FLASHINFER_MOE_BACKEND=latency
         -e VLLM_GPU_MEMORY_UTILIZATION={{ gpu_memory_utilization }}
         -e VLLM_KV_CACHE_DTYPE={{ kv_cache_dtype }}
         -e CUDA_VISIBLE_DEVICES=0
@@ -184,6 +184,7 @@
         --max-model-len {{ max_model_len }}
         --max-num-seqs 128
         --trust-remote-code
+        --disable-log-requests
       register: run_result
       changed_when: true
       failed_when: false
@@ -194,7 +195,7 @@
 
     - name: Wait for vLLM to be ready
       ansible.builtin.wait_for:
-        host: localhost
+        host: "{{ inventory_hostname }}"
         port: "{{ vllm_port }}"
         state: started
         delay: 30
@@ -204,7 +205,7 @@
 
     - name: Verify vLLM health endpoint
       ansible.builtin.uri:
-        url: "http://localhost:{{ vllm_port }}/health"
+        url: "http://{{ inventory_hostname }}:{{ vllm_port }}/health"
         method: GET
         status_code: 200
         timeout: 10

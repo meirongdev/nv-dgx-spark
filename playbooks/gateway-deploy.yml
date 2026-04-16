@@ -1,0 +1,85 @@
+---
+- name: Deploy LLM Gateway (FastAPI reverse proxy)
+  hosts: "{{ gateway_host | default('100.97.87.120') }}"
+  become: no
+  gather_facts: yes
+  vars:
+    gateway_port: 8080
+    gateway_container_name: "llm-gateway"
+    gateway_image_name: "llm-gateway:latest"
+    gateway_remote_dir: "/home/admin/llm-gateway"
+    vllm_server1_url: "http://192.168.200.101:30000"
+    vllm_server2_url: "http://192.168.200.102:30000"
+    request_timeout: "300"
+
+  tasks:
+    - name: Verify docker is available
+      ansible.builtin.command: docker --version
+      changed_when: false
+
+    - name: Create gateway directory on remote
+      ansible.builtin.file:
+        path: "{{ gateway_remote_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy gateway source files
+      ansible.builtin.copy:
+        src: "../gateway/"
+        dest: "{{ gateway_remote_dir }}/"
+        mode: "0644"
+
+    - name: Build gateway Docker image
+      ansible.builtin.command: >
+        docker build -t {{ gateway_image_name }} {{ gateway_remote_dir }}
+      register: build_result
+      changed_when: true
+
+    - name: Stop any existing Bifrost container (port conflict prevention)
+      ansible.builtin.command: docker rm -f bifrost-gateway
+      changed_when: true
+      failed_when: false
+
+    - name: Stop previous gateway container
+      ansible.builtin.command: docker rm -f {{ gateway_container_name }}
+      changed_when: true
+      failed_when: false
+
+    - name: Start gateway container
+      ansible.builtin.command: >
+        docker run -d
+        --name {{ gateway_container_name }}
+        --net=host
+        -e VLLM_SERVER1_URL={{ vllm_server1_url }}
+        -e VLLM_SERVER2_URL={{ vllm_server2_url }}
+        -e REQUEST_TIMEOUT={{ request_timeout }}
+        -e LOG_LEVEL=INFO
+        --restart unless-stopped
+        {{ gateway_image_name }}
+      register: run_result
+
+    - name: Wait for gateway health endpoint
+      ansible.builtin.uri:
+        url: "http://localhost:{{ gateway_port }}/health"
+        method: GET
+        status_code: 200
+      register: health_result
+      until: health_result.status == 200
+      retries: 20
+      delay: 3
+
+    - name: Show gateway status
+      ansible.builtin.debug:
+        msg: "LLM Gateway running — http://{{ inventory_hostname }}:{{ gateway_port }} → {{ vllm_server1_url }} (stateful) + {{ vllm_server2_url }} (chat)"
+
+    - name: Verify models endpoint is reachable through gateway
+      ansible.builtin.uri:
+        url: "http://localhost:{{ gateway_port }}/v1/models"
+        method: GET
+        status_code: 200
+      register: models_result
+      failed_when: false
+
+    - name: Show available models
+      ansible.builtin.debug:
+        msg: "Models available: {{ (models_result.json.data | map(attribute='id') | list) if models_result.status == 200 else 'unavailable' }}"

@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark remove-thunderbird
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs gateway-deploy gateway-test gateway-stop gateway-status bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark remove-thunderbird
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -24,9 +24,15 @@ TP2_NCCL_IFACE ?= enp1s0f0np0
 TP2_GPU_MEMORY_UTIL ?= 0.75
 TP2_MAX_MODEL_LEN ?= 32768
 
-# Bifrost Gateway configuration
-BIFROST_HOST ?= 100.97.87.120
-BIFROST_PORT ?= 8080
+# LLM Gateway configuration (FastAPI reverse proxy replacing Bifrost)
+GATEWAY_HOST ?= 100.97.87.120
+GATEWAY_PORT ?= 8080
+VLLM_SERVER1_URL ?= http://192.168.200.101:30000
+VLLM_SERVER2_URL ?= http://192.168.200.102:30000
+
+# Bifrost (legacy — kept for reference, replaced by LLM Gateway)
+BIFROST_HOST ?= $(GATEWAY_HOST)
+BIFROST_PORT ?= $(GATEWAY_PORT)
 BIFROST_IMAGE ?= maximhq/bifrost:latest
 
 # vLLM Qwen3.5 configuration (single-node inference with tool calling)
@@ -500,62 +506,67 @@ endif
 # - 192.168.200.102:30000 (Server 2)
 # <11μs overhead, automatic failover
 
-# Deploy Bifrost gateway
-bifrost-deploy:
+# Deploy LLM Gateway (FastAPI reverse proxy)
+# Routes /v1/responses* sticky to server1, load-balances /v1/chat/completions
+gateway-deploy:
 	@echo "========================================"
-	@echo "Deploying Bifrost LLM Gateway..."
-	@echo "Host: $(BIFROST_HOST)"
-	@echo "Port: $(BIFROST_PORT)"
-	@echo "Backends: 192.168.200.101:$(VLLM_QWEN_PORT) + 192.168.200.102:$(VLLM_QWEN_PORT) (vLLM)"
-	@echo "Strategy: Round-robin (50/50) with failover"
+	@echo "Deploying LLM Gateway..."
+	@echo "Host: $(GATEWAY_HOST):$(GATEWAY_PORT)"
+	@echo "Server1 (Responses API + fallback): $(VLLM_SERVER1_URL)"
+	@echo "Server2 (chat LB): $(VLLM_SERVER2_URL)"
 	@echo "========================================"
-	uv run ansible-playbook -i $(INVENTORY) playbooks/bifrost-deploy.yml \
+	uv run ansible-playbook -i $(INVENTORY) playbooks/gateway-deploy.yml \
 		--ssh-extra-args="-i $(SSH_KEY)" \
-		-e "bifrost_host=$(BIFROST_HOST)" \
-		-e "bifrost_port=$(BIFROST_PORT)" \
-		-e "bifrost_image=$(BIFROST_IMAGE)"
+		-e "gateway_host=$(GATEWAY_HOST)" \
+		-e "gateway_port=$(GATEWAY_PORT)" \
+		-e "vllm_server1_url=$(VLLM_SERVER1_URL)" \
+		-e "vllm_server2_url=$(VLLM_SERVER2_URL)"
 
-# Test Bifrost gateway
-bifrost-test:
+# Test LLM Gateway health and routing
+gateway-test:
 	@echo "========================================"
-	@echo "Testing Bifrost Gateway..."
+	@echo "Testing LLM Gateway..."
 	@echo "========================================"
-	uv run ansible-playbook -i $(INVENTORY) playbooks/bifrost-test.yml \
-		--ssh-extra-args="-i $(SSH_KEY)" \
-		-e "bifrost_host=$(BIFROST_HOST)" \
-		-e "bifrost_port=$(BIFROST_PORT)"
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(GATEWAY_HOST) \
+		"echo '--- Health ---' && curl -s http://localhost:$(GATEWAY_PORT)/health | python3 -m json.tool && echo '' && echo '--- Models ---' && curl -s http://localhost:$(GATEWAY_PORT)/v1/models | python3 -c 'import json,sys; print([m[\"id\"] for m in json.load(sys.stdin)[\"data\"]])'"
 
-# Check Bifrost status
-bifrost-status:
+# Check LLM Gateway status
+gateway-status:
 	@echo "========================================"
-	@echo "Bifrost Gateway Status"
+	@echo "LLM Gateway Status"
 	@echo "========================================"
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(BIFROST_HOST) \
-		"echo '--- Container ---' && docker ps --filter name=bifrost-gateway --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' && echo '' && echo '--- API Health ---' && curl -s http://localhost:$(BIFROST_PORT)/api/health | python3 -m json.tool 2>/dev/null || echo 'Not responding'"
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(GATEWAY_HOST) \
+		"docker ps --filter name=llm-gateway --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' && echo '' && curl -s http://localhost:$(GATEWAY_PORT)/health"
 
-# Stop Bifrost gateway
-bifrost-stop:
+# Stop LLM Gateway
+gateway-stop:
 	@echo "========================================"
-	@echo "Stopping Bifrost Gateway..."
+	@echo "Stopping LLM Gateway..."
 	@echo "========================================"
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(BIFROST_HOST) \
-		"docker rm -f bifrost-gateway 2>/dev/null && echo 'Bifrost stopped' || echo 'Bifrost was not running'"
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(GATEWAY_HOST) \
+		"docker rm -f llm-gateway 2>/dev/null && echo 'Gateway stopped' || echo 'Gateway was not running'"
+
+# Legacy Bifrost aliases (now deploy LLM Gateway instead)
+bifrost-deploy: gateway-deploy
+bifrost-test: gateway-test
+bifrost-stop: gateway-stop
+bifrost-status: gateway-status
 
 # ========================================
 # Full Stack (vLLM Qwen + Bifrost)
 # ========================================
 
-# Deploy full stack: vLLM on both servers + Bifrost gateway
-stack-deploy: vllm-qwen-deploy bifrost-deploy
+# Deploy full stack: vLLM Gemma-4 on both servers + LLM Gateway
+stack-deploy: vllm-gemma4-deploy gateway-deploy
 	@echo "========================================"
 	@echo "Full stack deployed!"
-	@echo "  vLLM: both servers on port $(VLLM_QWEN_PORT)"
-	@echo "  Bifrost: $(BIFROST_HOST):$(BIFROST_PORT)"
-	@echo "  Model: $(VLLM_QWEN_SERVED)"
+	@echo "  vLLM: both servers on port $(VLLM_GEMMA4_PORT)"
+	@echo "  Gateway: $(GATEWAY_HOST):$(GATEWAY_PORT)"
+	@echo "  Model: Gemma-4-31B-IT"
 	@echo "========================================"
 
 # Stop full stack
-stack-stop: bifrost-stop vllm-qwen-stop
+stack-stop: gateway-stop vllm-gemma4-stop
 
 # Check full stack status
-stack-status: vllm-qwen-status bifrost-status
+stack-status: vllm-gemma4-status gateway-status
