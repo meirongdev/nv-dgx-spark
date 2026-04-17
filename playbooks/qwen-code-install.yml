@@ -1,0 +1,58 @@
+---
+- name: Install Qwen Code CLI on DGX servers
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    node_version: "22.14.0"
+    node_arch: "linux-arm64"
+    node_tarball_url: "https://mirrors.aliyun.com/nodejs-release/v{{ node_version }}/node-v{{ node_version }}-{{ node_arch }}.tar.xz"
+    node_install_prefix: "/usr/local"
+    npm_registry: "https://registry.npmmirror.com"
+    qwen_code_pkg: "@qwen-code/qwen-code"
+
+  tasks:
+    - name: Check current node version
+      ansible.builtin.command: node -v
+      register: node_check
+      changed_when: false
+      failed_when: false
+
+    - name: Download Node.js {{ node_version }} tarball (aliyun mirror)
+      ansible.builtin.get_url:
+        url: "{{ node_tarball_url }}"
+        dest: "/tmp/node-v{{ node_version }}-{{ node_arch }}.tar.xz"
+        mode: "0644"
+      when: node_check.rc != 0 or (node_check.stdout | default('')) is not match('^v' ~ (node_version.split('.')[0]) ~ '\\.')
+
+    - name: Extract Node.js into {{ node_install_prefix }}
+      ansible.builtin.unarchive:
+        src: "/tmp/node-v{{ node_version }}-{{ node_arch }}.tar.xz"
+        dest: "{{ node_install_prefix }}"
+        remote_src: true
+        extra_opts: ["--strip-components=1"]
+        creates: "{{ node_install_prefix }}/bin/node"
+      when: node_check.rc != 0 or (node_check.stdout | default('')) is not match('^v' ~ (node_version.split('.')[0]) ~ '\\.')
+
+    - name: Configure npm to use {{ npm_registry }}
+      ansible.builtin.command: "{{ node_install_prefix }}/bin/npm config set registry {{ npm_registry }} --global"
+      changed_when: false
+
+    - name: Install / upgrade {{ qwen_code_pkg }} globally
+      ansible.builtin.command: "{{ node_install_prefix }}/bin/npm install -g {{ qwen_code_pkg }}"
+      register: npm_install
+      changed_when: "'added' in npm_install.stdout or 'changed' in npm_install.stdout or 'updated' in npm_install.stdout"
+
+    - name: Report versions
+      ansible.builtin.shell: |
+        set -e
+        echo "node:  $(node -v)"
+        echo "npm:   $(npm -v)"
+        echo "qwen:  $(qwen --version 2>&1 | head -1)"
+        echo "path:  $(which qwen)"
+      register: versions
+      changed_when: false
+
+    - name: Show versions
+      ansible.builtin.debug:
+        msg: "{{ versions.stdout_lines }}"

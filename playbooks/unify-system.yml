@@ -1,0 +1,136 @@
+---
+- name: Unify kernel and NVIDIA driver versions across all hosts
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    # Target versions (based on the newer host: 100.97.87.120)
+    target_kernel_flavor: "linux-nvidia-hwe-24.04"
+    target_driver_version: "580.142"
+
+  tasks:
+    - name: Gather current system info
+      ansible.builtin.shell: |
+        echo "KERNEL=$(uname -r)"
+        echo "DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || echo 'N/A')"
+      register: current_versions
+      changed_when: false
+
+    - name: Display current versions
+      ansible.builtin.debug:
+        msg: "Current: {{ current_versions.stdout }}"
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Upgrade NVIDIA driver to latest
+      ansible.builtin.apt:
+        name:
+          - nvidia-driver-580
+          - nvidia-dkms-580
+          - nvidia-utils-580
+          - libnvidia-compute-580
+          - libnvidia-decode-580
+          - libnvidia-encode-580
+          - libnvidia-extra-580
+          - libnvidia-fbc1-580
+          - libnvidia-gl-580
+          - libnvidia-cfg1-580
+          - libnvidia-common-580
+          - nvidia-kernel-source-580
+          - nvidia-kernel-common-580
+          - nvidia-compute-utils-580
+          - nvidia-firmware-580-580.142
+          - xserver-xorg-video-nvidia-580
+        state: latest
+        autoremove: true
+      register: nvidia_upgrade
+      failed_when: false
+
+    - name: Upgrade kernel to latest HWE
+      ansible.builtin.apt:
+        name:
+          - "{{ target_kernel_flavor }}"
+          - linux-image-nvidia-hwe-24.04
+          - linux-headers-nvidia-hwe-24.04
+          - linux-tools-nvidia-hwe-24.04
+          - linux-modules-nvidia-fs-nvidia-hwe-24.04
+          - linux-modules-nvidia-580-open-nvidia-hwe-24.04
+        state: latest
+        autoremove: true
+      register: kernel_upgrade
+      failed_when: false
+
+    - name: Full system dist-upgrade
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: true
+      register: dist_upgrade
+      failed_when: false
+
+    - name: Remove old NVIDIA driver packages
+      ansible.builtin.apt:
+        name:
+          - nvidia-firmware-580-580.95.05
+          - nvidia-firmware-580-580.126.09
+          - linux-image-6.11.0-1014-nvidia
+          - linux-modules-6.11.0-1014-nvidia
+          - linux-modules-extra-6.11.0-1014-nvidia
+          - linux-modules-nvidia-fs-6.11.0-1014-nvidia
+          - linux-headers-6.11.0-1014-nvidia
+          - linux-tools-6.11.0-1014-nvidia
+          - linux-nvidia-6.11-tools-6.11.0-1014
+          - linux-nvidia-6.11-headers-6.11.0-1014
+          - linux-image-6.11.0-1016-nvidia
+          - linux-modules-6.11.0-1016-nvidia
+          - linux-modules-extra-6.11.0-1016-nvidia
+          - linux-headers-6.11.0-1016-nvidia
+          - linux-tools-6.11.0-1016-nvidia
+          - linux-nvidia-6.11-tools-6.11.0-1016
+          - linux-nvidia-6.11-headers-6.11.0-1016
+          - nvidia-driver-550
+        state: absent
+        autoremove: true
+        purge: true
+      register: old_packages_remove
+      failed_when: false
+
+    - name: Display upgrade summary
+      ansible.builtin.debug:
+        msg:
+          - "NVIDIA upgrade: {{ nvidia_upgrade.changed }}"
+          - "Kernel upgrade: {{ kernel_upgrade.changed }}"
+          - "Dist upgrade: {{ dist_upgrade.changed }}"
+          - "Old packages removal: {{ old_packages_remove.changed }}"
+
+    - name: Check if reboot is required
+      ansible.builtin.shell: |
+        # Check if running kernel differs from installed kernel
+        RUNNING_KERNEL=$(uname -r)
+        LATEST_KERNEL=$(dpkg -l 'linux-image-nvidia-hwe-24.04' 2>/dev/null | grep '^ii' | awk '{print $3}' | cut -d- -f1-4)
+        if [ "$RUNNING_KERNEL" != "$LATEST_KERNEL" ] && [ -n "$LATEST_KERNEL" ]; then
+          echo "REBOOT_REQUIRED"
+        else
+          echo "NO_REBOOT_REQUIRED"
+        fi
+      register: reboot_check
+      changed_when: false
+
+    - name: Display reboot status
+      ansible.builtin.debug:
+        var: reboot_check.stdout
+
+    - name: Verify final versions
+      ansible.builtin.shell: |
+        echo "KERNEL=$(uname -r)"
+        echo "DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || echo 'N/A')"
+        echo "AVAILABLE_KERNELS=$(dpkg -l 'linux-image-*' 2>/dev/null | grep '^ii' | awk '{print $2, $3}')"
+      register: final_versions
+      changed_when: false
+
+    - name: Display final versions
+      ansible.builtin.debug:
+        msg: "After upgrade: {{ final_versions.stdout }}"

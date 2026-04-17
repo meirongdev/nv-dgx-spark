@@ -1,0 +1,66 @@
+---
+- name: Configure Docker to use proxy for pulling images
+  hosts: all
+  become: yes
+  tasks:
+    - name: Create Docker systemd override directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/docker.service.d
+        state: directory
+        mode: '0755'
+
+    - name: Configure HTTP proxy for Docker daemon
+      ansible.builtin.copy:
+        content: |
+          [Service]
+          Environment="HTTP_PROXY=http://100.118.193.51:7890"
+          Environment="HTTPS_PROXY=http://100.118.193.51:7890"
+          Environment="NO_PROXY=localhost,127.0.0.1,.ts.net"
+        dest: /etc/systemd/system/docker.service.d/http-proxy.conf
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Update Docker daemon configuration
+      ansible.builtin.copy:
+        content: |
+          {
+            "registry-mirrors": [],
+            "dns": ["8.8.8.8", "1.1.1.1", "223.5.5.5"],
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "10m",
+              "max-file": "3"
+            }
+          }
+        dest: /etc/docker/daemon.json
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+    - name: Restart Docker service
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+
+    - name: Wait for Docker to start
+      ansible.builtin.wait_for:
+        timeout: 5
+
+    - name: Test Docker pull with proxy
+      ansible.builtin.shell: |
+        docker pull hello-world
+      register: pull_result
+      retries: 3
+      delay: 5
+      until: pull_result.rc == 0
+      failed_when: pull_result.rc != 0
+      changed_when: true
+
+    - name: Display result
+      ansible.builtin.debug:
+        msg: "Docker pull test completed successfully!"

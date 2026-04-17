@@ -1,0 +1,49 @@
+---
+- name: Prepare ModelScope and download Qwen3.5-35B
+  hosts: servers
+  become: no
+  gather_facts: no
+  vars:
+    ms_model_id: "Qwen/Qwen3.5-35B-A3B-Instruct"
+    ms_cache_dir: "/home/admin/.cache/modelscope"
+    venv_path: "/home/admin/modelscope-venv"
+
+  tasks:
+    - name: Create virtual environment
+      ansible.builtin.command:
+        cmd: "python3 -m venv {{ venv_path }}"
+        creates: "{{ venv_path }}/bin/activate"
+
+    - name: Install modelscope in venv
+      ansible.builtin.pip:
+        name: 
+          - modelscope
+          - hf-transfer
+        virtualenv: "{{ venv_path }}"
+        state: present
+
+    - name: Create modelscope cache directory
+      ansible.builtin.file:
+        path: "{{ ms_cache_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download model weights from ModelScope using venv
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ venv_path }}/bin/python3 -c "from modelscope import snapshot_download; snapshot_download('{{ ms_model_id }}', cache_dir='{{ ms_cache_dir }}', revision='master')"
+      args:
+        executable: /bin/bash
+      register: ms_download
+      changed_when: "'Successfully downloaded' in ms_download.stdout"
+
+    - name: Verify download completion
+      ansible.builtin.shell: |
+        find "{{ ms_cache_dir }}" -name "config.json" | grep "Qwen3.5-35B-A3B-Instruct" | head -n 1
+      register: config_match
+      changed_when: false
+
+    - name: Fail if no weights found
+      ansible.builtin.fail:
+        msg: "No config.json found for {{ ms_model_id }} in {{ ms_cache_dir }}"
+      when: config_match.stdout == ""
