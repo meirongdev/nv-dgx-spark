@@ -6,8 +6,8 @@
   vars:
     tp2_coordinator: "100.97.87.120"
     tp2_worker: "100.67.164.92"
-    tp2_model: "Qwen3.5-35B-A3B-Claude-4.6-Opus-Reasoning-Distilled"
-    tp2_image: "vllm/vllm-openai:gemma4-cu130"
+    tp2_model: "qwen/Qwen3.5-35B-A3B"
+    tp2_image: "nvcr.io/nvidia/vllm:26.01-py3"
     tp2_port: 8000
     tp2_master_port: 29500
     tp2_nccl_iface: "enp1s0f0np0"
@@ -15,7 +15,9 @@
     tp2_max_model_len: 8192
     tp2_container_name: "vllm-tp2"
     tp2_hf_cache_dir: "/home/admin/.cache/huggingface"
+    tp2_ms_cache_dir: "/home/admin/.cache/modelscope"
     tp2_container_hf_cache_dir: "/root/.cache/huggingface"
+    tp2_container_ms_cache_dir: "/root/.cache/modelscope"
     tp2_launcher_path: "/home/admin/run-vllm-tp2.sh"
 
   tasks:
@@ -47,8 +49,10 @@
     - name: Verify target model cache exists
       ansible.builtin.shell: |
         set -euo pipefail
-        find "{{ tp2_hf_cache_dir }}" \
-          \( -path "*Qwen3.5-35B-A3B*config.json" -o -path "*Opus-Reasoning-Distilled*config.json" \) \
+        # Search both HF and MS cache
+        find "{{ tp2_hf_cache_dir }}" "{{ tp2_ms_cache_dir }}" \
+          -maxdepth 5 \( -name "config.json" \) \
+          | grep -i "Qwen3.5-35B-A3B" \
           | head -n 1
       args:
         executable: /bin/bash
@@ -57,15 +61,15 @@
 
     - name: Fail if model cache is missing on a node
       ansible.builtin.fail:
-        msg: "Model cache for {{ tp2_model }} not found under {{ tp2_hf_cache_dir }}"
+        msg: "Model cache for {{ tp2_model }} not found under {{ tp2_hf_cache_dir }} or {{ tp2_ms_cache_dir }}"
       when: cache_match.stdout == ""
 
     - name: Set resolved model path
       ansible.builtin.set_fact:
         tp2_model_path: >-
-          {{ cache_match.stdout
-             | dirname
-             | regex_replace('^' ~ (tp2_hf_cache_dir | regex_escape), tp2_container_hf_cache_dir) }}
+          {{ cache_match.stdout | dirname | 
+             regex_replace('^' ~ (tp2_hf_cache_dir | regex_escape), tp2_container_hf_cache_dir) |
+             regex_replace('^' ~ (tp2_ms_cache_dir | regex_escape), tp2_container_ms_cache_dir) }}
 
     - name: Copy TP=2 launcher
       ansible.builtin.copy:

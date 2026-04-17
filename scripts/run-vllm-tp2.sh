@@ -15,6 +15,7 @@ TP2_MAX_MODEL_LEN="${TP2_MAX_MODEL_LEN:-8192}"
 TP2_CONTAINER_NAME="${TP2_CONTAINER_NAME:-vllm-tp2}"
 TP2_NCCL_IFACE="${TP2_NCCL_IFACE:-enp1s0f0np0}"
 TP2_HF_CACHE_DIR="${TP2_HF_CACHE_DIR:-/home/admin/.cache/huggingface}"
+TP2_MS_CACHE_DIR="${TP2_MS_CACHE_DIR:-/home/admin/.cache/modelscope}"
 TP2_MODEL_PATH="${TP2_MODEL_PATH:-${TP2_MODEL}}"
 TP2_SERVED_MODEL_NAME="${TP2_SERVED_MODEL_NAME:-${TP2_MODEL}}"
 
@@ -35,6 +36,7 @@ docker run -d \
   --ulimit stack=67108864 \
   --entrypoint vllm \
   -v "${TP2_HF_CACHE_DIR}:/root/.cache/huggingface" \
+  -v "${TP2_MS_CACHE_DIR}:/root/.cache/modelscope" \
   -e VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASHINFER}" \
   -e VLLM_USE_FLASHINFER_MOE_FP8="${VLLM_USE_FLASHINFER_MOE_FP8:-1}" \
   -e VLLM_FLASHINFER_MOE_BACKEND="${VLLM_FLASHINFER_MOE_BACKEND:-latency}" \

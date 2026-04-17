@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs gateway-deploy gateway-test gateway-stop gateway-status bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark remove-thunderbird
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-logs vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs gateway-deploy gateway-test gateway-stop gateway-status bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark modelscope-download remove-thunderbird
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -52,6 +52,18 @@ VLLM_GEMMA4_SERVED ?= Gemma-4-31B-IT
 VLLM_GEMMA4_PORT ?= 30000
 VLLM_GEMMA4_GPU_MEM ?= 0.70
 VLLM_GEMMA4_KV_DTYPE ?= fp8_e4m3
+
+# vLLM Qwen3.6 configuration (no patches needed, uses ModelScope cache)
+VLLM_QWEN36_IMAGE ?= vllm-node-tf5:latest
+VLLM_QWEN36_MODEL ?= /root/.cache/modelscope/Qwen/Qwen3.6-35B-A3B-FP8
+VLLM_QWEN36_SERVED ?= Qwen3.6-35B-A3B
+VLLM_QWEN36_PORT ?= 30000
+VLLM_QWEN36_GPU_MEM ?= 0.70
+VLLM_QWEN36_KV_DTYPE ?= fp8_e4m3
+# 262144 = 256K (model's native max_position_embeddings). Can be pushed to
+# 1M with YARN rope-scaling but that needs extra --rope-scaling args and
+# trades quality for length.
+VLLM_QWEN36_MAX_MODEL_LEN ?= 262144
 
 # Create virtual environment and install Ansible
 venv:
@@ -153,23 +165,14 @@ vllm-test:
 		-e "vllm_model=$(VLLM_MODEL)" \
 		-e "vllm_port=$(VLLM_PORT)"
 
-# Check vLLM status on all hosts
-vllm-status:
-	@echo "========================================"
-	@echo "vLLM Status Check"
-	@echo "========================================"
-	uv run ansible all -i $(INVENTORY) -m shell \
-		-a "echo '--- Container Status ---' && docker ps --filter name=vllm-server --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' && echo '' && echo '--- GPU Utilization ---' && nvidia-smi --query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total --format=csv && echo '' && echo '--- Memory Usage ---' && free -h && echo '' && echo '--- Swap Status ---' && swapon --show || echo 'Swap disabled'" \
-		--ssh-extra-args="-i $(SSH_KEY)"
-
-# Stop vLLM on all hosts
-vllm-stop:
-	@echo "========================================"
-	@echo "Stopping vLLM on all hosts..."
-	@echo "========================================"
-	uv run ansible all -i $(INVENTORY) -m shell \
-		-a "docker stop vllm-server 2>/dev/null && echo 'vLLM stopped' || echo 'vLLM was not running'" \
-		--ssh-extra-args="-i $(SSH_KEY)"
+# Legacy status/stop targets were removed in favor of generic
+# vllm-status / vllm-stop / vllm-logs (see per-model deployment section below).
+# Usage examples:
+#   make vllm-status VLLM_CONTAINER=vllm-qwen36 VLLM_PORT=30000
+#   make vllm-stop   VLLM_CONTAINER=vllm-qwen36
+#   make vllm-logs   HOST=100.97.87.120 VLLM_CONTAINER=vllm-qwen36
+# For the currently-deployed model, the qwen/gemma4/qwen36 wrappers dispatch
+# to those targets with the right container name already filled in.
 
 # Run vLLM benchmark (built-in vLLM benchmark tool)
 vllm-benchmark:
@@ -360,6 +363,33 @@ print(f\"Tokens/sec: {len(resp.json().get(\\\"choices\\\", [{}])[0].get(\\\"text
 			 echo 'Check results: tail -f /tmp/vllm-benchmark.log'"; \
 	done
 
+# Download a model from ModelScope inside tmux (survives SSH disconnection)
+# Usage: make modelscope-download [MS_MODEL=Qwen/Qwen3.6-35B-A3B-FP8]
+MS_MODEL ?= Qwen/Qwen3.6-35B-A3B-FP8
+MS_VENV ?= /home/admin/modelscope-venv
+MS_CACHE ?= /home/admin/.cache/modelscope
+MS_SESSION ?= ms-download
+
+modelscope-download:
+	@echo "========================================"
+	@echo "Downloading $(MS_MODEL) via ModelScope"
+	@echo "Session: $(MS_SESSION) | Cache: $(MS_CACHE)"
+	@echo "========================================"
+	@for host in $(HOSTS); do \
+		echo "--- $$host ---" && \
+		scp -i $(SSH_KEY) -o StrictHostKeyChecking=no \
+			scripts/modelscope-download.sh \
+			$(SSH_USER)@$$host:/tmp/modelscope-download.sh && \
+		ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$$host \
+			"chmod +x /tmp/modelscope-download.sh; \
+			 tmux kill-session -t $(MS_SESSION) 2>/dev/null || true; \
+			 tmux new-session -d -s $(MS_SESSION) \
+			   '/tmp/modelscope-download.sh $(MS_MODEL) $(MS_CACHE) 2>&1 | tee /tmp/$(MS_SESSION).log; echo done'" && \
+		echo "Started on $$host" && \
+		echo "  Watch: make tmux-attach HOST=$$host SESSION=$(MS_SESSION)" && \
+		echo "  Log:   ssh -i $(SSH_KEY) $(SSH_USER)@$$host tail -f /tmp/$(MS_SESSION).log"; \
+	done
+
 # ========================================
 # Single-Node vLLM Deployment (Stable)
 # ========================================
@@ -394,112 +424,125 @@ vllm-single-stop:
 		--ssh-extra-args="-i $(SSH_KEY)"
 
 # ========================================
-# vLLM Qwen3.5-122B Deployment Commands
+# Per-model vLLM Deployments
 # ========================================
-# Each server runs an independent vLLM instance
-# with Qwen3.5-122B-A10B (NVFP4, ~72GB)
+# All per-model targets below invoke the SAME generic playbook
+# (playbooks/vllm-model-deploy.yml). Adding a new model = add a new
+# triple of targets (deploy/status/stop) that sets the appropriate
+# VLLM_* vars. See the Qwen3.6 target for the canonical template.
+#
+# Generic Makefile helpers:
+#   vllm-status CONTAINER=...     show container + API + GPU
+#   vllm-stop   CONTAINER=...     docker rm -f CONTAINER on all hosts
+#   vllm-logs   HOST=... CONTAINER=...   follow logs on one host
 
-# Deploy vLLM Qwen on all hosts
+VLLM_CONTAINER ?=
+
+vllm-status:
+ifeq ($(strip $(VLLM_CONTAINER)),)
+	$(error VLLM_CONTAINER is required. Usage: make vllm-status VLLM_CONTAINER=vllm-qwen36 [VLLM_PORT=30000])
+endif
+	@echo "======== $(VLLM_CONTAINER) status ========"
+	uv run ansible all -i $(INVENTORY) -m shell \
+		-a "echo '--- Container ---' && docker ps --filter name=$(VLLM_CONTAINER) && echo '--- API ---' && curl -sf -m 3 http://localhost:$(VLLM_PORT)/v1/models 2>/dev/null | python3 -m json.tool || echo 'Not responding' && echo '--- GPU ---' && nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader" \
+		--ssh-extra-args="-i $(SSH_KEY)"
+
+vllm-stop:
+ifeq ($(strip $(VLLM_CONTAINER)),)
+	$(error VLLM_CONTAINER is required. Usage: make vllm-stop VLLM_CONTAINER=vllm-qwen36)
+endif
+	@echo "Stopping $(VLLM_CONTAINER) on all hosts..."
+	uv run ansible all -i $(INVENTORY) -m shell \
+		-a "docker rm -f $(VLLM_CONTAINER) 2>/dev/null && echo 'stopped' || echo 'was not running'" \
+		--ssh-extra-args="-i $(SSH_KEY)"
+
+vllm-logs:
+ifndef HOST
+	$(error HOST is required. Usage: make vllm-logs HOST=100.97.87.120 VLLM_CONTAINER=vllm-qwen36)
+endif
+ifeq ($(strip $(VLLM_CONTAINER)),)
+	$(error VLLM_CONTAINER is required. Usage: make vllm-logs HOST=... VLLM_CONTAINER=vllm-qwen36)
+endif
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(HOST) "docker logs --tail 100 -f $(VLLM_CONTAINER)"
+
+# ----------------------------------------
+# Qwen3.5-122B-A10B-NVFP4 (chat template + chat_utils patch)
+# ----------------------------------------
 vllm-qwen-deploy:
-	@echo "========================================"
-	@echo "Deploying vLLM (Qwen3.5-122B) on DGX Spark cluster..."
-	@echo "Image: $(VLLM_QWEN_IMAGE)"
-	@echo "Model: $(VLLM_QWEN_MODEL)"
-	@echo "Served as: $(VLLM_QWEN_SERVED)"
-	@echo "Port: $(VLLM_QWEN_PORT)"
-	@echo "GPU memory: $(VLLM_QWEN_GPU_MEM)"
-	@echo "KV cache dtype: $(VLLM_QWEN_KV_DTYPE)"
-	@echo "Tool parser: $(VLLM_QWEN_TOOL_PARSER)"
-	@echo "========================================"
-	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-qwen-deploy.yml \
+	@echo "Deploying vLLM (Qwen3.5-122B-A10B-NVFP4)..."
+	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-model-deploy.yml \
 		--ssh-extra-args="-i $(SSH_KEY)" \
 		-e "vllm_image=$(VLLM_QWEN_IMAGE)" \
 		-e "vllm_model=$(VLLM_QWEN_MODEL)" \
 		-e "vllm_served_name=$(VLLM_QWEN_SERVED)" \
+		-e "vllm_container=vllm-qwen" \
 		-e "vllm_port=$(VLLM_QWEN_PORT)" \
 		-e "vllm_gpu_mem=$(VLLM_QWEN_GPU_MEM)" \
 		-e "vllm_kv_dtype=$(VLLM_QWEN_KV_DTYPE)" \
 		-e "vllm_tool_parser=$(VLLM_QWEN_TOOL_PARSER)" \
-		-e "vllm_reasoning_parser=$(VLLM_QWEN_REASONING)"
+		-e "vllm_reasoning_parser=$(VLLM_QWEN_REASONING)" \
+		-e "vllm_moe_fp8=1" \
+		-e "vllm_chat_template_src=../config/qwen3.5-chat-template.jinja2" \
+		-e "vllm_patch_script_src=../scripts/patch-vllm-chat-utils.py" \
+		-e '{"vllm_cleanup_containers": ["vllm-gemma4", "vllm-qwen36"]}'
 
-# Test vLLM Qwen deployment (health + chat + tool calling)
 vllm-qwen-test:
-	@echo "Testing vLLM Qwen endpoints..."
 	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-qwen-test.yml \
 		--ssh-extra-args="-i $(SSH_KEY)" \
 		-e "vllm_port=$(VLLM_QWEN_PORT)" \
 		-e "vllm_model=$(VLLM_QWEN_SERVED)"
 
-# Check vLLM Qwen status on all hosts
-vllm-qwen-status:
-	@echo "========================================"
-	@echo "vLLM Qwen Status Check"
-	@echo "========================================"
-	uv run ansible all -i $(INVENTORY) -m shell \
-		-a "echo '--- Container ---' && docker ps --filter name=vllm-qwen --format 'table {{.Names}}\t{{.Status}}' && echo '--- API ---' && curl -s http://localhost:$(VLLM_QWEN_PORT)/v1/models 2>/dev/null | python3 -m json.tool || echo 'Not responding' && echo '--- GPU ---' && nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader" \
-		--ssh-extra-args="-i $(SSH_KEY)"
+vllm-qwen-status:    ; @$(MAKE) --no-print-directory vllm-status VLLM_CONTAINER=vllm-qwen   VLLM_PORT=$(VLLM_QWEN_PORT)
+vllm-qwen-stop:      ; @$(MAKE) --no-print-directory vllm-stop   VLLM_CONTAINER=vllm-qwen
+vllm-qwen-logs:      ; @$(MAKE) --no-print-directory vllm-logs   VLLM_CONTAINER=vllm-qwen   HOST=$(HOST)
 
-# Stop vLLM Qwen on all hosts
-vllm-qwen-stop:
-	@echo "Stopping vLLM Qwen on all hosts..."
-	uv run ansible all -i $(INVENTORY) -m shell \
-		-a "docker rm -f vllm-qwen 2>/dev/null && echo 'vLLM Qwen stopped' || echo 'vLLM Qwen was not running'" \
-		--ssh-extra-args="-i $(SSH_KEY)"
-
-# View vLLM Qwen logs on a specific host (usage: make vllm-qwen-logs HOST=100.97.87.120)
-vllm-qwen-logs:
-ifndef HOST
-	$(error HOST is required. Usage: make vllm-qwen-logs HOST=100.97.87.120)
-endif
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(HOST) "docker logs --tail 100 -f vllm-qwen"
-
-# ========================================
-# vLLM Gemma-4-31B-IT Deployment Commands
-# ========================================
-# Gemma 4 natively supports developer role and has built-in gemma4 tool parser.
-# No custom chat template or reasoning parser needed.
-
-# Deploy vLLM Gemma4 on all hosts
+# ----------------------------------------
+# Gemma-4-31B-IT-NVFP4 (local HF cache + gemma4 parser patch)
+# ----------------------------------------
 vllm-gemma4-deploy:
-	@echo "========================================"
-	@echo "Deploying vLLM (Gemma-4-31B-IT) on DGX Spark cluster..."
-	@echo "Image: $(VLLM_GEMMA4_IMAGE)"
-	@echo "Model: $(VLLM_GEMMA4_MODEL)"
-	@echo "Served as: $(VLLM_GEMMA4_SERVED)"
-	@echo "Port: $(VLLM_GEMMA4_PORT)"
-	@echo "GPU memory: $(VLLM_GEMMA4_GPU_MEM)"
-	@echo "========================================"
-	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-gemma4-deploy.yml \
+	@echo "Deploying vLLM (Gemma-4-31B-IT-NVFP4)..."
+	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-model-deploy.yml \
 		--ssh-extra-args="-i $(SSH_KEY)" \
 		-e "vllm_image=$(VLLM_GEMMA4_IMAGE)" \
+		-e "vllm_model=$(VLLM_GEMMA4_MODEL)" \
 		-e "vllm_served_name=$(VLLM_GEMMA4_SERVED)" \
+		-e "vllm_container=vllm-gemma4" \
 		-e "vllm_port=$(VLLM_GEMMA4_PORT)" \
 		-e "vllm_gpu_mem=$(VLLM_GEMMA4_GPU_MEM)" \
-		-e "vllm_kv_dtype=$(VLLM_GEMMA4_KV_DTYPE)"
+		-e "vllm_kv_dtype=$(VLLM_GEMMA4_KV_DTYPE)" \
+		-e "vllm_tool_parser=gemma4" \
+		-e "vllm_model_validate_path=/home/admin/.cache/huggingface/hub/Gemma-4-31B-IT-NVFP4" \
+		-e "vllm_patch_script_src=../scripts/patch-vllm-gemma4-parser.py" \
+		-e '{"vllm_cleanup_containers": ["vllm-qwen", "vllm-qwen36"]}'
 
-# Check vLLM Gemma4 status on all hosts
-vllm-gemma4-status:
-	@echo "========================================"
-	@echo "vLLM Gemma4 Status Check"
-	@echo "========================================"
-	uv run ansible all -i $(INVENTORY) -m shell \
-		-a "echo '--- Container ---' && docker ps --filter name=vllm-gemma4 --format 'table {{.Names}}\t{{.Status}}' && echo '--- API ---' && curl -s http://localhost:$(VLLM_GEMMA4_PORT)/v1/models 2>/dev/null | python3 -m json.tool || echo 'Not responding' && echo '--- GPU ---' && nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader" \
-		--ssh-extra-args="-i $(SSH_KEY)"
+vllm-gemma4-status:  ; @$(MAKE) --no-print-directory vllm-status VLLM_CONTAINER=vllm-gemma4 VLLM_PORT=$(VLLM_GEMMA4_PORT)
+vllm-gemma4-stop:    ; @$(MAKE) --no-print-directory vllm-stop   VLLM_CONTAINER=vllm-gemma4
+vllm-gemma4-logs:    ; @$(MAKE) --no-print-directory vllm-logs   VLLM_CONTAINER=vllm-gemma4 HOST=$(HOST)
 
-# Stop vLLM Gemma4 on all hosts
-vllm-gemma4-stop:
-	@echo "Stopping vLLM Gemma4 on all hosts..."
-	uv run ansible all -i $(INVENTORY) -m shell \
-		-a "docker rm -f vllm-gemma4 2>/dev/null && echo 'vLLM Gemma4 stopped' || echo 'vLLM Gemma4 was not running'" \
-		--ssh-extra-args="-i $(SSH_KEY)"
+# ----------------------------------------
+# Qwen3.6-35B-A3B-FP8 (ModelScope cache, no patches)
+# ----------------------------------------
+vllm-qwen36-deploy:
+	@echo "Deploying vLLM (Qwen3.6-35B-A3B-FP8, ctx=$(VLLM_QWEN36_MAX_MODEL_LEN))..."
+	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-model-deploy.yml \
+		--ssh-extra-args="-i $(SSH_KEY)" \
+		-e "vllm_image=$(VLLM_QWEN36_IMAGE)" \
+		-e "vllm_model=$(VLLM_QWEN36_MODEL)" \
+		-e "vllm_served_name=$(VLLM_QWEN36_SERVED)" \
+		-e "vllm_container=vllm-qwen36" \
+		-e "vllm_port=$(VLLM_QWEN36_PORT)" \
+		-e "vllm_gpu_mem=$(VLLM_QWEN36_GPU_MEM)" \
+		-e "vllm_kv_dtype=$(VLLM_QWEN36_KV_DTYPE)" \
+		-e "vllm_max_model_len=$(VLLM_QWEN36_MAX_MODEL_LEN)" \
+		-e "vllm_tool_parser=qwen3_coder" \
+		-e "vllm_reasoning_parser=qwen3" \
+		-e "ms_cache_dir=/home/admin/.cache/modelscope" \
+		-e "vllm_model_validate_path=/home/admin/.cache/modelscope/Qwen/Qwen3.6-35B-A3B-FP8" \
+		-e '{"vllm_cleanup_containers": ["vllm-gemma4", "vllm-qwen"]}'
 
-# View Gemma4 logs on a specific host (usage: make vllm-gemma4-logs HOST=100.97.87.120)
-vllm-gemma4-logs:
-ifndef HOST
-	$(error HOST is required. Usage: make vllm-gemma4-logs HOST=100.97.87.120)
-endif
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(HOST) "docker logs --tail 100 -f vllm-gemma4"
-
+vllm-qwen36-status:  ; @$(MAKE) --no-print-directory vllm-status VLLM_CONTAINER=vllm-qwen36 VLLM_PORT=$(VLLM_QWEN36_PORT)
+vllm-qwen36-stop:    ; @$(MAKE) --no-print-directory vllm-stop   VLLM_CONTAINER=vllm-qwen36
+vllm-qwen36-logs:    ; @$(MAKE) --no-print-directory vllm-logs   VLLM_CONTAINER=vllm-qwen36 HOST=$(HOST)
 
 # Routes to vLLM backends via 200-subnet:
 # - 192.168.200.101:30000 (Server 1)
@@ -553,20 +596,18 @@ bifrost-stop: gateway-stop
 bifrost-status: gateway-status
 
 # ========================================
-# Full Stack (vLLM Qwen + Bifrost)
+# Full Stack (vLLM + LLM Gateway)
 # ========================================
+# Change STACK_MODEL to switch primary model for the stack.
+# Values: qwen36 (default) | gemma4 | qwen
+STACK_MODEL ?= qwen36
 
-# Deploy full stack: vLLM Gemma-4 on both servers + LLM Gateway
-stack-deploy: vllm-gemma4-deploy gateway-deploy
+stack-deploy: vllm-$(STACK_MODEL)-deploy gateway-deploy
 	@echo "========================================"
-	@echo "Full stack deployed!"
-	@echo "  vLLM: both servers on port $(VLLM_GEMMA4_PORT)"
+	@echo "Full stack deployed (model: $(STACK_MODEL))"
 	@echo "  Gateway: $(GATEWAY_HOST):$(GATEWAY_PORT)"
-	@echo "  Model: Gemma-4-31B-IT"
 	@echo "========================================"
 
-# Stop full stack
-stack-stop: gateway-stop vllm-gemma4-stop
+stack-stop: gateway-stop vllm-$(STACK_MODEL)-stop
 
-# Check full stack status
-stack-status: vllm-gemma4-status gateway-status
+stack-status: vllm-$(STACK_MODEL)-status gateway-status

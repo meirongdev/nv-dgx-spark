@@ -1,0 +1,166 @@
+---
+# Generic vLLM deploy playbook — one playbook for any model.
+#
+# Required variables (set via Makefile / extra-vars):
+#   vllm_model          HuggingFace id or container-visible path (e.g. /root/.cache/...)
+#   vllm_served_name    Name exposed on /v1/models
+#   vllm_container      Docker container name (e.g. vllm-qwen36)
+#
+# Common optional variables (see defaults below for the full list):
+#   vllm_tool_parser, vllm_reasoning_parser, vllm_chat_template_src,
+#   vllm_patch_script_src, vllm_model_validate_path, vllm_cleanup_containers,
+#   ms_cache_dir (mount ModelScope cache at /root/.cache/modelscope).
+
+- name: Deploy vLLM on DGX Spark cluster
+  hosts: servers
+  become: no
+  gather_facts: yes
+  vars:
+    # Image + runtime
+    vllm_image: "vllm-node-tf5:latest"
+    vllm_port: 30000
+    vllm_gpu_mem: "0.70"
+    vllm_kv_dtype: "fp8_e4m3"
+    vllm_max_model_len: "32768"
+    vllm_max_num_seqs: "64"
+    vllm_max_num_batched: ""
+    vllm_tool_parser: ""
+    vllm_reasoning_parser: ""
+    vllm_moe_fp8: ""
+    vllm_enable_store: "1"
+    # Caches
+    hf_cache_dir: "/home/admin/.cache/huggingface"
+    ms_cache_dir: ""
+    # Host paths for copied helpers
+    vllm_launcher_path: "/home/admin/run-vllm-qwen.sh"
+    vllm_chat_template_src: ""
+    vllm_chat_template_path: "/home/admin/chat-template.jinja2"
+    vllm_patch_script_src: ""
+    vllm_patch_script_path: "/home/admin/patch-vllm.py"
+    vllm_entrypoint_src: "../scripts/vllm-entrypoint.sh"
+    vllm_entrypoint_path: "/home/admin/vllm-entrypoint.sh"
+    # Validation + cleanup
+    vllm_model_validate_path: ""
+    vllm_cleanup_containers: []
+    vllm_ready_retries: 90
+    vllm_ready_delay: 10
+
+  tasks:
+    - name: Disable swap (critical for unified memory)
+      ansible.builtin.command: swapoff -a
+      changed_when: true
+      failed_when: false
+
+    - name: Verify GPU is visible
+      ansible.builtin.command: nvidia-smi --query-gpu=name --format=csv,noheader
+      register: gpu_name
+      changed_when: false
+
+    - name: Display GPU info
+      ansible.builtin.debug:
+        msg: "GPU: {{ gpu_name.stdout }} | model: {{ vllm_served_name }} ({{ vllm_model }})"
+
+    - name: Check model path is present (when a local path is given)
+      ansible.builtin.stat:
+        path: "{{ vllm_model_validate_path }}"
+      when: vllm_model_validate_path | length > 0
+      register: model_stat
+
+    - name: Fail if model path is missing
+      ansible.builtin.fail:
+        msg: "Model not found at {{ vllm_model_validate_path }}"
+      when:
+        - vllm_model_validate_path | length > 0
+        - not (model_stat.stat.exists | default(false))
+
+    - name: Copy vLLM launcher script
+      ansible.builtin.copy:
+        src: ../scripts/run-vllm-qwen.sh
+        dest: "{{ vllm_launcher_path }}"
+        mode: "0755"
+
+    - name: Copy chat template
+      ansible.builtin.copy:
+        src: "{{ vllm_chat_template_src }}"
+        dest: "{{ vllm_chat_template_path }}"
+        mode: "0644"
+      when: vllm_chat_template_src | length > 0
+
+    - name: Copy runtime patch script
+      ansible.builtin.copy:
+        src: "{{ vllm_patch_script_src }}"
+        dest: "{{ vllm_patch_script_path }}"
+        mode: "0644"
+      when: vllm_patch_script_src | length > 0
+
+    - name: Copy entrypoint wrapper (only when a patch script is used)
+      ansible.builtin.copy:
+        src: "{{ vllm_entrypoint_src }}"
+        dest: "{{ vllm_entrypoint_path }}"
+        mode: "0755"
+      when: vllm_patch_script_src | length > 0
+
+    - name: Stop any previous vLLM containers
+      ansible.builtin.command: >-
+        docker rm -f {{ vllm_container }}
+        {{ vllm_cleanup_containers | join(' ') }}
+      changed_when: true
+      failed_when: false
+
+    - name: Launch vLLM server
+      ansible.builtin.command: "{{ vllm_launcher_path }}"
+      environment:
+        VLLM_MODEL: "{{ vllm_model }}"
+        VLLM_SERVED_NAME: "{{ vllm_served_name }}"
+        VLLM_IMAGE: "{{ vllm_image }}"
+        VLLM_PORT: "{{ vllm_port | string }}"
+        VLLM_GPU_MEM: "{{ vllm_gpu_mem }}"
+        VLLM_KV_DTYPE: "{{ vllm_kv_dtype }}"
+        VLLM_CONTAINER: "{{ vllm_container }}"
+        VLLM_TOOL_PARSER: "{{ vllm_tool_parser }}"
+        VLLM_REASONING_PARSER: "{{ vllm_reasoning_parser }}"
+        VLLM_MOE_FP8: "{{ vllm_moe_fp8 }}"
+        VLLM_MAX_MODEL_LEN: "{{ vllm_max_model_len }}"
+        VLLM_MAX_NUM_SEQS: "{{ vllm_max_num_seqs }}"
+        VLLM_MAX_NUM_BATCHED: "{{ vllm_max_num_batched }}"
+        VLLM_ENABLE_STORE: "{{ vllm_enable_store }}"
+        VLLM_HF_CACHE: "{{ hf_cache_dir }}"
+        VLLM_MS_CACHE: "{{ ms_cache_dir }}"
+        VLLM_CHAT_TEMPLATE: "{{ vllm_chat_template_path if vllm_chat_template_src | length > 0 else '' }}"
+        VLLM_PATCH_SCRIPT: "{{ vllm_patch_script_path if vllm_patch_script_src | length > 0 else '' }}"
+        VLLM_ENTRYPOINT_SCRIPT: "{{ vllm_entrypoint_path if vllm_patch_script_src | length > 0 else '' }}"
+      changed_when: true
+
+    - name: Wait for vLLM API to be ready
+      ansible.builtin.uri:
+        url: "http://localhost:{{ vllm_port }}/v1/models"
+        method: GET
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: "{{ vllm_ready_retries }}"
+      delay: "{{ vllm_ready_delay }}"
+      failed_when: false
+
+    - name: Report readiness
+      ansible.builtin.debug:
+        msg: >-
+          vLLM {{ 'READY' if result.status == 200 else 'NOT READY (check docker logs ' ~ vllm_container ~ ')' }}
+          on {{ inventory_hostname }} — served as {{ vllm_served_name }}
+
+    - name: Show vLLM status
+      ansible.builtin.shell: |
+        echo "=== Container ==="
+        docker ps --filter "name={{ vllm_container }}" --format "table {{'{{'}}.Names{{'}}'}}\t{{'{{'}}.Status{{'}}'}}"
+        echo ""
+        echo "=== GPU ==="
+        nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader
+        echo ""
+        echo "=== API Models ==="
+        curl -s http://localhost:{{ vllm_port }}/v1/models 2>/dev/null | python3 -m json.tool || echo "Not responding"
+      register: vllm_status
+      changed_when: false
+
+    - name: Display vLLM status
+      ansible.builtin.debug:
+        msg: "{{ vllm_status.stdout_lines }}"

@@ -20,6 +20,7 @@ VLLM_MAX_NUM_BATCHED="${VLLM_MAX_NUM_BATCHED:-8192}"
 VLLM_CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE:-}"
 VLLM_MOE_FP8="${VLLM_MOE_FP8:-}"
 VLLM_ENABLE_STORE="${VLLM_ENABLE_STORE:-1}"
+VLLM_MS_CACHE="${VLLM_MS_CACHE:-}"
 VLLM_PATCH_SCRIPT="${VLLM_PATCH_SCRIPT:-$(dirname "$0")/patch-vllm-chat-utils.py}"
 VLLM_ENTRYPOINT_SCRIPT="${VLLM_ENTRYPOINT_SCRIPT:-$(dirname "$0")/vllm-entrypoint.sh}"
 
@@ -27,6 +28,9 @@ docker rm -f "${VLLM_CONTAINER}" 2>/dev/null || true
 
 # Build volume mounts
 VOLUMES="-v ${VLLM_HF_CACHE}:/root/.cache/huggingface"
+if [ -n "${VLLM_MS_CACHE}" ]; then
+  VOLUMES="${VOLUMES} -v ${VLLM_MS_CACHE}:/root/.cache/modelscope"
+fi
 CHAT_TEMPLATE_ARG=""
 if [ -n "${VLLM_CHAT_TEMPLATE}" ] && [ -f "${VLLM_CHAT_TEMPLATE}" ]; then
   VOLUMES="${VOLUMES} -v ${VLLM_CHAT_TEMPLATE}:/app/chat-template.jinja2:ro"
