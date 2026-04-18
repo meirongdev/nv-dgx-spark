@@ -145,9 +145,10 @@
    - 针对 Blackwell sm_121 优化
    - 内置 FlashInfer 完整支持
 
-3. **配置 LiteLLM 负载均衡**
+3. **配置 Bifrost 网关**
    - 两台机器各自运行 vLLM
-   - LiteLLM 做 round-robin 分发
+   - Bifrost (`maximhq/bifrost`) 做 provider 路由 + 虚拟 key 鉴权
+   - (历史备注：此处原先推荐 LiteLLM，最终选型为 Bifrost)
 
 #### 长期优化
 1. **TensorRT-LLM 替代 vLLM**

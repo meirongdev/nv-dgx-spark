@@ -341,7 +341,7 @@ EOF
 
 ### Next Steps
 
-- Test multi-node load balancing with LiteLLM
+- Test multi-node routing through the Bifrost gateway
 - Evaluate TensorRT-LLM for maximum throughput
 - Consider K8s deployment for auto-scaling
 - Monitor with Prometheus + Grafana (vLLM exporter)

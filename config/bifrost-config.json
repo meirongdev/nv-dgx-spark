@@ -6,7 +6,7 @@
         {
           "name": "vllm-s1-key",
           "value": "dummy",
-          "models": ["Gemma-4-31B-IT"],
+          "models": ["Qwen3.6-35B-A3B", "Qwen3.5-122B-A10B", "Gemma-4-31B-IT"],
           "weight": 1.0
         }
       ],
@@ -32,7 +32,7 @@
         {
           "name": "vllm-s2-key",
           "value": "dummy",
-          "models": ["Gemma-4-31B-IT"],
+          "models": ["Qwen3.6-35B-A3B", "Qwen3.5-122B-A10B", "Gemma-4-31B-IT"],
           "weight": 1.0
         }
       ],
@@ -57,31 +57,23 @@
   "governance": {
     "virtual_keys": [
       {
-        "id": "vk-dgx-cluster",
-        "name": "DGX Spark Cluster (vLLM Gemma-4-31B-IT) — Codex/stateful",
+        "id": "dgx-spark-cluster",
+        "name": "DGX Spark Cluster Key",
+        "description": "Shared virtual key for DGX Spark clients (qwen CLI, codex, etc.)",
         "value": "sk-bf-dgx-spark-cluster-2026",
+        "is_active": true,
         "provider_configs": [
           {
             "provider": "vllm-server1",
-            "allowed_models": ["Gemma-4-31B-IT"],
-            "weight": 1.0
-          }
-        ]
-      },
-      {
-        "id": "vk-dgx-chat",
-        "name": "DGX Spark Cluster (vLLM Gemma-4-31B-IT) — chat load-balanced",
-        "value": "sk-bf-dgx-chat-2026",
-        "provider_configs": [
-          {
-            "provider": "vllm-server1",
-            "allowed_models": ["Gemma-4-31B-IT"],
-            "weight": 1.0
+            "weight": 1.0,
+            "allowed_models": ["Qwen3.6-35B-A3B", "Qwen3.5-122B-A10B", "Gemma-4-31B-IT"],
+            "key_ids": ["*"]
           },
           {
             "provider": "vllm-server2",
-            "allowed_models": ["Gemma-4-31B-IT"],
-            "weight": 1.0
+            "weight": 1.0,
+            "allowed_models": ["Qwen3.6-35B-A3B", "Qwen3.5-122B-A10B", "Gemma-4-31B-IT"],
+            "key_ids": ["*"]
           }
         ]
       }

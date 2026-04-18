@@ -6,7 +6,7 @@ This is an Ansible-based infrastructure project for managing an NVIDIA DGX Spark
 
 - **Infrastructure management**: SSH connectivity testing, Ansible inventory, system unification
 - **vLLM deployment**: Multiple LLM models with GPU-optimized configurations
-- **LLM Gateway**: FastAPI reverse proxy for routing and load balancing across vLLM backends
+- **Bifrost gateway** (`maximhq/bifrost`): OpenAI-compatible gateway with provider-scoped routing, virtual-key auth, and governance. Runs on server 1 :8080.
 - **tmux resilience**: SSH-drop-proof deployments via named tmux sessions
 
 **Target Infrastructure:**
@@ -32,17 +32,16 @@ Both hosts use SSH key `/Users/matthew/.ssh/vgio` with user `admin`.
 | **vLLM** | High-performance LLM inference (PagedAttention + FlashInfer) |
 | **Docker** | Container runtime with NVIDIA Container Toolkit |
 | **uv** | Fast Python package installer and venv manager |
-| **FastAPI** | LLM Gateway (reverse proxy for routing/load balancing) |
+| **Bifrost** (`maximhq/bifrost`) | OpenAI-compatible gateway — provider routing, virtual keys, governance |
 | **tmux** | SSH-drop-proof session management |
 
 ## Project Structure
 
 ```
-├── playbooks/          # Ansible playbooks (vLLM deploy, system unification, gateway)
+├── playbooks/          # Ansible playbooks (vLLM deploy, system unification, Bifrost)
 ├── scripts/            # Helper scripts (GPU validation, memory monitor, patching)
-├── config/             # Environment files, systemd templates, jinja2 templates
+├── config/             # vllm.env, vllm.service, bifrost-config.json
 ├── benchmarks/         # Performance scripts and reports
-├── gateway/            # LLM Gateway source (FastAPI reverse proxy)
 ├── docs/               # Deployment guides and design docs
 ├── inventory.ini       # Ansible inventory (generated)
 ├── Makefile            # Primary interface for all operations
@@ -114,21 +113,27 @@ make vllm-qwen-stop
 make vllm-qwen-logs HOST=100.97.87.120
 ```
 
-### LLM Gateway (FastAPI Reverse Proxy)
+### Bifrost Gateway (primary)
 
-Routes requests to vLLM backends with sticky routing for Responses API and load balancing for chat completions:
+`maximhq/bifrost` on server 1 :8080. OpenAI-compatible endpoints; requires
+the `model` field as `<provider>/<model>` (e.g. `vllm-server1/Qwen3.6-35B-A3B`).
+Providers, keys and virtual keys live in `config/bifrost-config.json`.
 
 | Command | Description |
 |---------|-------------|
-| `make gateway-deploy` | Deploy the FastAPI gateway |
-| `make gateway-test` | Test health, models, and chat endpoints |
-| `make gateway-stop` | Stop the gateway |
-| `make gateway-status` | Check gateway status |
+| `make bifrost-deploy` | Deploy Bifrost container + push config |
+| `make bifrost-test`   | Validate providers and a chat completion |
+| `make bifrost-status` | Container status + `/api/health` |
+| `make bifrost-stop`   | Stop the Bifrost container |
 
-Gateway architecture:
-- Routes `/v1/responses*` with sticky affinity to Server 1
-- Load balances `/v1/chat/completions` across both servers
-- ~11μs routing overhead with automatic failover
+Routing:
+- `/v1/responses*` is enabled only on `vllm-server1` (Responses API keeps
+  `previous_response_id` state in memory on one node).
+- `/v1/chat/completions` is enabled on both `vllm-server1` and `vllm-server2`
+  — the client picks which by using the provider prefix. There is no
+  cross-provider round-robin unless a CEL `routing_rule` is added.
+- Bearer tokens are matched against `governance.virtual_keys[]`. Primary VK:
+  `sk-bf-dgx-spark-cluster-2026`.
 
 ### tmux Resilient Sessions
 
@@ -215,7 +220,8 @@ make vllm-single-deploy \
 | `scripts/monitor-unified-memory.sh` | Real-time unified memory monitoring |
 | `scripts/validate-gpu.sh` | GPU passthrough validation |
 | `playbooks/vllm-model-deploy.yml` | Generic model-specific deployment playbook |
-| `playbooks/gateway-deploy.yml` | LLM Gateway deployment |
+| `playbooks/bifrost-deploy.yml` | Bifrost gateway deployment |
+| `config/bifrost-config.json` | Bifrost providers + virtual keys |
 
 ## Development Conventions
 

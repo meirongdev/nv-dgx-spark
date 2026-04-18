@@ -212,7 +212,7 @@ Application startup complete.
 
 3. **双机部署**
    - 两台 DGX Spark 各自独立运行 vLLM
-   - LiteLLM 做 round-robin 负载均衡
+   - Bifrost (`maximhq/bifrost`) 做 provider 路由（历史备注：原定 LiteLLM，最终选型 Bifrost）
 
 ### 长期 (本月)
 
@@ -250,7 +250,7 @@ Application startup complete.
    ↓ 预期 31-52 tok/s
 4. 跑统一 benchmark 对比
    ↓ 生成最终报告
-5. 双机 LiteLLM 负载均衡
+5. 双机 Bifrost 网关
    ↓ 生产环境部署
 ```
 

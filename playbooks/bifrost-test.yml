@@ -5,7 +5,7 @@
   gather_facts: no
   vars:
     bifrost_port: 8080
-    bifrost_model: "Qwen3.5-122B-A10B"
+    bifrost_model: "Qwen3.6-35B-A3B"
 
   tasks:
     - name: Test Bifrost health endpoint
@@ -20,11 +20,10 @@
       ansible.builtin.debug:
         msg: "Bifrost is healthy"
 
-    - name: Test chat completions via virtual key
+    - name: Test chat completions (round-robin across providers)
       ansible.builtin.shell: |
         curl -s http://localhost:{{ bifrost_port }}/v1/chat/completions \
           -H "Content-Type: application/json" \
-          -H "x-bf-vk: vk-dgx-cluster" \
           -d '{
             "model": "{{ bifrost_model }}",
             "messages": [{"role": "user", "content": "Explain unified memory in 3 sentences."}],
@@ -59,7 +58,7 @@
           import requests, json, time
 
           base_url = 'http://localhost:{{ bifrost_port }}/v1'
-          headers = {'Content-Type': 'application/json', 'x-bf-vk': 'vk-dgx-cluster'}
+          headers = {'Content-Type': 'application/json'}
 
           print('=== Bifrost Gateway Benchmark ===')
           print()

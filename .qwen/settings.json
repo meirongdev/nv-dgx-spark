@@ -1,4 +1,12 @@
 {
+  "security": {
+    "auth": {
+      "selectedType": "openai"
+    }
+  },
+  "model": {
+    "name": "Qwen3.6-35B-A3B"
+  },
   "permissions": {
     "allow": [
       "WebSearch",
@@ -14,7 +22,28 @@
       "Bash(curl *)",
       "Bash(python3 *)",
       "Bash(time *)",
-      "WebFetch(www.reddit.com)"
+      "WebFetch(www.reddit.com)",
+      "Bash(sshpass *)",
+      "Bash(ping *)",
+      "Bash(grep *)",
+      "Bash(tr *)",
+      "Bash(chmod *)",
+      "Bash(bash *)",
+      "WebFetch(vllm.hyper.ai)",
+      "WebFetch(www.cnblogs.com)",
+      "Bash(scp *)",
+      "Bash(sleep *)",
+      "Bash(ls *)",
+      "Bash(git add *)",
+      "Bash(git rm *)",
+      "Bash(git commit *)",
+      "Bash(git reset *)",
+      "Bash(ansible *)",
+      "Bash(docker run *)",
+      "Bash(docker search *)",
+      "Bash(nc *)",
+      "Bash(timeout *)",
+      "Bash(/bin/ls *)"
     ]
   },
   "$version": 3

@@ -14,9 +14,10 @@ The project uses a `Makefile` to wrap `uv` and `ansible` commands.
 
 - `make all`: Sets up the virtual environment, generates the inventory, and tests SSH connectivity.
 - `make unify-system`: Unifies kernel and NVIDIA driver versions across the cluster.
-- `make vllm-deploy`: Deploys the primary vLLM instance on all hosts.
-- `make stack-deploy`: Deploys both the vLLM backends and the Bifrost gateway.
-- `make vllm-status` / `make stack-status`: Checks health and GPU utilization.
+- `make vllm-qwen36-deploy`: Deploys the current primary model (Qwen3.6-35B-A3B-FP8) on all hosts. `make vllm-qwen-deploy` and `make vllm-gemma4-deploy` deploy alternate models.
+- `make bifrost-deploy`: Deploys the Bifrost gateway (`maximhq/bifrost`) on server 1 using `config/bifrost-config.json`.
+- `make stack-deploy`: One-shot vLLM + Bifrost deploy (model controlled by `STACK_MODEL`, default `qwen36`). Corresponding `stack-stop` / `stack-status` targets exist.
+- `make vllm-qwen36-status` / `make bifrost-status`: Check health and status.
 
 ## Coding Style & Naming Conventions
 - **Ansible**: Follow YAML best practices; use descriptive variable names in playbooks.
@@ -26,7 +27,7 @@ The project uses a `Makefile` to wrap `uv` and `ansible` commands.
 
 ## Testing Guidelines
 - **Connectivity**: Run `make test` to verify SSH access to all cluster nodes.
-- **Deployment**: After deploying, use `make vllm-test` or `make bifrost-test` to validate API health.
+- **Deployment**: After deploying, use `make vllm-qwen36-status` (or the equivalent for the model you deployed) and `make bifrost-test` to validate API health.
 - **Benchmarks**: Run scripts in `benchmarks/` to verify performance regressions after optimization.
 
 ## Commit & Pull Request Guidelines

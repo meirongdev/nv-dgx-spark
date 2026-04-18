@@ -4,17 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Ansible-driven deployment of vLLM inference backends + a FastAPI LLM Gateway
-onto two NVIDIA DGX Spark (GB10 Blackwell) servers. The Makefile is the
-primary entry point; every command is a `uv run ansible-*` underneath.
+Ansible-driven deployment of vLLM inference backends + a Bifrost gateway
+(`maximhq/bifrost`) onto two NVIDIA DGX Spark (GB10 Blackwell) servers.
+The Makefile is the primary entry point; every command is a `uv run ansible-*`
+underneath.
 
 **Target hosts** (edit `HOSTS` in Makefile to change):
-- `100.97.87.120` — server 1 (hosts LLM Gateway on :8080)
+- `100.97.87.120` — server 1 (hosts Bifrost gateway on :8080)
 - `100.67.164.92` — server 2
 - SSH: `admin` + `~/.ssh/vgio`
-- 200-subnet (`192.168.200.101/102`) is the internal, low-latency link used by the gateway.
+- 200-subnet (`192.168.200.101/102`) is the internal, low-latency link used by the gateway to reach the vLLM backends.
 
-**Current primary stack:** Qwen3.6-35B-A3B-FP8 (ModelScope cache) + LLM Gateway on server 1.
+**Current primary stack:** Qwen3.6-35B-A3B-FP8 (ModelScope cache) + Bifrost gateway on server 1.
 
 ## Common Commands
 
@@ -45,8 +46,8 @@ make vllm-status VLLM_CONTAINER=vllm-xyz VLLM_PORT=30000
 make vllm-stop   VLLM_CONTAINER=vllm-xyz
 make vllm-logs   HOST=... VLLM_CONTAINER=vllm-xyz
 
-# Gateway
-make gateway-deploy | gateway-status | gateway-test | gateway-stop
+# Bifrost gateway
+make bifrost-deploy | bifrost-status | bifrost-test | bifrost-stop
 
 # Misc
 make ping                          # ansible ping all hosts
@@ -79,26 +80,56 @@ cache mount, model-path validation, containers to clean up) are all just
 │  │ Server 1          │ ◄────────► │ Server 2          │      │
 │  │ 192.168.200.101   │            │ 192.168.200.102   │      │
 │  │ vLLM :30000       │            │ vLLM :30000       │      │
-│  │ + Gateway :8080   │            │                   │      │
+│  │ + Bifrost :8080   │            │                   │      │
 │  └──────────────────┘            └──────────────────┘      │
-│          ↑ /v1/responses (sticky to server 1)               │
-│          ↕ /v1/chat/completions (round-robin both)          │
+│         ↑ provider=vllm-server1 → pinned to server 1        │
+│         ↕ provider=vllm-server2 → pinned to server 2        │
 └──────────────────────────┬──────────────────────────────────┘
                            │ Tailscale VPN (100.x)
                   ┌────────▼──────────┐
                   │   Mac (client)    │
-                  │ codex --profile dgx        → :8080 gateway
+                  │ codex --profile dgx        → :8080 Bifrost
                   │ codex --profile dgx-direct → :30000 server 1
                   └───────────────────┘
 ```
 
-### Gateway routing rules (`gateway/app.py`)
+### Bifrost routing (`config/bifrost-config.json`)
 
-| Endpoint              | Where it goes                    | Why                                                                                          |
-|-----------------------|----------------------------------|----------------------------------------------------------------------------------------------|
-| `/v1/responses*`      | server 1 only (sticky)           | Responses API is stateful — `previous_response_id` references an in-memory store on one node |
-| `/v1/chat/completions`| round-robin server 1 + server 2  | Stateless — any server works                                                                 |
-| Everything else       | server 1 (catch-all)             | `/v1/models`, `/health`, `/v1/embeddings`, etc.                                              |
+Bifrost uses OpenAI-compatible endpoints but requires the `model` field to be
+`<provider>/<model>`. Providers are defined in `config/bifrost-config.json`:
+
+| Provider         | Upstream                     | `/v1/responses*` | `/v1/chat/completions` |
+|------------------|------------------------------|------------------|-------------------------|
+| `vllm-server1`   | `http://192.168.200.101:30000` | ✅ enabled      | ✅ enabled              |
+| `vllm-server2`   | `http://192.168.200.102:30000` | ❌ disabled     | ✅ enabled              |
+
+**Stateful Responses API** must pin to `vllm-server1` because
+`previous_response_id` references an in-memory store on one node. For chat
+completions use whichever provider you prefer (or add a CEL `routing_rule` for
+cross-provider load balancing — not currently configured).
+
+**Model names** served by each provider (see `keys[].models` in the config):
+- `Qwen3.6-35B-A3B` (current primary)
+- `Qwen3.5-122B-A10B`
+- `Gemma-4-31B-IT`
+
+`/v1/models` on :8080 returns `{"data": []}` — Bifrost does not proxy upstream
+model lists. Use `curl http://100.97.87.120:30000/v1/models` to see what vLLM
+actually has loaded.
+
+### Bifrost authentication (virtual keys)
+
+Governance virtual keys are defined under `governance.virtual_keys[]` in
+`config/bifrost-config.json`. Clients send the VK value as a Bearer token:
+
+- VK value: `sk-bf-dgx-spark-cluster-2026` (id `dgx-spark-cluster`)
+- Allowed providers: `vllm-server1`, `vllm-server2`
+- Allowed models: explicit list (`["*"]` wildcard is documented but did not work in testing — use the model names above)
+
+**Caveat:** Bifrost only enforces VK restrictions when the Bearer matches a
+defined VK. Unknown/missing Bearers currently fall through without model
+restrictions. Treat the 8080 endpoint as "authenticated when on Tailscale",
+not as a hardened public API.
 
 ## Unified memory constraints (DGX Spark GB10)
 
@@ -110,14 +141,20 @@ cache mount, model-path validation, containers to clean up) are all just
 ## Connecting from clients
 
 ```bash
-export DGX_SPARK_API_KEY=dummy    # vLLM accepts any key when --api-key not set
-
-# Production / multi-user: through the gateway (LB + responses sticky)
+# Through Bifrost (auth + provider-scoped routing)
+export DGX_SPARK_API_KEY=sk-bf-dgx-spark-cluster-2026    # the Bifrost VK value
+# model must be <provider>/<model>, e.g. vllm-server1/Qwen3.6-35B-A3B
 codex --profile dgx               # → http://100.97.87.120:8080/v1
 
-# Single-user debug: direct to server 1, bypasses gateway
+# Direct to vLLM on server 1 (no auth, bare model name)
+export DGX_SPARK_API_KEY=dummy    # vLLM accepts anything when --api-key not set
 codex --profile dgx-direct        # → http://100.97.87.120:30000/v1
 ```
+
+**Qwen Code CLI** (`.qwen/.env` in this repo) is configured for the Bifrost
+path: `OPENAI_BASE_URL=http://100.97.87.120:8080/v1`,
+`OPENAI_MODEL=vllm-server1/Qwen3.6-35B-A3B`,
+`OPENAI_API_KEY=sk-bf-dgx-spark-cluster-2026`.
 
 ## Known Gotchas
 
@@ -161,12 +198,12 @@ Fix: `scripts/patch-vllm-chat-utils.py` wraps the load with
 
 - `Makefile` — single user-facing interface, plus variable defaults per model.
 - `playbooks/vllm-model-deploy.yml` — generic deploy playbook used by every model target.
-- `playbooks/gateway-deploy.yml` — builds + runs the FastAPI gateway container.
+- `playbooks/bifrost-deploy.yml` — deploys the Bifrost gateway container; mounts `config/bifrost-config.json` into `/app/data/config.json`.
+- `config/bifrost-config.json` — Bifrost providers, virtual keys, governance.
 - `scripts/run-vllm-qwen.sh` — the actual `docker run` launcher (despite the
   name, it drives all models; all vars are env-parameterised).
 - `scripts/vllm-entrypoint.sh` + `scripts/patch-vllm-*.py` — runtime patches
   applied inside the container before `vllm serve`.
-- `gateway/app.py` — FastAPI reverse proxy, see the routing table above.
 - `scripts/modelscope-download.sh` — downloads a model from ModelScope into
   `/home/admin/.cache/modelscope` (run via `make modelscope-download MS_MODEL=...`).
 

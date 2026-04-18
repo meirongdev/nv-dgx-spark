@@ -43,14 +43,15 @@ Linting:
 
 2) High-level architecture (big picture)
 
-- Purpose: Ansible-based infra to manage NVIDIA DGX Spark nodes and deploy vLLM inference containers.
+- Purpose: Ansible-based infra to manage NVIDIA DGX Spark nodes, deploy vLLM inference containers, and front them with a Bifrost (`maximhq/bifrost`) OpenAI-compatible gateway.
 - Makefile: canonical entrypoint; defines HOSTS, SSH_KEY, SSH_USER and provides wrappers for `uv run ansible` / `uv run ansible-playbook`.
 - Inventory: `inventory.ini` is generated from the Makefile (use `make inventory`).
 - Environment: `.venv/` created/managed by `uv`; always run Ansible via `uv run`.
-- Playbooks: `playbooks/vllm-deploy.yml` (deploy + hardening), `playbooks/vllm-test.yml` (validation), plus TP2 and Bifrost playbooks.
-- Config: `config/` holds `vllm.env`, `vllm.service` templates used by deployments.
-- Runtime: vLLM runs in Docker (container name: `vllm-server`). `scripts/` contains helpers for GPU validation and unified-memory monitoring.
-- Typical workflow: `make venv` → `make inventory` → `make vllm-deploy` → `make vllm-test` → monitor via `make vllm-status` / `make vllm-monitor`.
+- Playbooks: `playbooks/vllm-model-deploy.yml` (generic per-model deploy + hardening), `playbooks/bifrost-deploy.yml` (gateway), plus TP2 playbooks.
+- Config: `config/` holds `vllm.env`, `vllm.service`, and `bifrost-config.json` (providers, keys, `governance.virtual_keys`).
+- Runtime: vLLM runs in Docker (per-model container names like `vllm-qwen36`). `scripts/` contains helpers for GPU validation and unified-memory monitoring. Bifrost runs as `bifrost-gateway` on server 1 :8080.
+- Gateway surface: OpenAI-compatible on `:8080`. Clients must send `model` as `<provider>/<model>` (e.g. `vllm-server1/Qwen3.6-35B-A3B`) and the Bearer token as the virtual key value.
+- Typical workflow: `make venv` → `make inventory` → `make vllm-qwen36-deploy` → `make bifrost-deploy` → `make bifrost-test`.
 
 ---
 
@@ -69,7 +70,7 @@ Linting:
   - `GPU_MEMORY_UTIL` → `gpu_memory_utilization`
   - `TOOL_CALL_PARSER` → `tool_call_parser`
   - `TP2_*` → `tp2_*`
-- Container & service names: expected container `vllm-server` and systemd unit `config/vllm.service`.
+- Container & service names: per-model vLLM containers (`vllm-qwen`, `vllm-gemma4`, `vllm-qwen36`); Bifrost gateway container `bifrost-gateway`; systemd unit `config/vllm.service`.
 - Unified memory and operational constraints (important):
   - GB10/GPU unified memory requires swap disabled; set `GPU_MEMORY_UTIL` ≈ `0.7` to leave headroom.
   - For Blackwell/GB10, `VLLM_ATTENTION_BACKEND=FLASHINFER` and `VLLM_USE_FLASHINFER_MOE_FP8=1` are recommended for performance where appropriate.
