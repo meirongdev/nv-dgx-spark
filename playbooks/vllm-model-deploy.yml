@@ -21,7 +21,7 @@
     vllm_port: 30000
     vllm_gpu_mem: "0.70"
     vllm_kv_dtype: "fp8_e4m3"
-    vllm_max_model_len: "32768"
+    vllm_max_model_len: "262144"
     vllm_max_num_seqs: "64"
     vllm_max_num_batched: ""
     vllm_tool_parser: ""

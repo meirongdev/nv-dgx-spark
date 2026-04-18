@@ -22,7 +22,7 @@ TP2_PORT ?= 8030
 TP2_MASTER_PORT ?= 29500
 TP2_NCCL_IFACE ?= enp1s0f0np0
 TP2_GPU_MEMORY_UTIL ?= 0.75
-TP2_MAX_MODEL_LEN ?= 32768
+TP2_MAX_MODEL_LEN ?= 262144
 
 # Bifrost gateway (maximhq/bifrost). Sole gateway in front of vLLM.
 # Config in config/bifrost-config.json (providers + governance.virtual_keys).
@@ -39,6 +39,7 @@ VLLM_QWEN_GPU_MEM ?= 0.70
 VLLM_QWEN_KV_DTYPE ?= fp8_e4m3
 VLLM_QWEN_TOOL_PARSER ?= qwen3_coder
 VLLM_QWEN_REASONING ?= qwen3
+VLLM_QWEN_MAX_MODEL_LEN ?= 262144
 
 # vLLM Gemma4 configuration (native developer role + tool calling)
 VLLM_GEMMA4_IMAGE ?= vllm-node-tf5:latest
@@ -47,6 +48,7 @@ VLLM_GEMMA4_SERVED ?= Gemma-4-31B-IT
 VLLM_GEMMA4_PORT ?= 30000
 VLLM_GEMMA4_GPU_MEM ?= 0.70
 VLLM_GEMMA4_KV_DTYPE ?= fp8_e4m3
+VLLM_GEMMA4_MAX_MODEL_LEN ?= 262144
 
 # vLLM Qwen3.6 configuration (no patches needed, uses ModelScope cache)
 VLLM_QWEN36_IMAGE ?= vllm-node-tf5:latest
@@ -474,6 +476,7 @@ vllm-qwen-deploy:
 		-e "vllm_port=$(VLLM_QWEN_PORT)" \
 		-e "vllm_gpu_mem=$(VLLM_QWEN_GPU_MEM)" \
 		-e "vllm_kv_dtype=$(VLLM_QWEN_KV_DTYPE)" \
+		-e "vllm_max_model_len=$(VLLM_QWEN_MAX_MODEL_LEN)" \
 		-e "vllm_tool_parser=$(VLLM_QWEN_TOOL_PARSER)" \
 		-e "vllm_reasoning_parser=$(VLLM_QWEN_REASONING)" \
 		-e "vllm_moe_fp8=1" \
@@ -505,6 +508,7 @@ vllm-gemma4-deploy:
 		-e "vllm_port=$(VLLM_GEMMA4_PORT)" \
 		-e "vllm_gpu_mem=$(VLLM_GEMMA4_GPU_MEM)" \
 		-e "vllm_kv_dtype=$(VLLM_GEMMA4_KV_DTYPE)" \
+		-e "vllm_max_model_len=$(VLLM_GEMMA4_MAX_MODEL_LEN)" \
 		-e "vllm_tool_parser=gemma4" \
 		-e "vllm_model_validate_path=/home/admin/.cache/huggingface/hub/Gemma-4-31B-IT-NVFP4" \
 		-e "vllm_patch_script_src=../scripts/patch-vllm-gemma4-parser.py" \
