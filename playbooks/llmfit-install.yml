@@ -1,0 +1,52 @@
+---
+- name: Install llmfit CLI on DGX servers
+  hosts: all
+  become: false
+  gather_facts: false
+  vars:
+    llmfit_pip_index: "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+  tasks:
+    - name: Check if llmfit is already installed
+      ansible.builtin.command: "~/.local/bin/llmfit --version"
+      register: llmfit_check
+      changed_when: false
+      failed_when: false
+
+    - name: Ensure ~/.local/bin exists
+      ansible.builtin.file:
+        path: "~/.local/bin"
+        state: directory
+        mode: "0755"
+
+    - name: Ensure ~/.local/bin is in PATH
+      ansible.builtin.lineinfile:
+        path: "~/.bashrc"
+        line: 'export PATH="$HOME/.local/bin:$PATH"'
+        create: true
+        mode: "0644"
+        insertafter: EOF
+      when: llmfit_check.rc != 0
+
+    - name: Install llmfit via pip3 (Tsinghua mirror)
+      ansible.builtin.pip:
+        name: llmfit
+        state: latest
+        extra_args: >-
+          --break-system-packages
+          -i {{ llmfit_pip_index }}
+        user: true
+        executable: pip3
+      when: llmfit_check.rc != 0
+
+    - name: Report version
+      ansible.builtin.shell: |
+        set -e
+        echo "llmfit: $(~/.local/bin/llmfit --version 2>&1 | tail -1)"
+        echo "path:   $(which llmfit 2>/dev/null || echo '~/.local/bin/llmfit')"
+      register: versions
+      changed_when: false
+
+    - name: Show version
+      ansible.builtin.debug:
+        msg: "{{ versions.stdout_lines }}"

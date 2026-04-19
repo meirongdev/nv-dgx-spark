@@ -149,6 +149,11 @@ codex --profile dgx               # → http://100.97.87.120:8080/v1
 # Direct to vLLM on server 1 (no auth, bare model name)
 export DGX_SPARK_API_KEY=dummy    # vLLM accepts anything when --api-key not set
 codex --profile dgx-direct        # → http://100.97.87.120:30000/v1
+
+# Using pi-mono (pi) agent
+# Installed globally via npm link from badlogic/pi-mono
+export DGX_SPARK_API_KEY=dummy
+pi --model dgx-direct/Qwen3.6-35B-A3B -i
 ```
 
 **Qwen Code CLI** (`.qwen/.env` in this repo) is configured for the Bifrost

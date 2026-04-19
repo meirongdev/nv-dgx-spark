@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-logs vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark modelscope-download remove-thunderbird
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-logs vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark modelscope-download remove-thunderbird llmfit-install llmfit-cmd
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -131,6 +131,19 @@ remove-thunderbird:
 	@echo "========================================"
 	uv run ansible-playbook -i $(INVENTORY) playbooks/remove-thunderbird.yml \
 		--ssh-extra-args="-i $(SSH_KEY)"
+
+# ========================================
+# llmfit CLI Installation
+# ========================================
+llmfit-install:
+	@echo "========================================"
+	@echo "Installing llmfit CLI on all hosts..."
+	@echo "========================================"
+	uv run ansible-playbook -i $(INVENTORY) playbooks/llmfit-install.yml \
+		--ssh-extra-args="-i $(SSH_KEY)"
+
+llmfit-cmd:
+	uv run ansible all -i $(INVENTORY) -a "$(COMMAND)" --ssh-extra-args="-i $(SSH_KEY)"
 
 # ========================================
 # vLLM Deployment Commands
