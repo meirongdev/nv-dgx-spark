@@ -15,7 +15,13 @@ underneath.
 - SSH: `admin` + `~/.ssh/vgio`
 - 200-subnet (`192.168.200.101/102`) is the internal, low-latency link used by the gateway to reach the vLLM backends.
 
-**Current primary stack:** Qwen3.6-35B-A3B-FP8 (ModelScope cache) + Bifrost gateway on server 1.
+**Current primary stack:** **DeepSeek-V4-Flash** (284B/13B-active, official FP8) across
+**both** servers — dual-node TP=2 vLLM (jasl/vllm fork) + MTP, ~42 tok/s warm, 200K ctx,
+served on server 1 `:8000` as `deepseek-v4-flash`. This stack is **NOT** Ansible-driven; it
+uses the eugr `spark-vllm-docker` harness — deploy/run via `make v4flash-*` and
+`docs/deepseek-v4-flash-cn.md`. (The Qwen3.6-35B-A3B / 27B per-node split + Bifrost gateway
+documented below were torn down to free both GPUs for V4-Flash; their playbooks/targets
+remain usable to bring that stack back.)
 
 ## Common Commands
 
@@ -198,6 +204,45 @@ Multi-turn tool-call history with the `qwen3_coder` parser can produce a
 trailing byte that breaks `json.loads()` in `chat_utils._postprocess_messages`.
 Fix: `scripts/patch-vllm-chat-utils.py` wraps the load with
 `JSONDecoder.raw_decode()`. Applied by the entrypoint wrapper.
+
+### Pulling Docker images / models from mainland China
+The DGX servers are in mainland China; most foreign registries are blocked or
+crawl. Each DGX pulls fine over its own fast domestic link — no proxy/VPN/relay.
+- **Docker images** → pull official/popular images via the **daocloud** prefix,
+  then retag to the original name:
+  ```bash
+  docker pull docker.m.daocloud.io/lmsysorg/sglang:v0.5.12
+  docker tag  docker.m.daocloud.io/lmsysorg/sglang:v0.5.12 lmsysorg/sglang:v0.5.12
+  ```
+  daocloud serves popular official orgs (`lmsysorg/*`) but allowlist-rejects
+  obscure ones (`scitrera/*`). The mirrors in `/etc/docker/daemon.json` often
+  don't kick in (docker falls back to the blocked `registry-1.docker.io`) — use
+  the explicit `docker.m.daocloud.io/…` prefix. Pulling on a non-DGX (x86) box
+  needs `--platform linux/arm64` (GB10 is aarch64).
+- **Models** → ModelScope (`modelscope download --model <id> --local_dir …`);
+  hf-mirror resets on large `*.safetensors`. **Python** → Tsinghua PyPI.
+- **Avoid**: Cloudflare-fronted proxies (`agsv.top`/`hub.rat.dev`/`1ms.run` blobs
+  reset in CN), NGC `nvcr.io` (intermittent reset), Mac-relay over Tailscale
+  (DERP relay ≈ 0.15 MB/s). Inter-node copy → 200G link (`192.168.200.x`),
+  `ssh-keyscan -H <ip> >> ~/.ssh/known_hosts` first.
+- Full runbook: `docs/china-network-mirrors-cn.md`.
+
+### DeepSeek-V4-Flash on GB10 → vLLM (jasl fork), NOT SGLang
+Current primary model. Full deploy: `docs/deepseek-v4-flash-cn.md`; recipe
+`config/deepseek-v4-flash.yaml`; ops `make v4flash-{run,status,test,logs,stop}`.
+- **SGLang is a dead end on GB10**: its V4 NSA attention needs FlashMLA, which has no
+  sm_121 kernel (`RuntimeError: Unsupported architecture for sparse decode fwd`).
+- Engine = **jasl/vllm `codex/ds4-sm120-min-enable`**, built via the eugr `spark-vllm-docker`
+  harness (`VLLM_TRITON_MLA_SPARSE=1` replaces FlashMLA). Dual-node TP=2 over 200G `--no-ray`,
+  official FP8, MTP, `cudagraph FULL_AND_PIECEWISE` → ~42 tok/s.
+- The eugr from-source build leaves the runner image with **torch CPU** (the vllm wheel +
+  ray/fastsafetensors deps clobber the cu130 torch) → `vllm._C: libtorch_cuda.so missing`.
+  Fix: reinstall cu130 torch + `docker commit` (`scripts/vllm-fix-torch.sh`).
+- Serve from the **local model PATH** (`/root/.cache/huggingface/hub/DeepSeek-V4-Flash`), not
+  the HF repo id — the worker node has no proxy, and HF-cache symlinks must be relative to
+  resolve inside the container.
+- The build needs foreign net (github) → revive the S1 v2rayN proxy first
+  (`scripts/v2rayn-launch.sh`).
 
 ## Key file map
 

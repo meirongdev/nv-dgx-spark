@@ -6,7 +6,7 @@
         {
           "name": "vllm-s1-key",
           "value": "dummy",
-          "models": ["Qwen3.6-35B-A3B", "Qwen3.5-122B-A10B", "Gemma-4-31B-IT"],
+          "models": ["Qwen3.6-35B-A3B"],
           "weight": 1.0
         }
       ],
@@ -32,7 +32,7 @@
         {
           "name": "vllm-s2-key",
           "value": "dummy",
-          "models": ["Qwen3.6-35B-A3B", "Qwen3.5-122B-A10B", "Gemma-4-31B-IT"],
+          "models": ["Qwen3.6-27B"],
           "weight": 1.0
         }
       ],
@@ -66,13 +66,13 @@
           {
             "provider": "vllm-server1",
             "weight": 1.0,
-            "allowed_models": ["Qwen3.6-35B-A3B", "Qwen3.5-122B-A10B", "Gemma-4-31B-IT"],
+            "allowed_models": ["Qwen3.6-35B-A3B"],
             "key_ids": ["*"]
           },
           {
             "provider": "vllm-server2",
             "weight": 1.0,
-            "allowed_models": ["Qwen3.6-35B-A3B", "Qwen3.5-122B-A10B", "Gemma-4-31B-IT"],
+            "allowed_models": ["Qwen3.6-27B"],
             "key_ids": ["*"]
           }
         ]

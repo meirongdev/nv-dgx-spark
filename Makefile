@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-logs vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark modelscope-download remove-thunderbird llmfit-install llmfit-cmd
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-logs vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs vllm-qwen3627b-deploy vllm-qwen3627b-status vllm-qwen3627b-stop vllm-qwen3627b-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-test v4flash-stop
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -8,6 +8,10 @@ SSH_KEY := /Users/matthew/.ssh/vgio
 SSH_USER := admin
 # Remote hosts
 HOSTS := 100.97.87.120 100.67.164.92
+# Limit a per-model deploy to specific host(s) via Ansible --limit. Empty = all hosts.
+# Per-model deploy targets set a sensible default (qwen36 -> server1, qwen3627b -> server2);
+# override on the CLI, e.g. `make vllm-qwen36-deploy LIMIT=100.67.164.92`, or `LIMIT=` for both.
+LIMIT ?=
 # vLLM configuration
 VLLM_IMAGE ?= nvcr.io/nvidia/vllm:26.01-py3
 VLLM_MODEL ?= Qwen/Qwen2.5-7B-Instruct
@@ -61,6 +65,18 @@ VLLM_QWEN36_KV_DTYPE ?= fp8_e4m3
 # 1M with YARN rope-scaling but that needs extra --rope-scaling args and
 # trades quality for length.
 VLLM_QWEN36_MAX_MODEL_LEN ?= 262144
+
+# vLLM Qwen3.6-27B configuration (dense, NVFP4 - quality / escalation node, runs on Server 2)
+VLLM_QWEN36_27B_IMAGE ?= vllm-node-tf5:latest
+VLLM_QWEN36_27B_MODEL ?= /root/.cache/huggingface/hub/Qwen3.6-27B-NVFP4
+VLLM_QWEN36_27B_SERVED ?= Qwen3.6-27B
+VLLM_QWEN36_27B_PORT ?= 30000
+VLLM_QWEN36_27B_GPU_MEM ?= 0.70
+VLLM_QWEN36_27B_KV_DTYPE ?= fp8_e4m3
+# Leave empty so vLLM auto-detects compressed-tensors NVFP4. Set to
+# compressed-tensors or modelopt_fp4 only if a checkpoint fails to load.
+VLLM_QWEN36_27B_QUANT ?=
+VLLM_QWEN36_27B_MAX_MODEL_LEN ?= 262144
 
 # Create virtual environment and install Ansible
 venv:
@@ -535,9 +551,10 @@ vllm-gemma4-logs:    ; @$(MAKE) --no-print-directory vllm-logs   VLLM_CONTAINER=
 # Qwen3.6-35B-A3B-FP8 (ModelScope cache, no patches)
 # ----------------------------------------
 vllm-qwen36-deploy:
-	@echo "Deploying vLLM (Qwen3.6-35B-A3B-FP8, ctx=$(VLLM_QWEN36_MAX_MODEL_LEN))..."
+	@echo "Deploying vLLM (Qwen3.6-35B-A3B-FP8, ctx=$(VLLM_QWEN36_MAX_MODEL_LEN)) -> $(if $(LIMIT),$(LIMIT),100.97.87.120)..."
 	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-model-deploy.yml \
 		--ssh-extra-args="-i $(SSH_KEY)" \
+		--limit $(if $(LIMIT),$(LIMIT),100.97.87.120) \
 		-e "vllm_image=$(VLLM_QWEN36_IMAGE)" \
 		-e "vllm_model=$(VLLM_QWEN36_MODEL)" \
 		-e "vllm_served_name=$(VLLM_QWEN36_SERVED)" \
@@ -548,6 +565,7 @@ vllm-qwen36-deploy:
 		-e "vllm_max_model_len=$(VLLM_QWEN36_MAX_MODEL_LEN)" \
 		-e "vllm_tool_parser=qwen3_coder" \
 		-e "vllm_reasoning_parser=qwen3" \
+		-e "vllm_preserve_thinking=1" \
 		-e "ms_cache_dir=/home/admin/.cache/modelscope" \
 		-e "vllm_model_validate_path=/home/admin/.cache/modelscope/Qwen/Qwen3.6-35B-A3B-FP8" \
 		-e '{"vllm_cleanup_containers": ["vllm-gemma4", "vllm-qwen"]}'
@@ -555,6 +573,33 @@ vllm-qwen36-deploy:
 vllm-qwen36-status:  ; @$(MAKE) --no-print-directory vllm-status VLLM_CONTAINER=vllm-qwen36 VLLM_PORT=$(VLLM_QWEN36_PORT)
 vllm-qwen36-stop:    ; @$(MAKE) --no-print-directory vllm-stop   VLLM_CONTAINER=vllm-qwen36
 vllm-qwen36-logs:    ; @$(MAKE) --no-print-directory vllm-logs   VLLM_CONTAINER=vllm-qwen36 HOST=$(HOST)
+
+# ----------------------------------------
+# Qwen3.6-27B-NVFP4 (dense quality node - Server 2)
+# ----------------------------------------
+vllm-qwen3627b-deploy:
+	@echo "Deploying vLLM (Qwen3.6-27B-NVFP4, ctx=$(VLLM_QWEN36_27B_MAX_MODEL_LEN)) -> $(if $(LIMIT),$(LIMIT),100.67.164.92)..."
+	uv run ansible-playbook -i $(INVENTORY) playbooks/vllm-model-deploy.yml \
+		--ssh-extra-args="-i $(SSH_KEY)" \
+		--limit $(if $(LIMIT),$(LIMIT),100.67.164.92) \
+		-e "vllm_image=$(VLLM_QWEN36_27B_IMAGE)" \
+		-e "vllm_model=$(VLLM_QWEN36_27B_MODEL)" \
+		-e "vllm_served_name=$(VLLM_QWEN36_27B_SERVED)" \
+		-e "vllm_container=vllm-qwen3627b" \
+		-e "vllm_port=$(VLLM_QWEN36_27B_PORT)" \
+		-e "vllm_gpu_mem=$(VLLM_QWEN36_27B_GPU_MEM)" \
+		-e "vllm_kv_dtype=$(VLLM_QWEN36_27B_KV_DTYPE)" \
+		-e "vllm_quantization=$(VLLM_QWEN36_27B_QUANT)" \
+		-e "vllm_max_model_len=$(VLLM_QWEN36_27B_MAX_MODEL_LEN)" \
+		-e "vllm_tool_parser=qwen3_coder" \
+		-e "vllm_reasoning_parser=qwen3" \
+		-e "vllm_disable_thinking=1" \
+		-e "vllm_model_validate_path=/home/admin/.cache/huggingface/hub/Qwen3.6-27B-NVFP4" \
+		-e '{"vllm_cleanup_containers": ["vllm-qwen36", "vllm-gemma4", "vllm-qwen"]}'
+
+vllm-qwen3627b-status:  ; @$(MAKE) --no-print-directory vllm-status VLLM_CONTAINER=vllm-qwen3627b VLLM_PORT=$(VLLM_QWEN36_27B_PORT)
+vllm-qwen3627b-stop:    ; @$(MAKE) --no-print-directory vllm-stop   VLLM_CONTAINER=vllm-qwen3627b
+vllm-qwen3627b-logs:    ; @$(MAKE) --no-print-directory vllm-logs   VLLM_CONTAINER=vllm-qwen3627b HOST=$(HOST)
 
 # ========================================
 # Bifrost Gateway (maximhq/bifrost)
@@ -604,3 +649,32 @@ stack-deploy: vllm-$(STACK_MODEL)-deploy bifrost-deploy
 stack-stop: bifrost-stop vllm-$(STACK_MODEL)-stop
 
 stack-status: vllm-$(STACK_MODEL)-status bifrost-status
+
+# ========================================
+# DeepSeek-V4-Flash (dual-node vLLM; eugr spark-vllm-docker + jasl/vllm fork)
+# ========================================
+# NOT Ansible-driven: drives eugr's run-recipe on the head node over SSH.
+# One-time build + torch-fix + proxy revival: see docs/deepseek-v4-flash-cn.md.
+# Recipe mirror lives at config/deepseek-v4-flash.yaml.
+DSV4_HEAD   ?= 100.97.87.120
+DSV4_HARNESS ?= /home/admin/spark-vllm-docker
+DSV4_PORT   ?= 8000
+DSV4_WORKER ?= 192.168.200.102
+
+v4flash-run:
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
+		"cd $(DSV4_HARNESS) && tmux kill-session -t dsv4run 2>/dev/null; tmux new-session -d -s dsv4run 'DOTENV_CONTAINER_HF_HUB_OFFLINE=1 DOTENV_CONTAINER_TRANSFORMERS_OFFLINE=1 ./run-recipe.sh deepseek-v4-flash --no-ray > /tmp/dsv4-run.log 2>&1' && echo 'started (loads ~3-4min); poll: make v4flash-status'"
+
+v4flash-status:
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
+		"curl -s http://localhost:$(DSV4_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'; docker ps --format '{{.Names}} | {{.Status}}' | grep -i vllm || true"
+
+v4flash-logs:
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) "tail -n 60 /tmp/dsv4-run.log"
+
+v4flash-test:
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) "BASE=http://localhost:$(DSV4_PORT) bash /home/admin/v4-test.sh"
+
+v4flash-stop:
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
+		"docker rm -f vllm_node 2>/dev/null; ssh -o StrictHostKeyChecking=no $(DSV4_WORKER) 'docker rm -f vllm_node 2>/dev/null'; echo stopped"
