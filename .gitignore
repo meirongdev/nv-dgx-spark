@@ -1,2 +1,5 @@
 .worktrees/
 .qwen/.env
+
+# merge/patch backup artifacts
+*.orig
