@@ -5,7 +5,11 @@
     }
   },
   "model": {
-    "name": "Qwen3.6-35B-A3B"
+    "name": "deepseek-v4-flash",
+    "generationConfig": {
+      "timeout": 300000,
+      "maxRetries": 8
+    }
   },
   "permissions": {
     "allow": [
@@ -46,5 +50,5 @@
       "Bash(/bin/ls *)"
     ]
   },
-  "$version": 3
+  "$version": 4
 }
