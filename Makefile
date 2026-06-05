@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-logs vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs vllm-qwen3627b-deploy vllm-qwen3627b-status vllm-qwen3627b-stop vllm-qwen3627b-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-test v4flash-stop
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-logs vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs vllm-qwen3627b-deploy vllm-qwen3627b-status vllm-qwen3627b-stop vllm-qwen3627b-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-test v4flash-stop v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -660,10 +660,17 @@ DSV4_HEAD   ?= 100.97.87.120
 DSV4_HARNESS ?= /home/admin/spark-vllm-docker
 DSV4_PORT   ?= 8000
 DSV4_WORKER ?= 192.168.200.102
+# Boot autostart (systemd unit on the head node)
+DSV4_SERVICE  ?= deepseek-v4-flash
+DSV4_BOOT_SRC ?= scripts/v4flash-boot.sh
+DSV4_UNIT_SRC ?= config/deepseek-v4-flash.service
 
+# Launch. If the autostart unit is installed, go through systemd (so the boot
+# path and the manual path are identical); otherwise fall back to the tmux
+# launch used during builds / before the unit exists.
 v4flash-run:
 	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
-		"cd $(DSV4_HARNESS) && tmux kill-session -t dsv4run 2>/dev/null; tmux new-session -d -s dsv4run 'DOTENV_CONTAINER_HF_HUB_OFFLINE=1 DOTENV_CONTAINER_TRANSFORMERS_OFFLINE=1 ./run-recipe.sh deepseek-v4-flash --no-ray > /tmp/dsv4-run.log 2>&1' && echo 'started (loads ~3-4min); poll: make v4flash-status'"
+		"if systemctl list-unit-files 2>/dev/null | grep -q '^$(DSV4_SERVICE).service'; then sudo systemctl restart $(DSV4_SERVICE) && echo 'started via systemd ($(DSV4_SERVICE)); loads ~3-4min, poll: make v4flash-status'; else cd $(DSV4_HARNESS) && tmux kill-session -t dsv4run 2>/dev/null; tmux new-session -d -s dsv4run 'DOTENV_CONTAINER_HF_HUB_OFFLINE=1 DOTENV_CONTAINER_TRANSFORMERS_OFFLINE=1 ./run-recipe.sh deepseek-v4-flash --no-ray > /tmp/dsv4-run.log 2>&1' && echo 'started in tmux (no autostart unit); loads ~3-4min, poll: make v4flash-status'; fi"
 
 v4flash-status:
 	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
@@ -675,6 +682,29 @@ v4flash-logs:
 v4flash-test:
 	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) "BASE=http://localhost:$(DSV4_PORT) bash /home/admin/v4-test.sh"
 
+# Stop. When the unit is active, stop via systemd (runs ExecStop teardown and
+# avoids a Restart=on-failure fight); otherwise tear the containers down by hand.
 v4flash-stop:
 	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
-		"docker rm -f vllm_node 2>/dev/null; ssh -o StrictHostKeyChecking=no $(DSV4_WORKER) 'docker rm -f vllm_node 2>/dev/null'; echo stopped"
+		"if systemctl is-active --quiet $(DSV4_SERVICE); then sudo systemctl stop $(DSV4_SERVICE) && echo 'stopped via systemd ($(DSV4_SERVICE))'; else docker rm -f vllm_node 2>/dev/null; ssh -o StrictHostKeyChecking=no $(DSV4_WORKER) 'docker rm -f vllm_node 2>/dev/null'; echo stopped; fi"
+
+# ---- Boot autostart: install/enable the systemd unit so the stack comes back
+# ---- after a reboot. One unit on the head; it drives the worker over SSH.
+v4flash-autostart:
+	@echo ">> Installing boot launcher + systemd unit on $(DSV4_HEAD)"
+	scp -i $(SSH_KEY) -o StrictHostKeyChecking=no $(DSV4_BOOT_SRC) $(SSH_USER)@$(DSV4_HEAD):/home/$(SSH_USER)/v4flash-boot.sh
+	scp -i $(SSH_KEY) -o StrictHostKeyChecking=no $(DSV4_UNIT_SRC) $(SSH_USER)@$(DSV4_HEAD):/tmp/$(DSV4_SERVICE).service
+	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(DSV4_HEAD) \
+		"chmod +x /home/$(SSH_USER)/v4flash-boot.sh && sudo install -m 0644 /tmp/$(DSV4_SERVICE).service /etc/systemd/system/$(DSV4_SERVICE).service && rm -f /tmp/$(DSV4_SERVICE).service && sudo systemctl daemon-reload && sudo systemctl enable $(DSV4_SERVICE) && echo 'enabled $(DSV4_SERVICE) (auto-starts on boot). start now: make v4flash-autostart-start'"
+
+v4flash-autostart-start:
+	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(DSV4_HEAD) \
+		"sudo systemctl restart $(DSV4_SERVICE) && echo 'started; loads ~3-4min, poll: make v4flash-status'"
+
+v4flash-autostart-status:
+	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(DSV4_HEAD) \
+		"systemctl status $(DSV4_SERVICE) --no-pager -l | head -n 25; echo; echo '--- last 20 journal lines ---'; journalctl -u $(DSV4_SERVICE) -n 20 --no-pager"
+
+v4flash-autostart-remove:
+	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(DSV4_HEAD) \
+		"sudo systemctl disable --now $(DSV4_SERVICE) 2>/dev/null; sudo rm -f /etc/systemd/system/$(DSV4_SERVICE).service; sudo systemctl daemon-reload; echo 'removed $(DSV4_SERVICE) (no longer auto-starts)'"

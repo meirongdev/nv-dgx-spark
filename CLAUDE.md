@@ -30,11 +30,17 @@ Blackwell) servers. Two stacks live in this repo:
 ### Current stack — DeepSeek-V4-Flash (eugr harness, not Ansible)
 
 ```bash
-make v4flash-run        # launch dual-node TP=2 (run-recipe.sh --no-ray, in tmux)
+make v4flash-run        # launch dual-node TP=2 (systemd if autostart installed, else tmux)
 make v4flash-status     # /v1/models + container state
 make v4flash-test       # coding smoke test + tok/s
 make v4flash-logs       # tail head-node log
-make v4flash-stop       # stop both nodes
+make v4flash-stop       # stop both nodes (via systemd if the unit is active)
+
+# Boot autostart (systemd unit on the head; survives reboot)
+make v4flash-autostart          # install + enable the unit (one-time)
+make v4flash-autostart-start    # start it now (= sudo systemctl restart)
+make v4flash-autostart-status   # systemctl status + recent journal
+make v4flash-autostart-remove   # disable + delete the unit
 ```
 
 ### Misc
@@ -94,6 +100,31 @@ ops `make v4flash-{run,status,test,logs,stop}`.
   throughput (~25 → ~42 tok/s). `cudagraph_mode=FULL_AND_PIECEWISE`, `--max-model-len 1000000`.
 - The build needs foreign net (github) → revive the S1 v2rayN proxy first
   (`scripts/v2rayn-launch.sh`).
+
+## Boot autostart (systemd, survives reboot)
+
+A reboot wipes the stack (`--rm` containers, no restart policy) — the cluster
+does **not** come back on its own unless the unit below is installed. One-time:
+`make v4flash-autostart` (installs `scripts/v4flash-boot.sh` →
+`/home/admin/v4flash-boot.sh` + `config/deepseek-v4-flash.service` →
+`/etc/systemd/system/`, `daemon-reload`, `enable`).
+
+- **One unit, on the head only** (`User=admin`). The head's `launch-cluster.sh`
+  drives the TP worker over SSH, so the worker needs no unit — just docker +
+  sshd (both default-enabled).
+- **A docker `--restart` policy can't do this**: vLLM runs as a foreground
+  `docker exec` *inside* a `sleep infinity --rm` container, so a restart policy
+  would only revive the sleep. The whole orchestration (`run-recipe.sh
+  --no-ray`) must re-run — which is what the unit's `ExecStart` does.
+- **Boot-race handling:** `v4flash-boot.sh` waits (≤15 min, `DSV4_WAIT_TIMEOUT`)
+  for the worker's ssh+docker+GPU over the 200G link before launching, so a
+  simultaneous reboot of both nodes doesn't make `launch-cluster.sh` abort.
+  `Restart=on-failure` is the backstop (and gives free crash-recovery).
+- **Once installed, `make v4flash-run`/`v4flash-stop` route through systemd**
+  (`systemctl restart`/`stop`) so the manual and boot paths are identical and a
+  manual `docker rm` can't trigger a `Restart=on-failure` fight. The tmux launch
+  is the fallback only when the unit isn't installed (e.g. during a rebuild).
+  Logs move from `/tmp/dsv4-run.log` to `journalctl -u deepseek-v4-flash`.
 
 ## Unified memory constraints (DGX Spark GB10)
 
@@ -181,6 +212,11 @@ crawl. Each DGX pulls fine over its own fast domestic link — no proxy/VPN/rela
 - `scripts/v2rayn-launch.sh` — revives the S1 v2rayN proxy headless (needed for
   the github clone during the V4-Flash build).
 - `scripts/v4-test.sh` — coding smoke test against `:8000`, prints tok/s.
+- `scripts/v4flash-boot.sh` — boot launcher: waits for the worker (ssh+docker+GPU
+  over the 200G link), tears down stale containers, then `exec`s the recipe in
+  the foreground. Copied to `/home/admin/v4flash-boot.sh` by `make v4flash-autostart`.
+- `config/deepseek-v4-flash.service` — systemd unit (head node) that runs the
+  boot launcher; installed to `/etc/systemd/system/` + enabled by the same target.
 - `docs/deepseek-v4-flash-cn.md` — full V4-Flash deploy runbook (Chinese).
 - `docs/china-network-mirrors-cn.md` — daocloud/ModelScope/Tsinghua mirror runbook.
 - `scripts/modelscope-download.sh` — downloads a model from ModelScope into

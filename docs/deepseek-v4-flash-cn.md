@@ -61,6 +61,32 @@ recipe:`config/deepseek-v4-flash.yaml`(镜像里 `~/spark-vllm-docker/recipes/de
 `--speculative-config '{"method":"deepseek_mtp","num_speculative_tokens":2}'`(MTP);
 env:`VLLM_TRITON_MLA_SPARSE=1`、`NCCL_IB_DISABLE=0`(用 CX7 RoCE)、`DG_JIT_USE_NVRTC=0`。
 
+## 开机自启(systemd,重启后自动拉起)
+
+容器是 `--rm` 且无 restart policy,**重启后整套服务不会自己回来**。装一次 systemd unit 即可:
+
+```bash
+make v4flash-autostart          # 一次性:装 + enable(开机自启)
+make v4flash-autostart-start    # 现在就起(= sudo systemctl restart)
+make v4flash-autostart-status   # systemctl status + 最近 journal
+make v4flash-autostart-remove   # 卸载(disable + 删 unit)
+```
+
+要点:
+
+- **只在 head 装一个 unit**(`User=admin`)。head 的 `launch-cluster.sh` 通过 SSH
+  拉起 TP worker,所以 worker 不需要 unit——只要 docker + sshd(默认都自启)在跑。
+- **docker `--restart` 救不了**:vLLM 是在 `sleep infinity --rm` 容器里以前台
+  `docker exec` 跑的,restart policy 只会把那个 sleep 重启回来。必须重跑整套编排
+  (`run-recipe.sh --no-ray`),这正是 unit `ExecStart` 做的事。
+- **开机竞态**:`scripts/v4flash-boot.sh` 在启动前会等(≤15min,`DSV4_WAIT_TIMEOUT`)
+  worker 的 ssh+docker+GPU 经 200G 链路就绪,避免两台同时重启时 `launch-cluster.sh`
+  因连不上 worker 而 abort。`Restart=on-failure` 兜底(顺带白送崩溃自恢复)。
+- **装好之后,`make v4flash-run`/`v4flash-stop` 自动走 systemd**
+  (`systemctl restart`/`stop`),手动和开机路径一致;手动 `docker rm` 不会再触发
+  `Restart=on-failure` 打架。tmux 启动只在 unit 未安装时(如重新编译期间)兜底。
+  日志从 `/tmp/dsv4-run.log` 改看 `journalctl -u deepseek-v4-flash`。
+
 ## 性能
 
 | 配置 | 单流 decode |
