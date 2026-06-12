@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-logs vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs vllm-qwen3627b-deploy vllm-qwen3627b-status vllm-qwen3627b-stop vllm-qwen3627b-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-test v4flash-stop v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-logs vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs vllm-qwen3627b-deploy vllm-qwen3627b-status vllm-qwen3627b-stop vllm-qwen3627b-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-test v4flash-stop v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -77,6 +77,16 @@ VLLM_QWEN36_27B_KV_DTYPE ?= fp8_e4m3
 # compressed-tensors or modelopt_fp4 only if a checkpoint fails to load.
 VLLM_QWEN36_27B_QUANT ?=
 VLLM_QWEN36_27B_MAX_MODEL_LEN ?= 262144
+
+# Prometheus Node Exporter (host metrics for the homelab Grafana/Prometheus stack).
+# Runs as a docker container (--net=host --pid=host) on BOTH servers; homelab
+# Prometheus scrapes :9100 over Tailscale (job node-exporter-dgx-spark). Image is
+# pulled via the daocloud mirror (CN-reliable) and retagged to the canonical name.
+NODE_EXPORTER_IMAGE ?= quay.io/prometheus/node-exporter:v1.10.0
+NODE_EXPORTER_MIRROR_IMAGE ?= quay.m.daocloud.io/prometheus/node-exporter:v1.10.0
+NODE_EXPORTER_PORT ?= 9100
+# Host used by node-exporter-logs (single host; deploy/status hit all hosts).
+NODE_EXPORTER_LOG_HOST ?= 100.97.87.120
 
 # Create virtual environment and install Ansible
 venv:
@@ -649,6 +659,43 @@ stack-deploy: vllm-$(STACK_MODEL)-deploy bifrost-deploy
 stack-stop: bifrost-stop vllm-$(STACK_MODEL)-stop
 
 stack-status: vllm-$(STACK_MODEL)-status bifrost-status
+
+# ========================================
+# Prometheus Node Exporter (monitoring)
+# ========================================
+# Host metrics for the homelab Grafana/Prometheus stack. Docker container on BOTH
+# servers (--net=host --pid=host → true host metrics). homelab Prometheus scrapes
+# :9100 over Tailscale (job node-exporter-dgx-spark, cluster=dgx-spark); dashboard
+# "DGX Spark / Node Exporter" in Grafana. Playbook: playbooks/node-exporter-deploy.yml.
+node-exporter-deploy:
+	@echo "========================================"
+	@echo "Deploying Node Exporter on all hosts ($(HOSTS))"
+	@echo "Image: $(NODE_EXPORTER_IMAGE)  Port: $(NODE_EXPORTER_PORT)"
+	@echo "========================================"
+	uv run ansible-playbook -i $(INVENTORY) playbooks/node-exporter-deploy.yml \
+		--ssh-extra-args="-i $(SSH_KEY)" \
+		-e "node_exporter_image=$(NODE_EXPORTER_IMAGE)" \
+		-e "node_exporter_mirror_image=$(NODE_EXPORTER_MIRROR_IMAGE)" \
+		-e "node_exporter_port=$(NODE_EXPORTER_PORT)"
+
+# docker ps + a /metrics probe per host. Uses ssh (not ansible -a) to avoid the
+# Jinja2-eats-{{.Names}} trap with docker --format (see CLAUDE.md gotcha).
+node-exporter-status:
+	@for h in $(HOSTS); do \
+		echo "=== $$h ==="; \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
+			"docker ps --filter name=node-exporter --format 'table {{.Names}}\t{{.Status}}' && curl -s -o /dev/null -w 'metrics: HTTP %{http_code}\n' http://localhost:$(NODE_EXPORTER_PORT)/metrics"; \
+	done
+
+node-exporter-stop:
+	@for h in $(HOSTS); do \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
+			"docker rm -f node-exporter >/dev/null 2>&1 && echo \"$$h: node-exporter stopped\" || echo \"$$h: node-exporter was not running\""; \
+	done
+
+# Tail logs from one host: make node-exporter-logs NODE_EXPORTER_LOG_HOST=100.67.164.92
+node-exporter-logs:
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(NODE_EXPORTER_LOG_HOST) "docker logs --tail 50 node-exporter"
 
 # ========================================
 # DeepSeek-V4-Flash (dual-node vLLM; eugr spark-vllm-docker + jasl/vllm fork)

@@ -50,6 +50,27 @@ make ping                          # ansible ping all hosts
 make cmd COMMAND="uptime"          # ad-hoc command on all hosts
 ```
 
+### Monitoring (node_exporter → homelab Prometheus/Grafana)
+
+```bash
+make node-exporter-deploy          # deploy node_exporter (docker) on BOTH hosts
+make node-exporter-status          # docker ps + /metrics probe per host
+make node-exporter-logs            # tail logs (NODE_EXPORTER_LOG_HOST=<ip> to pick a host)
+make node-exporter-stop            # remove the container on both hosts
+```
+
+Host metrics are surfaced in the **homelab** Grafana stack (the `meirongdev/homelab`
+repo), not locally:
+- node_exporter runs as a docker container on each server (`--net=host --pid=host`,
+  `--restart unless-stopped`, rootfs mounted at `/host`), listening on `:9100`.
+- homelab Prometheus scrapes both hosts over **Tailscale** (job
+  `node-exporter-dgx-spark`, label `cluster=dgx-spark`). The tailnet ACL already
+  allows `tag:homelab → *:*`, so no ACL change is needed.
+- Grafana dashboard **"DGX Spark / Node Exporter"** (CPU/load, unified-memory usage,
+  a swap-must-be-0 guard, disk, network incl. the 200G CX7 link, temps).
+- The image is pulled via the **daocloud** mirror (`quay.m.daocloud.io/...`) then
+  retagged — quay.io/github reset from mainland China.
+
 (Retired-stack commands — `stack-deploy`, `vllm-<model>-*`, `bifrost-*` — are in
 the [Retired stack](#retired-stack-revivable) section.)
 
@@ -221,6 +242,9 @@ crawl. Each DGX pulls fine over its own fast domestic link — no proxy/VPN/rela
 - `docs/china-network-mirrors-cn.md` — daocloud/ModelScope/Tsinghua mirror runbook.
 - `scripts/modelscope-download.sh` — downloads a model from ModelScope into
   `/home/admin/.cache/modelscope` (via `make modelscope-download MS_MODEL=...`).
+- `playbooks/node-exporter-deploy.yml` — deploys Prometheus node_exporter (docker,
+  `--net=host --pid=host`) on both hosts for homelab Grafana monitoring
+  (`make node-exporter-deploy`).
 - _Retired stack:_ `playbooks/vllm-model-deploy.yml`, `playbooks/bifrost-deploy.yml`,
   `config/bifrost-config.json`, `scripts/run-vllm-qwen.sh`,
   `scripts/vllm-entrypoint.sh` + `scripts/patch-vllm-*.py`.

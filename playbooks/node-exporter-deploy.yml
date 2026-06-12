@@ -1,0 +1,138 @@
+---
+# Prometheus Node Exporter — host metrics for the homelab Grafana/Prometheus stack.
+#
+# Runs as a docker container on BOTH DGX Spark servers (--net=host --pid=host so it
+# reports true host CPU/mem/disk/net/temp, not the container's). homelab Prometheus
+# scrapes :9100 over Tailscale (job "node-exporter-dgx-spark", cluster=dgx-spark);
+# the tailnet ACL already allows tag:homelab → *:*.
+#
+# Image acquisition is resilient to the DGX's CN networking:
+#   1. fast path — pull the daocloud-mirrored image on the target (when DGX DNS +
+#      registry mirrors are healthy), retag to the canonical quay.io name;
+#   2. fallback — when the target can't resolve any registry (Tailscale MagicDNS
+#      sometimes leaves docker unable to resolve daocloud/quay), pull the arm64
+#      image on the Ansible control machine and `docker load` the saved tar over SSH.
+# The control-machine fallback needs docker on the machine running `make`.
+- name: Deploy Prometheus Node Exporter on all DGX Spark hosts
+  hosts: all
+  become: no
+  gather_facts: no
+  vars:
+    node_exporter_image: "quay.io/prometheus/node-exporter:v1.10.0"
+    node_exporter_mirror_image: "quay.m.daocloud.io/prometheus/node-exporter:v1.10.0"
+    node_exporter_container_name: "node-exporter"
+    node_exporter_port: 9100
+    node_exporter_arch: "linux/arm64"          # GB10 is aarch64
+    node_exporter_tar: "/tmp/node-exporter-image.tar"
+
+  tasks:
+    - name: Verify docker is installed on target
+      ansible.builtin.command: docker --version
+      changed_when: false
+
+    - name: Check whether the image is already present on target
+      ansible.builtin.command: docker image inspect {{ node_exporter_image }}
+      changed_when: false
+      failed_when: false
+      register: ne_present
+
+    # --- Fast path: target pulls the daocloud-mirrored image directly ---
+    - name: Pull node-exporter image via daocloud mirror on target
+      ansible.builtin.command: docker pull {{ node_exporter_mirror_image }}
+      changed_when: true
+      failed_when: false
+      register: ne_pull_mirror
+      when: ne_present.rc != 0
+
+    - name: Retag mirror image to the canonical quay.io name
+      ansible.builtin.command: docker tag {{ node_exporter_mirror_image }} {{ node_exporter_image }}
+      changed_when: true
+      when:
+        - ne_present.rc != 0
+        - (ne_pull_mirror.rc | default(1)) == 0
+
+    - name: Re-check image presence after the on-target pull attempt
+      ansible.builtin.command: docker image inspect {{ node_exporter_image }}
+      changed_when: false
+      failed_when: false
+      register: ne_present2
+      when: ne_present.rc != 0
+
+    # --- Fallback: ship the image from the Ansible control machine (DNS-independent) ---
+    - name: Ship image from control machine when the target still lacks it
+      when:
+        - ne_present.rc != 0
+        - (ne_present2.rc | default(1)) != 0
+      block:
+        - name: Pull arm64 node-exporter image on the control machine
+          delegate_to: localhost
+          run_once: true
+          ansible.builtin.command: docker pull --platform {{ node_exporter_arch }} {{ node_exporter_image }}
+          changed_when: true
+
+        - name: Save the image to a tar on the control machine
+          delegate_to: localhost
+          run_once: true
+          ansible.builtin.command: docker save -o {{ node_exporter_tar }} {{ node_exporter_image }}
+          changed_when: true
+
+        - name: Copy the image tar to the target
+          ansible.builtin.copy:
+            src: "{{ node_exporter_tar }}"
+            dest: "{{ node_exporter_tar }}"
+            mode: "0644"
+
+        - name: Load the image on the target
+          ansible.builtin.command: docker load -i {{ node_exporter_tar }}
+          changed_when: true
+
+        - name: Remove the image tar from the target
+          ansible.builtin.file:
+            path: "{{ node_exporter_tar }}"
+            state: absent
+
+    - name: Verify node-exporter image is available locally on target
+      ansible.builtin.command: docker image inspect {{ node_exporter_image }}
+      changed_when: false
+
+    - name: Stop any previous node-exporter container
+      ansible.builtin.command: docker rm -f {{ node_exporter_container_name }}
+      changed_when: true
+      failed_when: false
+
+    - name: Deploy node-exporter container
+      ansible.builtin.command: >
+        docker run -d
+        --name {{ node_exporter_container_name }}
+        --net=host
+        --pid=host
+        --restart unless-stopped
+        -v /:/host:ro,rslave
+        {{ node_exporter_image }}
+        --path.rootfs=/host
+
+    - name: Wait for node-exporter /metrics to be ready
+      ansible.builtin.uri:
+        url: "http://localhost:{{ node_exporter_port }}/metrics"
+        method: GET
+        status_code: 200
+      register: ne_health
+      until: ne_health.status == 200
+      retries: 12
+      delay: 5
+
+    - name: Show node-exporter container status
+      ansible.builtin.command: docker ps --filter name={{ node_exporter_container_name }}
+      changed_when: false
+      register: ne_status
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "node-exporter up on {{ inventory_hostname }}:{{ node_exporter_port }} — {{ ne_status.stdout_lines | length - 1 }} container(s) running"
+
+    - name: Clean up the image tar on the control machine
+      delegate_to: localhost
+      run_once: true
+      ansible.builtin.file:
+        path: "{{ node_exporter_tar }}"
+        state: absent
