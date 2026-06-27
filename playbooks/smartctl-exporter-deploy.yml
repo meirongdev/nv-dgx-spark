@@ -1,0 +1,128 @@
+---
+# smartctl Exporter — NVMe/SSD SMART disk health for the homelab Grafana/Prometheus stack.
+#
+# Runs as a HOST systemd service on BOTH DGX Spark servers (User=root so smartctl can
+# issue NVMe ioctls against /dev/nvme*). This mirrors the homelab pve/storage hosts.
+#
+# Why a host binary, not a container (like node-exporter is):
+#   quay.io/prometheuscommunity/smartctl-exporter publishes linux/amd64 ONLY — there is
+#   no arm64 image, and GB10 is aarch64. The GitHub release DOES ship a linux-arm64
+#   binary, so we install that instead.
+#
+# Binary acquisition is resilient to the DGX's CN networking: the DGX hosts can't reach
+# github.com, so the arm64 tarball is downloaded + extracted on the Ansible control
+# machine (which can) and the binary is copied over SSH. smartmontools (smartctl) is
+# already present on DGX OS — we assert it rather than apt-install (no repo dependency).
+#
+# homelab Prometheus scrapes :9633 over Tailscale (job "smartctl-dgx-spark",
+# cluster=dgx-spark); the tailnet ACL already allows tag:homelab → *:*.
+- name: Deploy smartctl Exporter (host binary) on all DGX Spark hosts
+  hosts: all
+  become: no
+  gather_facts: no
+  vars:
+    smartctl_exporter_version: "0.14.0"
+    smartctl_exporter_arch: "linux-arm64"          # GB10 is aarch64
+    smartctl_exporter_port: 9633
+    smartctl_exporter_release_base: "https://github.com/prometheus-community/smartctl_exporter/releases/download"
+    # Paths on the Ansible control machine (where GitHub is reachable)
+    smartctl_local_tar: "/tmp/smartctl_exporter-{{ smartctl_exporter_version }}.{{ smartctl_exporter_arch }}.tar.gz"
+    smartctl_local_dir: "/tmp/smartctl_exporter-{{ smartctl_exporter_version }}.{{ smartctl_exporter_arch }}"
+
+  tasks:
+    - name: Assert smartctl (smartmontools) is present on target
+      ansible.builtin.command: test -x /usr/sbin/smartctl
+      changed_when: false
+
+    # --- Fetch the arm64 binary on the control machine (DGX can't reach github.com) ---
+    - name: Download smartctl_exporter arm64 tarball on the control machine
+      delegate_to: localhost
+      run_once: true
+      ansible.builtin.get_url:
+        url: "{{ smartctl_exporter_release_base }}/v{{ smartctl_exporter_version }}/smartctl_exporter-{{ smartctl_exporter_version }}.{{ smartctl_exporter_arch }}.tar.gz"
+        dest: "{{ smartctl_local_tar }}"
+        mode: "0644"
+
+    # Use `tar` directly rather than the unarchive module: a macOS control machine ships
+    # BSD tar, which Ansible's unarchive handler rejects ("GNU tar required") — but BSD
+    # tar extracts .tar.gz fine when invoked directly.
+    - name: Extract the tarball on the control machine
+      delegate_to: localhost
+      run_once: true
+      ansible.builtin.command: tar -xzf {{ smartctl_local_tar }} -C /tmp
+      args:
+        creates: "{{ smartctl_local_dir }}/smartctl_exporter"
+
+    # --- Install on the target (root) ---
+    - name: Install smartctl_exporter binary to /usr/local/bin
+      become: yes
+      ansible.builtin.copy:
+        src: "{{ smartctl_local_dir }}/smartctl_exporter"
+        dest: /usr/local/bin/smartctl_exporter
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create smartctl_exporter systemd service
+      become: yes
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/smartctl_exporter.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Prometheus smartctl Exporter
+          After=network.target
+
+          [Service]
+          User=root
+          ExecStart=/usr/local/bin/smartctl_exporter \
+            --web.listen-address=:{{ smartctl_exporter_port }} \
+            --smartctl.path=/usr/sbin/smartctl \
+            --smartctl.interval=120s
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and (re)start smartctl_exporter
+      become: yes
+      ansible.builtin.systemd:
+        name: smartctl_exporter
+        daemon_reload: true
+        enabled: true
+        state: restarted
+
+    # --- Verify ---
+    - name: Wait for smartctl_exporter /metrics to be ready
+      ansible.builtin.uri:
+        url: "http://localhost:{{ smartctl_exporter_port }}/metrics"
+        method: GET
+        status_code: 200
+      register: se_health
+      until: se_health.status == 200
+      retries: 12
+      delay: 5
+
+    - name: Read /metrics to confirm a SMART device was discovered
+      ansible.builtin.uri:
+        url: "http://localhost:{{ smartctl_exporter_port }}/metrics"
+        return_content: true
+      register: se_metrics
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          - "smartctl-exporter up on {{ inventory_hostname }}:{{ smartctl_exporter_port }}"
+          - "smartctl_device metric present: {{ 'smartctl_device' in se_metrics.content }}"
+
+    - name: Clean up control-machine artifacts
+      delegate_to: localhost
+      run_once: true
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ smartctl_local_tar }}"
+        - "{{ smartctl_local_dir }}"

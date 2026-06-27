@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-logs vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs vllm-qwen3627b-deploy vllm-qwen3627b-status vllm-qwen3627b-stop vllm-qwen3627b-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-test v4flash-stop v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs
+.PHONY: venv install test ping all clean vllm-deploy vllm-test vllm-status vllm-stop vllm-logs vllm-benchmark vllm-monitor vllm-single-deploy vllm-single-stop vllm-tp2-deploy vllm-tp2-test vllm-tp2-stop vllm-tp2-benchmark vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs vllm-qwen3627b-deploy vllm-qwen3627b-status vllm-qwen3627b-stop vllm-qwen3627b-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-vllm-deploy tmux-attach tmux-list tmux-kill tmux-benchmark modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-test v4flash-stop v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -87,6 +87,17 @@ NODE_EXPORTER_MIRROR_IMAGE ?= quay.m.daocloud.io/prometheus/node-exporter:v1.10.
 NODE_EXPORTER_PORT ?= 9100
 # Host used by node-exporter-logs (single host; deploy/status hit all hosts).
 NODE_EXPORTER_LOG_HOST ?= 100.97.87.120
+
+# smartctl Exporter (NVMe/SSD SMART disk health for the homelab Grafana/Prometheus
+# stack). HOST systemd service (User=root → reads /dev/nvme*) on BOTH servers; homelab
+# Prometheus scrapes :9633 over Tailscale (job smartctl-dgx-spark). NOT a container:
+# quay smartctl-exporter is amd64-only, so we install the GitHub linux-arm64 binary
+# (downloaded on the control machine — DGX can't reach github.com — and shipped over
+# SSH; smartctl is already present in DGX OS). Playbook: smartctl-exporter-deploy.yml.
+SMARTCTL_EXPORTER_VERSION ?= 0.14.0
+SMARTCTL_EXPORTER_ARCH ?= linux-arm64
+SMARTCTL_EXPORTER_PORT ?= 9633
+SMARTCTL_EXPORTER_LOG_HOST ?= 100.97.87.120
 
 # Create virtual environment and install Ansible
 venv:
@@ -696,6 +707,43 @@ node-exporter-stop:
 # Tail logs from one host: make node-exporter-logs NODE_EXPORTER_LOG_HOST=100.67.164.92
 node-exporter-logs:
 	ssh -i $(SSH_KEY) $(SSH_USER)@$(NODE_EXPORTER_LOG_HOST) "docker logs --tail 50 node-exporter"
+
+# ========================================
+# smartctl Exporter (NVMe/SSD SMART disk health)
+# ========================================
+# SMART disk health on BOTH servers. HOST systemd service (User=root → reads
+# /dev/nvme*); arm64 binary from GitHub (shipped via the control machine). homelab
+# Prometheus scrapes :9633 over Tailscale (job smartctl-dgx-spark, cluster=dgx-spark);
+# SMART panels live in the "DGX Spark / Node Exporter" Grafana dashboard.
+# Playbook: playbooks/smartctl-exporter-deploy.yml.
+smartctl-exporter-deploy:
+	@echo "========================================"
+	@echo "Deploying smartctl Exporter on all hosts ($(HOSTS))"
+	@echo "Binary: smartctl_exporter v$(SMARTCTL_EXPORTER_VERSION) $(SMARTCTL_EXPORTER_ARCH)  Port: $(SMARTCTL_EXPORTER_PORT)"
+	@echo "========================================"
+	uv run ansible-playbook -i $(INVENTORY) playbooks/smartctl-exporter-deploy.yml \
+		--ssh-extra-args="-i $(SSH_KEY)" \
+		-e "smartctl_exporter_version=$(SMARTCTL_EXPORTER_VERSION)" \
+		-e "smartctl_exporter_arch=$(SMARTCTL_EXPORTER_ARCH)" \
+		-e "smartctl_exporter_port=$(SMARTCTL_EXPORTER_PORT)"
+
+# systemctl state + a /metrics probe per host.
+smartctl-exporter-status:
+	@for h in $(HOSTS); do \
+		echo "=== $$h ==="; \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
+			"systemctl is-active smartctl_exporter; curl -s -o /dev/null -w 'metrics: HTTP %{http_code}\n' http://localhost:$(SMARTCTL_EXPORTER_PORT)/metrics"; \
+	done
+
+smartctl-exporter-stop:
+	@for h in $(HOSTS); do \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
+			"sudo systemctl disable --now smartctl_exporter >/dev/null 2>&1 && echo \"$$h: smartctl-exporter stopped\" || echo \"$$h: smartctl-exporter was not running\""; \
+	done
+
+# Tail logs from one host: make smartctl-exporter-logs SMARTCTL_EXPORTER_LOG_HOST=100.67.164.92
+smartctl-exporter-logs:
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(SMARTCTL_EXPORTER_LOG_HOST) "sudo journalctl -u smartctl_exporter --no-pager -n 50"
 
 # ========================================
 # DeepSeek-V4-Flash (dual-node vLLM; eugr spark-vllm-docker + jasl/vllm fork)
