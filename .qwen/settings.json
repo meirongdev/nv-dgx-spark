@@ -47,7 +47,8 @@
       "Bash(docker search *)",
       "Bash(nc *)",
       "Bash(timeout *)",
-      "Bash(/bin/ls *)"
+      "Bash(/bin/ls *)",
+      "Bash(cat *)"
     ]
   },
   "$version": 4
