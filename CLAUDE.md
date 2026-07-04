@@ -8,10 +8,12 @@ Deployment tooling for vLLM inference across two NVIDIA DGX Spark (GB10
 Blackwell) servers. Two stacks live in this repo:
 
 - **Current primary — DeepSeek-V4-Flash** (284B/13B-active, official FP8) across
-  **both** servers: dual-node TP=2 vLLM (jasl/vllm fork) + MTP, ~42 tok/s warm,
-  **1M ctx**, served on server 1 `:8000` as `deepseek-v4-flash`. This stack is
-  **NOT** Ansible-driven — it uses the eugr `spark-vllm-docker` harness. Deploy/run
-  via `make v4flash-*`; full runbook `docs/deepseek-v4-flash-cn.md`.
+  **both** servers: dual-node TP=2 vLLM (jasl/vllm fork) + **DSpark** speculative
+  decoding (upgraded 2026-07-03 from MTP), ~51-53 tok/s warm single-stream (was
+  ~42 with MTP), **1M ctx**, served on server 1 `:8000` as `deepseek-v4-flash`.
+  This stack is **NOT** Ansible-driven — it uses the eugr `spark-vllm-docker`
+  harness. Deploy/run via `make v4flash-*`; full runbook
+  `docs/deepseek-v4-flash-cn.md`; DSpark upgrade details `docs/dspark-upgrade-cn.md`.
 - **Retired (revivable) — Qwen/Gemma + Bifrost gateway**, Ansible-driven through
   the Makefile (`make stack-deploy`, `make bifrost-*`). Torn down to free both
   GPUs for V4-Flash; the playbooks/targets/config still work to bring it back.
@@ -119,8 +121,34 @@ ops `make v4flash-{run,status,test,logs,stop}`.
   be relative to resolve inside the container.
 - **MTP** (`deepseek_mtp`, `num_speculative_tokens=2`) roughly doubles single-stream
   throughput (~25 → ~42 tok/s). `cudagraph_mode=FULL_AND_PIECEWISE`, `--max-model-len 1000000`.
+- **DSpark** (spec-decode successor to MTP, live since 2026-07-03): uses the
+  separate `DeepSeek-V4-Flash-DSpark` checkpoint (166.9GB, ModelScope) +
+  `--speculative-config '{"method":"dspark","num_speculative_tokens":3}'`.
+  `served_model_name` unchanged so clients need no reconfiguration.
+  `max_num_seqs=6` / `max_num_batched_tokens=8192` is the validated concurrency
+  ceiling (real 6-way concurrency confirmed, no garbling/crash, ~50 tok/s
+  aggregate) — **`max_num_seqs=16` fails outright** (KV-cache preflight check
+  rejects the config; `Restart=on-failure` will then loop on the bad config
+  until you revert). Full runbook + gotchas in `docs/dspark-upgrade-cn.md`.
+  Rebuilds need `--build-only --force-build` (`--build-only` alone is a no-op
+  when the image exists). First request after a (re)start pays a one-time
+  Triton JIT-compile spike for the DSpark Markov-sampler kernels — ignore that
+  measurement, retest. **jasl fork is now needed for DSpark only** — 2026-07-04
+  testing showed stock upstream vLLM *can* serve plain V4-Flash TP=2 on GB10
+  (sm121) fine, given `DG_JIT_USE_NVRTC=0` + `DG_JIT_NVCC_COMPILER=...` (missing
+  these looks like an architecture-support failure but isn't). Watch PR #41834
+  for DSpark itself landing upstream — once merged, eugr prebuilt wheels make
+  future upgrades ~15 min, zero compile.
+- **Never build/`docker build` on S1 without stopping the production stack
+  first** — even the "lightweight" prebuilt-wheel path still compiles native
+  deps (DeepGEMM/QuTLASS) from source in the runner-image stage, and doing this
+  concurrently with the live stack OOM'd the head node on 2026-07-04 (killed
+  `VLLM::Worker_TP`, took the whole tmux server down with it including any
+  running v2rayN proxy session — re-verify the proxy after any OOM).
 - The build needs foreign net (github) → revive the S1 v2rayN proxy first
-  (`scripts/v2rayn-launch.sh`).
+  (`scripts/v2rayn-launch.sh`; `XRAY_NODE=<ip>` picks the SS node — the default
+  node has died before; always verify `curl -x http://172.17.0.1:10809
+  https://github.com` → 200 before building).
 
 ## Boot autostart (systemd, survives reboot)
 
@@ -239,6 +267,8 @@ crawl. Each DGX pulls fine over its own fast domestic link — no proxy/VPN/rela
 - `config/deepseek-v4-flash.service` — systemd unit (head node) that runs the
   boot launcher; installed to `/etc/systemd/system/` + enabled by the same target.
 - `docs/deepseek-v4-flash-cn.md` — full V4-Flash deploy runbook (Chinese).
+- `docs/dspark-upgrade-cn.md` — DSpark upgrade runbook: version landscape, fastest
+  paths, step-by-step + gotchas (Chinese).
 - `docs/china-network-mirrors-cn.md` — daocloud/ModelScope/Tsinghua mirror runbook.
 - `scripts/modelscope-download.sh` — downloads a model from ModelScope into
   `/home/admin/.cache/modelscope` (via `make modelscope-download MS_MODEL=...`).

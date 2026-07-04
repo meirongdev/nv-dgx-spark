@@ -1,7 +1,7 @@
 recipe_version: "1"
 name: DeepSeek-V4-Flash
-description: DeepSeek V4 Flash FP8 on dual DGX Spark TP=2 (jasl/vllm SM12x) + MTP
-model: /root/.cache/huggingface/hub/DeepSeek-V4-Flash
+description: DeepSeek V4 Flash FP8 on dual DGX Spark TP=2 (jasl/vllm SM12x) + DSpark
+model: /root/.cache/huggingface/hub/DeepSeek-V4-Flash-DSpark
 container: vllm-node-dsv4
 cluster_only: true
 
@@ -21,8 +21,8 @@ defaults:
   pipeline_parallel: 1
   gpu_memory_utilization: 0.80
   max_model_len: 1000000
-  max_num_batched_tokens: 4192
-  max_num_seqs: 2
+  max_num_batched_tokens: 8192
+  max_num_seqs: 6
   block_size: 256
   served_model_name: deepseek-v4-flash
 
@@ -39,7 +39,7 @@ env:
   NCCL_DEBUG: WARN
 
 command: |
-  vllm serve /root/.cache/huggingface/hub/DeepSeek-V4-Flash \
+  vllm serve /root/.cache/huggingface/hub/DeepSeek-V4-Flash-DSpark \
       --served-model-name {served_model_name} \
       --host {host} \
       --port {port} \
@@ -49,13 +49,13 @@ command: |
       --kv-cache-dtype fp8 \
       --block-size {block_size} \
       --enable-prefix-caching \
-      --max-model-len {max_model_len} \
+      --max-model-len 1000000 \
       --max-num-seqs {max_num_seqs} \
-      --max-num-batched-tokens {max_num_batched_tokens} \
+      --max-num-batched-tokens 8192 \
       --gpu-memory-utilization {gpu_memory_utilization} \
       --distributed-executor-backend mp \
       --compilation-config '{{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}}' \
-      --speculative-config '{{"method":"deepseek_mtp","num_speculative_tokens":2}}' \
+      --speculative-config '{{"method":"dspark","num_speculative_tokens":3}}' \
       --tokenizer-mode deepseek_v4 \
       --tool-call-parser deepseek_v4 \
       --enable-auto-tool-choice \

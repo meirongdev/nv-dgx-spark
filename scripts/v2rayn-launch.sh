@@ -2,6 +2,10 @@
 # Revive the proxy headless: build an xray config from a reachable v2rayN
 # shadowsocks node and run it as the SOCKS upstream (127.0.0.1:10808) that
 # privoxy (172.17.0.1:10809) forwards to. Secrets are not printed.
+#
+# XRAY_NODE=<ip> picks a specific SS node from the v2rayN DB (nodes die —
+# 104.224.156.253 was found dead 2026-07-03; 156.238.229.145 worked).
+# Always verify the github curl at the end prints 200 before building.
 set -uo pipefail
 ROOT=/home/admin/v2rayN/v2rayN-linux-arm64
 DB="$ROOT/guiConfigs/guiNDB.db"
@@ -9,8 +13,8 @@ XRAY=$(find "$ROOT/bin/xray" -maxdepth 1 -name xray -type f 2>/dev/null | head -
 echo "xray binary: ${XRAY:-NOT-FOUND}"
 [ -x "$XRAY" ] || { echo "xray not executable"; exit 1; }
 
-python3 - "$DB" > /home/admin/xray-fix.json <<'PY'
-import sqlite3, sys, json
+XRAY_NODE="${XRAY_NODE:-}" python3 - "$DB" > /home/admin/xray-fix.json <<'PY'
+import sqlite3, sys, json, os
 db = sys.argv[1]; c = sqlite3.connect(db); cur = c.cursor()
 # Use cursor.description (guaranteed aligned with row values) instead of PRAGMA.
 cur.execute("SELECT * FROM ProfileItem WHERE configType=3")
@@ -18,7 +22,10 @@ cols = [d[0] for d in cur.description]
 # Column names are PascalCase (Address/Port/Password/Security/Id) -> lowercase them.
 rows = [{k.lower(): v for k, v in zip(cols, r)} for r in cur.fetchall()]
 assert rows, "no shadowsocks (configType=3) rows"
-node = next((r for r in rows if r.get("address") == "104.224.156.253"), rows[0])
+# XRAY_NODE env picks the node; default prefers 156.238.229.145 (alive as of
+# 2026-07-03; 104.224.156.253 was dead), else first row.
+want = os.environ.get("XRAY_NODE") or "156.238.229.145"
+node = next((r for r in rows if r.get("address") == want), rows[0])
 _masked = {k: ("***" if k in ("password", "id") and v else v) for k, v in node.items()}
 sys.stderr.write("NODE_FIELDS: %s\n" % json.dumps(_masked, default=str))
 method = node.get("security") or node.get("method")
