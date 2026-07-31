@@ -10,7 +10,7 @@ Blackwell) servers. Two stacks live in this repo:
 - **Current primary — DeepSeek-V4-Flash-0731** (official release, upgraded
   2026-07-31 from the preview build; 284B/13B-active, official FP8) across
   **both** servers: dual-node TP=2 vLLM (jasl/vllm fork) + **DSpark** speculative
-  decoding (upgraded 2026-07-03 from MTP), ~54 tok/s warm single-stream,
+  decoding (upgraded 2026-07-03 from MTP), ~56 tok/s warm single-stream,
   **1M ctx**, served on server 1 `:8000` as `deepseek-v4-flash`.
   This stack is **NOT** Ansible-driven — it uses the eugr `spark-vllm-docker`
   harness. Deploy/run via `make v4flash-*`; full runbook
@@ -129,9 +129,12 @@ ops `make v4flash-{run,status,test,logs,stop}`.
   ModelScope) — the official release ships the module built in, same structure
   and byte-identical config.json as the preview-era `DeepSeek-V4-Flash-DSpark`
   combo it replaced, so it was a pure weight swap (no engine/recipe changes
-  beyond the model path). DeepSeek recommends `num_speculative_tokens=7`, but 3
-  is the GB10-validated setting (7 untested here). `served_model_name` unchanged
-  so clients need no reconfiguration.
+  beyond the model path). `num_speculative_tokens=5` is the GB10-tuned value
+  (2026-07-31 sweep on 0731: n=3 ≈ 53.9 tok/s, n=5 ≈ 56.6, n=7 ≈ 52.4 —
+  acceptance craters past draft position 4 (4.7%/0.3% at pos 5/6) because
+  `dspark_block_size` is 5, so DeepSeek's recommended n=7 just wastes two draft
+  passes per step; 6-way concurrency re-validated clean at n=5).
+  `served_model_name` unchanged so clients need no reconfiguration.
   `max_num_seqs=6` / `max_num_batched_tokens=8192` is the validated concurrency
   ceiling (real 6-way concurrency confirmed, no garbling/crash, ~50 tok/s
   aggregate) — **`max_num_seqs=16` fails outright** (KV-cache preflight check
