@@ -1,7 +1,7 @@
 recipe_version: "1"
 name: DeepSeek-V4-Flash
-description: DeepSeek V4 Flash FP8 on dual DGX Spark TP=2 (jasl/vllm SM12x) + DSpark
-model: /root/.cache/huggingface/hub/DeepSeek-V4-Flash-DSpark
+description: DeepSeek V4 Flash 0731 FP8 on dual DGX Spark TP=2 (jasl/vllm SM12x) + DSpark
+model: /root/.cache/huggingface/hub/DeepSeek-V4-Flash-0731
 container: vllm-node-dsv4
 cluster_only: true
 
@@ -39,7 +39,7 @@ env:
   NCCL_DEBUG: WARN
 
 command: |
-  vllm serve /root/.cache/huggingface/hub/DeepSeek-V4-Flash-DSpark \
+  vllm serve /root/.cache/huggingface/hub/DeepSeek-V4-Flash-0731 \
       --served-model-name {served_model_name} \
       --host {host} \
       --port {port} \

@@ -7,10 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Deployment tooling for vLLM inference across two NVIDIA DGX Spark (GB10
 Blackwell) servers. Two stacks live in this repo:
 
-- **Current primary — DeepSeek-V4-Flash** (284B/13B-active, official FP8) across
+- **Current primary — DeepSeek-V4-Flash-0731** (official release, upgraded
+  2026-07-31 from the preview build; 284B/13B-active, official FP8) across
   **both** servers: dual-node TP=2 vLLM (jasl/vllm fork) + **DSpark** speculative
-  decoding (upgraded 2026-07-03 from MTP), ~51-53 tok/s warm single-stream (was
-  ~42 with MTP), **1M ctx**, served on server 1 `:8000` as `deepseek-v4-flash`.
+  decoding (upgraded 2026-07-03 from MTP), ~54 tok/s warm single-stream,
+  **1M ctx**, served on server 1 `:8000` as `deepseek-v4-flash`.
   This stack is **NOT** Ansible-driven — it uses the eugr `spark-vllm-docker`
   harness. Deploy/run via `make v4flash-*`; full runbook
   `docs/deepseek-v4-flash-cn.md`; DSpark upgrade details `docs/dspark-upgrade-cn.md`.
@@ -116,15 +117,21 @@ ops `make v4flash-{run,status,test,logs,stop}`.
   **torch CPU** (the vllm wheel + ray/fastsafetensors deps clobber the cu130
   torch) → `vllm._C: libtorch_cuda.so missing`. Fix: reinstall cu130 torch +
   `docker commit` (`scripts/vllm-fix-torch.sh`).
-- **Serve from the local model PATH** (`/root/.cache/huggingface/hub/DeepSeek-V4-Flash`),
+- **Serve from the local model PATH** (`/root/.cache/huggingface/hub/DeepSeek-V4-Flash-0731`),
   not the HF repo id — the worker node has no proxy, and HF-cache symlinks must
   be relative to resolve inside the container.
 - **MTP** (`deepseek_mtp`, `num_speculative_tokens=2`) roughly doubles single-stream
   throughput (~25 → ~42 tok/s). `cudagraph_mode=FULL_AND_PIECEWISE`, `--max-model-len 1000000`.
-- **DSpark** (spec-decode successor to MTP, live since 2026-07-03): uses the
-  separate `DeepSeek-V4-Flash-DSpark` checkpoint (166.9GB, ModelScope) +
+- **DSpark** (spec-decode successor to MTP, live since 2026-07-03): serves a
+  checkpoint with the DSpark module attached +
   `--speculative-config '{"method":"dspark","num_speculative_tokens":3}'`.
-  `served_model_name` unchanged so clients need no reconfiguration.
+  Since 2026-07-31 that checkpoint is `DeepSeek-V4-Flash-0731` (166.9GB,
+  ModelScope) — the official release ships the module built in, same structure
+  and byte-identical config.json as the preview-era `DeepSeek-V4-Flash-DSpark`
+  combo it replaced, so it was a pure weight swap (no engine/recipe changes
+  beyond the model path). DeepSeek recommends `num_speculative_tokens=7`, but 3
+  is the GB10-validated setting (7 untested here). `served_model_name` unchanged
+  so clients need no reconfiguration.
   `max_num_seqs=6` / `max_num_batched_tokens=8192` is the validated concurrency
   ceiling (real 6-way concurrency confirmed, no garbling/crash, ~50 tok/s
   aggregate) — **`max_num_seqs=16` fails outright** (KV-cache preflight check
@@ -212,6 +219,15 @@ graduated effort level). Note: codex/qwen built-in `reasoning:false` only reache
 > To use the retired Bifrost gateway instead, revive that stack — see below.
 
 ## Known Gotchas
+
+### Uplink DHCP provides no DNS — static DNS is load-bearing
+The lab DHCP (10.14.20.1) hands out **no DNS servers**. Working DNS on the DGX
+nodes comes from static config only; without it every non-tailnet lookup
+SERVFAILs (MagicDNS on `tailscale0` only covers tailnet names) — this is what a
+"ModelScope/github unreachable, Tailscale fine" symptom looks like. Fixed
+2026-07-31: `223.5.5.5 119.29.29.29` persisted on **both** nodes via
+`nmcli con mod "Wired connection 3" ipv4.dns ...` (before that, S1 had only a
+transient `resolvectl` fix that a reboot would wipe, and S2 had nothing).
 
 ### ModelScope / HF-cache symlinks must be relative
 `snapshot_download` (and HF cache) can write **absolute** symlinks. Inside the
