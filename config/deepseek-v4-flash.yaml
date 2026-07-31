@@ -38,6 +38,13 @@ env:
   NCCL_IB_DISABLE: 0
   NCCL_DEBUG: WARN
 
+# 2026-07-31 官方模型卡对齐:
+#  - --override-generation-config top_p=0.95:卡片对 agentic 场景的建议
+#    (卡片 temperature 1.0 已经是 generation_config.json 的默认值)。
+#  - speculative-config 里的 draft_sample_method=greedy 只是把卡片建议写显式,
+#    本 build 里它本来就是默认值(vllm/config/speculative.py:282),所以改前改后
+#    tok/s 没有变化(56.8/55.2 → 57.9/57.7/55.5/51.0),不用再重复测这一项。
+#  - num_speculative_tokens 保持 5 不动:卡片给的 7 在 GB10 上更慢(见 c1bb15c)。
 command: |
   vllm serve /root/.cache/huggingface/hub/DeepSeek-V4-Flash-0731 \
       --served-model-name {served_model_name} \
@@ -55,7 +62,8 @@ command: |
       --gpu-memory-utilization {gpu_memory_utilization} \
       --distributed-executor-backend mp \
       --compilation-config '{{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}}' \
-      --speculative-config '{{"method":"dspark","num_speculative_tokens":5}}' \
+      --speculative-config '{{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"greedy"}}' \
+      --override-generation-config '{{"top_p":0.95}}' \
       --tokenizer-mode deepseek_v4 \
       --tool-call-parser deepseek_v4 \
       --enable-auto-tool-choice \
