@@ -1,5 +1,37 @@
 # SWE-bench Lite — DeepSeek-V4-Flash on dual DGX Spark (2026-08-01)
 
+> ## ⚠️ 2026-08-02 补充：本文的失败归因已被后续实验推翻，且服务器状态已变
+>
+> **1. 「7 条 Patch Apply Failed 属于模型能力」这个归因是错的。**
+> 后来在 aider polyglot 上用同一个模型跑了 34 道 Python 题 × 两种编辑格式
+> （[`../aider-polyglot-deepseek-v4-flash-2026-08-01/`](../aider-polyglot-deepseek-v4-flash-2026-08-01/README.md)）：
+> **格式合规率 100%，0 条 malformed，通过率 82–88%。**
+>
+> 也就是说本文测出的不是「模型不会做结构化编辑」，而是
+> **「模型不会在手写 unified diff 时自己算 hunk 头行数」**——一个窄得多的缺陷。
+> 补充证据：本文 20 条预测里 **19 条**的 hunk 头行数算错（见 `analyze_hunks.py`），
+> 其中 12 条只是恰好被 harness 的 `patch --fuzz=5` 兜底救了。换句话说，
+> 本文的 14.3% 里有很大一块是**兜底容忍度的运气**，不是解题能力。
+>
+> `git apply --recount` 正是为这种情形设计的，已验证能应用本文失败的那类 patch
+> （stock 三级兜底全失败，`--recount` rc=0）。
+>
+> **2. 服务器上的 12 个 env 镜像已被删除**（约 30GB）。为加 `gfortran` 重建 base 时
+> 先删了旧镜像，随后转向 aider 方案，未重建。下面「服务器当前状态」一节中
+> 「Docker 镜像：12 个 env 镜像已缓存」**已不成立**，续跑需重建（35 个，约 3–4 小时）。
+> venv、9+3 处补丁、全量文本数据集、requirements 磁盘缓存均**仍在**。
+>
+> **3. 补丁已从 9 处增加到 12 处**：新增 F（base 镜像加 `gfortran`）、
+> G（pylint 改 `--no-build-isolation`）、H（可选 `--recount` 兜底，
+> 默认关闭，`SWEBENCH_APPLY_RECOUNT=1` 启用）。`verify_patches.py` 已同步。
+>
+> **4. 「30% 基础设施失败率会等比放大到全量」的判断是错的。** 冒烟是每仓库 2 条的
+> 分层抽样，严重高估小仓库权重。全量 Lite 300 的真实暴露：scikit-learn 23 条(7.7%,
+> 已由补丁 F 修复) + pylint 6 条(2.0%, 补丁 G) + xarray 5 条(1.7%, 无解) =
+> **11.3%，修完只剩 1.7%**。且最大的未测仓库 sympy（77 条 = 25.7%）其实已被
+> gold patch 验证过。全量只需 **35** 个 distinct env 镜像（sympy 76 条共用 1 个），
+> 不是按 (repo,version) 数算的 64 个。
+
 冒烟运行（20 条）的完整记录。**这是一次基础设施打通 + 方法学验证的运行，不是一个
 可对外引用的 SWE-bench 分数**（样本量 20，且 6 条因 ARM 环境问题没跑起来）。
 
