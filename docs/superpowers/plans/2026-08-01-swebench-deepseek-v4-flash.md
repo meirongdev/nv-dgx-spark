@@ -1,5 +1,51 @@
 # DeepSeek-V4-Flash 跑 SWE-bench 评估实施方案
 
+> ## ⚠️ 本计划已于 2026-08-01 执行完毕 —— 先读勘误再动手
+>
+> **结果与完整记录：[`benchmarks/swe-bench-deepseek-v4-flash-2026-08-01/`](../../../benchmarks/swe-bench-deepseek-v4-flash-2026-08-01/README.md)**
+> （冒烟 20 条：resolved 2/14 可评测 = 14.3%，空 patch 率 0%，gold patch ARM64 验证通过）
+>
+> 计划的整体架构是对的，Phase 0 的勘察结论也准确，但**下面这些地方按原文执行会失败**。
+> 服务器环境现已全部就绪（补丁已应用、全量文本数据集已建、12 个 env 镜像已缓存），
+> 续跑请直接看归档 README 的「服务器当前状态（续跑起点）」一节，**不需要重做 Phase 0–2**。
+>
+> ### 计划中确认有误 / 不完整的地方
+>
+> | 计划原文 | 实际情况 |
+> |---|---|
+> | Step 1.2 `pip install -e ".[inference]"` | **装不上**：`flash_attn` 需 torch，aarch64 编译失败。API 推理路径应用 `.[datasets]` |
+> | Step 1.3 Patch A 只改 `get_test_specs_from_dataset` | **不够**：`run_evaluation.py:306` 直接调 `make_test_spec` 绕过它，镜像仍是 x86_64。应改 `make_test_spec` 的默认 `arch` |
+> | Step 1.4 Patch B「三处」 | **是四处**：还须给 `MODEL_COST_PER_INPUT/OUTPUT` 加零成本条目。`calc_cost()` 是裸字典查找且在 `@retry` 内,`KeyError` 会先耗掉 3 次重试(30–600s 退避)再崩 |
+> | Step 1.3 验证片段用 `ds[:1]` | HF Dataset 切片返回列字典,`dataset[0]` 会 KeyError。应用 `[ds[0]]` |
+> | Phase 0.3「外网连通 ✅(从 Mac 验证)」 | **服务器侧 `huggingface.co` 与 Docker Hub 均不通**。需 `HF_ENDPOINT=https://hf-mirror.com`,并用 daocloud 预拉 `ubuntu:22.04` 再 retag。anaconda/conda-forge/PyPI/ports.ubuntu.com/github.com 直连可达 |
+> | Phase 4 所有 `run_evaluation` 命令 | **漏了 `--namespace none`**。默认 `namespace=swebench` 会去**拉** Docker Hub 的 x86_64 预编译镜像而非本地构建(ARM 根本没有这些镜像) |
+> | 各处 `--report_dir` | **上游 4.1.0 的 bug**:目录会被 mkdir 但从未传给 `make_run_report`,报告始终落在 CWD,文件名是 `<model>.<run_id>.json` |
+> | Step 5.1 汇总脚本读 `d["resolved"]` | 字段名不对。实际是 `resolved_instances` / `resolved_ids` 等,见归档里的 `summarize_report.py` |
+> | Step 3.1 `--model_args "…,max_tokens=8192"` | `run_api` 只把 `temperature`/`top_p` 传给 API,**`max_tokens` 被静默忽略**。反而是好事:实测最大输出 16,166 tokens,8192 会截断 |
+> | Step 3.3/3.4 回退 A/B(thinking 干扰) | **未发生,没用上**。部署带 `--reasoning-parser deepseek_v4`,思考走 `reasoning_content`,`content` 是干净的 `<patch>` 块 |
+> | 风险表「ARM env 构建失败」 | 确实发生,但根因比预期具体,且**需要 3 个计划里没有的补丁**(见下) |
+>
+> ### 计划完全没有预见、但必须打的补丁
+>
+> 全部收在归档目录的 `apply_patches.py`(幂等,可重放),共 9 处：
+>
+> - **Patch C** — 内置 `environment.yml` 是 x86_64 的 `conda env export` 快照
+>   (`py39h06a4308_0`、`ld_impl_linux-64`),aarch64 上 `PackagesNotFoundError`。
+>   ARM 上跳过该缓存,回落到 spec 现解路径。
+> - **Patch D** — **与 ARM 无关**:sympy 等上游已删除旧发布分支,
+>   `git clone --branch 1.7` 直接失败。需全量 clone 回退 + base commit 存在性检查。
+> - **Patch E/E2** — 4 处 `requests.get()` 无超时,从 CN 拉
+>   `raw.githubusercontent.com` 偶发挂死 → **整轮评测无限等待且日志零输出**
+>   (本次耗时最久的坑,最后靠 py-spy dump 栈定位)。且**裸加超时不够**——这些调用在
+>   `get_test_specs_from_dataset` 里对全部实例前置执行,一次 `ReadTimeout` 就中止整轮,
+>   必须带重试 + 磁盘缓存。
+>
+> ### 并发建议修正
+>
+> 计划的 `--max_workers 4` 实际用了 **3**：CLAUDE.md 记录过在 S1 并发编译把头节点
+> OOM、连 vLLM 生产栈一起打掉的事故,而 ARM 上源码编译(scipy/numpy 等)更吃内存。
+> 用 3 时全程可用内存维持 10–13G,vLLM 未受影响。
+
 > **For agentic workers:** 执行本计划时,建议用 superpowers:executing-plans(或 subagent-driven-development)按任务逐条执行。步骤用 `- [ ]` 复选框跟踪。
 
 **Goal:** 对当前 Codex 正在使用的模型(`deepseek-v4-flash`,即 DeepSeek-V4-Flash-0731 FP8,双 GB10 TP=2 vLLM)在 SWE-bench 上跑出可复现的通过率,并把报告归档到 `benchmarks/`。
