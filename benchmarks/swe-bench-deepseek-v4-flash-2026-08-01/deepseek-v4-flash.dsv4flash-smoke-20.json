@@ -1,0 +1,69 @@
+{
+    "total_instances": 20,
+    "submitted_instances": 20,
+    "completed_instances": 7,
+    "resolved_instances": 2,
+    "unresolved_instances": 5,
+    "empty_patch_instances": 0,
+    "error_instances": 13,
+    "completed_ids": [
+        "astropy__astropy-14995",
+        "django__django-14382",
+        "django__django-15790",
+        "matplotlib__matplotlib-25332",
+        "matplotlib__matplotlib-26011",
+        "psf__requests-3362",
+        "pytest-dev__pytest-8906"
+    ],
+    "incomplete_ids": [],
+    "empty_patch_ids": [],
+    "submitted_ids": [
+        "astropy__astropy-14182",
+        "astropy__astropy-14995",
+        "django__django-14382",
+        "django__django-15790",
+        "matplotlib__matplotlib-25332",
+        "matplotlib__matplotlib-26011",
+        "mwaskom__seaborn-3010",
+        "mwaskom__seaborn-3407",
+        "pallets__flask-4045",
+        "pallets__flask-4992",
+        "psf__requests-2674",
+        "psf__requests-3362",
+        "pydata__xarray-4248",
+        "pydata__xarray-5131",
+        "pylint-dev__pylint-7114",
+        "pylint-dev__pylint-7993",
+        "pytest-dev__pytest-5227",
+        "pytest-dev__pytest-8906",
+        "scikit-learn__scikit-learn-10297",
+        "scikit-learn__scikit-learn-11040"
+    ],
+    "resolved_ids": [
+        "astropy__astropy-14995",
+        "django__django-14382"
+    ],
+    "unresolved_ids": [
+        "django__django-15790",
+        "matplotlib__matplotlib-25332",
+        "matplotlib__matplotlib-26011",
+        "psf__requests-3362",
+        "pytest-dev__pytest-8906"
+    ],
+    "error_ids": [
+        "astropy__astropy-14182",
+        "mwaskom__seaborn-3010",
+        "mwaskom__seaborn-3407",
+        "pallets__flask-4045",
+        "pallets__flask-4992",
+        "psf__requests-2674",
+        "pydata__xarray-4248",
+        "pydata__xarray-5131",
+        "pylint-dev__pylint-7114",
+        "pylint-dev__pylint-7993",
+        "pytest-dev__pytest-5227",
+        "scikit-learn__scikit-learn-10297",
+        "scikit-learn__scikit-learn-11040"
+    ],
+    "schema_version": 2
+}
