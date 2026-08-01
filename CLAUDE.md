@@ -223,6 +223,25 @@ graduated effort level). Note: codex/qwen built-in `reasoning:false` only reache
 
 ## Known Gotchas
 
+### `docker build` on S1 is silently forced through the xray proxy
+`~/.docker/config.json` sets `proxies.default` → `http://172.17.0.1:10809`, so the
+docker **client** injects `HTTP(S)_PROXY` into every build and `docker run`. For
+domestic mirrors that tunnels the traffic abroad and back: measured **18 KB/s via
+the proxy vs 1.6 MB/s direct to the same Tsinghua mirror** (~90x), which looks
+exactly like "the mirror is slow" and wastes hours.
+
+- `--build-arg http_proxy=` only fixes plain-HTTP fetches (apt); HTTPS clients
+  (`uv`/`pip`) still pick up `HTTPS_PROXY`. `ENV http_proxy=""` in the Dockerfile
+  is also unreliable.
+- **Fix:** move `~/.docker/config.json` aside for the duration of the build. It is
+  a *client-side* config — the daemon is not restarted, so the running vLLM
+  container is untouched. Working script with a `trap ... EXIT` restore:
+  `benchmarks/aider-polyglot-deepseek-v4-flash-2026-08-01/build_noproxy.sh`.
+- Keep the proxy for anything that genuinely needs foreign net (github clones).
+  Registry *pulls* use the daemon, not this file, so they are unaffected —
+  daocloud being slow for a given image (e.g. `buildpack-deps:jammy` at 39 KB/s)
+  is a separate problem; prefer a base image already present locally.
+
 ### Uplink DHCP provides no DNS — static DNS is load-bearing
 The lab DHCP (10.14.20.1) hands out **no DNS servers**. Working DNS on the DGX
 nodes comes from static config only; without it every non-tailnet lookup
