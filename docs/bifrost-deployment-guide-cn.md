@@ -1,5 +1,12 @@
 # Bifrost + vLLM 部署指南
 
+> **⚠️ 本栈已退役(2026-05-31)**——两块 GPU 已让位给 DeepSeek-V4-Flash 双机 TP=2
+> (见 `docs/deepseek-v4-flash-cn.md`),当前对外服务是 `100.97.87.120:8000` 的裸 vLLM,
+> **不再经过 Bifrost**。本文保留用于复活该栈;注意:
+> - 各模型权重已在清理时删除,复活前需经 ModelScope 重新下载;
+> - `vllm-node-tf5:latest` 镜像也已删除(两台现在只有 `vllm-node-dsv4:latest`),
+>   需要重建或另拉基础镜像。
+
 ## 架构概览
 
 ```
@@ -108,7 +115,8 @@ print(response.choices[0].message.content)
 
 ## Docker 镜像
 
-`vllm-node-tf5:latest` 已预装在两台服务器上（兼容 NVIDIA 驱动 580.142）。
+本栈原用 `vllm-node-tf5:latest`（兼容 NVIDIA 驱动 580.142）——**该镜像已在清理时删除**，
+复活时需重建或改用其他 vLLM 镜像。
 
 如需 Bifrost 镜像：
 
@@ -122,16 +130,14 @@ ssh admin@100.97.87.120 \
 
 ### 模型下载
 
-模型已缓存在 `~/.cache/huggingface/hub/`。如需新模型：
+本栈的模型权重已删除，复活前需重新下载——**用 ModelScope**（hf-mirror 对大
+`*.safetensors` 会 connection reset，见 `docs/china-network-mirrors-cn.md`）：
 
 ```bash
-# 使用 HF 镜像站
-export HF_ENDPOINT=https://hf-mirror.com
-huggingface-cli download bjk110/Qwen3.5-122B-A10B-abliterated-NVFP4
-
-# 使用 ModelScope
-pip install modelscope
-modelscope download --model bjk110/Qwen3.5-122B-A10B-abliterated-NVFP4
+make modelscope-download MS_MODEL=bjk110/Qwen3.5-122B-A10B-abliterated-NVFP4
+# 或直接在 DGX 上:
+/home/admin/modelscope-venv/bin/modelscope download \
+  --model bjk110/Qwen3.5-122B-A10B-abliterated-NVFP4 --local_dir <dir>
 ```
 
 ## vLLM 配置说明

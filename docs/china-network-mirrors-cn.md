@@ -31,7 +31,7 @@ docker tag  docker.m.daocloud.io/lmsysorg/sglang:v0.5.12  lmsysorg/sglang:v0.5.1
 
 ```bash
 /home/admin/modelscope-venv/bin/modelscope download \
-  --model deepseek-ai/DeepSeek-V4-Flash --local_dir /home/admin/.cache/huggingface/hub/DeepSeek-V4-Flash
+  --model deepseek-ai/DeepSeek-V4-Flash-0731 --local_dir /home/admin/.cache/huggingface/hub/DeepSeek-V4-Flash-0731
 ```
 很多 HF 仓库(含 `unsloth/*`、`RedHatAI/*`)在 ModelScope 同名可下。**hf-mirror 对大 `*.safetensors` 会 `connection reset`,不要用它下大权重。** 长任务套 `tmux` 防 SSH 掉线。
 
@@ -44,6 +44,7 @@ rsync -a --partial /src/ 192.168.200.102:/dst/          # 实测 ~390 MB/s
 
 ## 不要踩的坑(实测均失败)
 
+- **S1 上 `docker build` 被 `~/.docker/config.json` 的 `proxies.default` 静默注入代理**(`HTTP(S)_PROXY=172.17.0.1:10809`),国内源被迫绕道国外:实测同一清华源 **18 KB/s(走代理) vs 1.6 MB/s(直连)**,表现和"镜像源慢"一模一样。`--build-arg http_proxy=` 只救 apt,救不了 HTTPS 的 uv/pip。**修法:构建期间把 `~/.docker/config.json` 挪开**(纯客户端配置,daemon 不重启,不影响在跑的 vLLM 容器;带 `trap ... EXIT` 恢复的脚本见 `benchmarks/aider-polyglot-deepseek-v4-flash-2026-08-01/build_noproxy.sh`)。registry *pull* 走 daemon,不受此文件影响。
 - **`/etc/docker/daemon.json` 里的 registry-mirrors 经常不生效**(docker 仍回落到被墙的 `registry-1.docker.io`)→ 用 **显式前缀** `docker.m.daocloud.io/<image>` 绕过。
 - **Cloudflare 托管的代拉域名**(`docker.agsv.top`、`hub.rat.dev`、`1ms.run` 的 blob 等)→ blob 走 Cloudflare(104.x),国内 `connection reset`。
 - **NGC `nvcr.io`** → auth 端点(AWS)间歇性 reset,不稳。

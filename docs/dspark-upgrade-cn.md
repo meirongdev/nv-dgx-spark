@@ -4,6 +4,14 @@
 > 实测单流 warm **~51-53 tok/s**(此前 MTP ~42);**并发上限是 `max_num_seqs=6`**(2026-07-04
 > 验证稳定,聚合 ~50 tok/s,接受率随并发下降到 16-33%);**`max_num_seqs=16` 会导致启动失败**
 > (KV 显存不够,详见下方"并发上限实测"一节),已回滚。
+>
+> **📌 2026-07-31 更新(当前生产状态)**:checkpoint 换成**官方正式版
+> `DeepSeek-V4-Flash-0731`**(166.9GB,ModelScope,DSpark 模块内置,结构/config.json 与
+> preview 组合逐字节一致 → 纯换权重,引擎/recipe 只改 model 路径);同日扫描把
+> `num_speculative_tokens` 从 3 调到 **5**(n=3 ≈ 53.9、n=5 ≈ 56.6、n=7 ≈ 52.4 tok/s——
+> `dspark_block_size=5`,draft 位置 4 之后接受率骤降到 4.7%/0.3%,官方建议的 n=7 白费两次
+> draft;6 路并发在 n=5 复验干净),另按官方模型卡对齐 `top_p=0.95`。单流 warm **~56 tok/s**。
+> 下文步骤/数值是 07-03 升级当时的记录,按史料读。
 > 本文记录**为什么这么做、怎么做最快、以及所有踩过的坑**,供任何机器/会话复现。
 > 基础栈背景见 `docs/deepseek-v4-flash-cn.md`。
 >
@@ -23,6 +31,8 @@
 - **需要单独的 checkpoint**:`deepseek-ai/DeepSeek-V4-Flash-DSpark`
   (**166.9 GB / 48 shards**,ModelScope 有,国内直连可下)。base 权重同 V4-Flash,
   多了 draft/Markov 头(`config.json` 里 `dspark_target_layer_ids: [40,41,42]`)。
+  (**2026-07-31 起已不需要单独 checkpoint**——官方正式版 `DeepSeek-V4-Flash-0731`
+  直接内置 DSpark 模块,当前生产用的就是它。)
 - 收益(2×DGX Spark 实测报告):单流编码 ~42 → **~52-67 tok/s**,并发聚合 ~200-300 tok/s。
   **代价:满 1M 上下文可能掉到 <10 tok/s**(收益集中在中短上下文、高接受率场景)。
 
@@ -93,6 +103,9 @@ make v4flash-run && make v4flash-status && make v4flash-test
 
 - method 名就是 `"dspark"`(源码 assert);`num_speculative_tokens: 3`
   (checkpoint 有 3 个 draft 层 `[40,41,42]`)。
+  **2026-07-31 更新:生产值已调到 5**——draft 层数不是 n 的上限,起决定作用的是
+  `dspark_block_size=5`(见文首更新);当前 recipe 还加了 `draft_sample_method: greedy`
+  (官方卡建议,本 build 里本来就是默认值,写显式不影响 tok/s)。
 - `dspark_fused_markov_sampler` 默认 **True**,不用设。
 - **不需要** `VLLM_USE_V2_MODEL_RUNNER`、不需要改 KV dtype、attention backend 无额外要求
   —— 网上 tonyd2wild/rafaelcaricio recipe 的一大堆 `VLLM_DSPARK_*` env 和

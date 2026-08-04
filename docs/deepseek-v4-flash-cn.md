@@ -1,17 +1,22 @@
 # DeepSeek-V4-Flash 双机部署(2×DGX Spark / GB10)
 
-当前主力栈(2026-05-31 起,2026-07-03 从 MTP 升级到 DSpark):**DeepSeek-V4-Flash(284B / 13B-active,
-官方 FP8)跨两台 GB10 双机 TP=2 跑 vLLM**,单流 warm **~51-53 tok/s**(DSpark;此前 MTP ~42,不开投机解码约 ~25),
-1M 上下文。服务在 head `100.97.87.120:8000`,模型名 `deepseek-v4-flash`。
+当前主力栈(2026-05-31 起;2026-07-03 从 MTP 升级到 DSpark;2026-07-31 换到 **0731 官方正式版**
+checkpoint `DeepSeek-V4-Flash-0731` 并把 `num_speculative_tokens` 调到 5):**DeepSeek-V4-Flash
+(284B / 13B-active,官方 FP8)跨两台 GB10 双机 TP=2 跑 vLLM**,单流 warm **~56 tok/s**
+(DSpark n=5;n=3 时 ~51-53,此前 MTP ~42,不开投机解码约 ~25),1M 上下文。
+服务在 head `100.97.87.120:8000`,模型名 `deepseek-v4-flash`。
 
 > 这条栈**不走本仓库的 Ansible/Makefile-vLLM 流程**,而是用 eugr 的 `spark-vllm-docker` 工具链 + jasl/vllm fork。
-> 便捷封装见 `make v4flash-run | v4flash-status | v4flash-test | v4flash-logs | v4flash-stop`。
+> 便捷封装见 `make v4flash-run | v4flash-status | v4flash-test | v4flash-load | v4flash-logs | v4flash-stop`。
 > **DSpark 升级 runbook**(MTP 的继任投机解码)见 `docs/dspark-upgrade-cn.md`。
 
 ## 为什么是这套(踩过的坑)
 
 - **SGLang 死路**:SGLang 0.5.12 的 V4 NSA 注意力依赖 **FlashMLA**,GB10(sm_121)无对应 kernel → `RuntimeError: Unsupported architecture for sparse decode fwd`。换 vLLM。
-- **必须用 jasl/vllm fork**:`codex/ds4-sm120-min-enable` 带 GB10 sm_121 支持 + **triton 稀疏 MLA**(`VLLM_TRITON_MLA_SPARSE=1`,绕开 FlashMLA)。官方/裸 vLLM 不支持 V4 或缺 sm_121。
+- **必须用 jasl/vllm fork**:`codex/ds4-sm120-min-enable` 带 GB10 sm_121 支持 + **triton 稀疏 MLA**(`VLLM_TRITON_MLA_SPARSE=1`,绕开 FlashMLA)。
+  **⚠️ 2026-07-04 更正**:官方 vLLM 其实**能**在 GB10 双机 TP=2 跑通普通 V4-Flash(需带
+  `DG_JIT_USE_NVRTC=0` + `DG_JIT_NVCC_COMPILER=...`,缺了会报看似"架构不支持"的错)——
+  **jasl fork 现在唯一不可替代的价值是 DSpark**,详见 `docs/dspark-upgrade-cn.md`。
 - **预构建镜像 China 拿不到**(daocloud 拒冷门 org、直连被墙),只能源码编译。
 
 ## 一次性准备
@@ -43,8 +48,11 @@ bash scripts/vllm-fix-torch.sh     # 在镜像内重装 torch==2.11.0 cu130 → 
 ```
 
 ### 4. 模型(官方 FP8,本地路径,**不要用 repo-id**)
-权重在两台的 `/home/admin/.cache/huggingface/hub/DeepSeek-V4-Flash`(ModelScope 下的 flat 目录,46 shards / 149GB)。
-recipe 里 `model:` 直接写**容器内路径** `/root/.cache/huggingface/hub/DeepSeek-V4-Flash`——
+当前权重(2026-07-31 起)在两台的 `/home/admin/.cache/huggingface/hub/DeepSeek-V4-Flash-0731`
+(ModelScope 下的 flat 目录,48 shards / 166.9GB,**官方正式版,DSpark 模块内置**;
+它替换了此前的 preview 底模 `DeepSeek-V4-Flash`(46 shards / 149GB)+ 独立 DSpark checkpoint 组合,
+结构相同、config.json 逐字节一致,纯换权重即可)。
+recipe 里 `model:` 直接写**容器内路径** `/root/.cache/huggingface/hub/DeepSeek-V4-Flash-0731`——
 因为 worker(S2)无代理、HF repo-id 解析会失败或想重下;而 HF 缓存软链必须相对路径才能在容器内解析(同 ModelScope 坑)。
 
 ## 启动 / 验证 / 停止
@@ -53,16 +61,20 @@ recipe 里 `model:` 直接写**容器内路径** `/root/.cache/huggingface/hub/D
 make v4flash-run        # run-recipe.sh deepseek-v4-flash --no-ray(tmux),~3-4min 加载 + cuda graph
 make v4flash-status     # /v1/models + 容器状态
 make v4flash-test       # 编码冒烟 + 量 tok/s
+make v4flash-load       # 谁在用引擎(running/waiting 请求数、KV%、客户端 IP)——"变慢"先查这个
 make v4flash-logs       # tail head 日志
 make v4flash-stop       # 停双机
 ```
 
 recipe:`config/deepseek-v4-flash.yaml`(镜像里 `~/spark-vllm-docker/recipes/deepseek-v4-flash.yaml` 的镜像)。
 关键 flag:`--tensor-parallel-size 2 --kv-cache-dtype fp8 --block-size 256 --max-model-len 1000000`、
-`--gpu-memory-utilization 0.80`(见下方 OOM 教训)、`--distributed-executor-backend mp`、
-`--compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE"}'`、
-`--speculative-config '{"method":"dspark","num_speculative_tokens":3}'`(DSpark,详见
-`docs/dspark-upgrade-cn.md`;此前用的是 `deepseek_mtp`);
+`--max-num-seqs 6 --max-num-batched-tokens 8192`(实测并发上限,16 会启动失败,见
+`docs/dspark-upgrade-cn.md`)、`--gpu-memory-utilization 0.80`(见下方 OOM 教训)、
+`--distributed-executor-backend mp`、
+`--compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}'`、
+`--speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"greedy"}'`
+(DSpark,n=5 是 GB10 调优值,详见 `docs/dspark-upgrade-cn.md`;此前用的是 `deepseek_mtp`)、
+`--override-generation-config '{"top_p":0.95}'`(0731 官方模型卡对齐);
 env:`VLLM_TRITON_MLA_SPARSE=1`、`NCCL_IB_DISABLE=0`(用 CX7 RoCE)、`DG_JIT_USE_NVRTC=0`。
 
 ## 开机自启(systemd,重启后自动拉起)
@@ -97,7 +109,8 @@ make v4flash-autostart-remove   # 卸载(disable + 删 unit)
 |---|---|
 | 无投机解码 | ~25 tok/s |
 | MTP(num_speculative_tokens=2) | ~42 tok/s warm(社区 2×Spark 报 ~44)|
-| **DSpark(num_speculative_tokens=3,当前)** | **~51-53 tok/s warm**(接受率随内容波动 40-85%;重启/首次请求会有一次性 Triton JIT 编译尖刺,详见 `docs/dspark-upgrade-cn.md`)|
+| DSpark(num_speculative_tokens=3,2026-07-03 起) | ~51-53 tok/s warm(接受率随内容波动 40-85%)|
+| **DSpark 0731(num_speculative_tokens=5,当前)** | **~56 tok/s warm**(2026-07-31 扫描:n=3 ≈ 53.9、n=5 ≈ 56.6、n=7 ≈ 52.4——`dspark_block_size=5`,draft 位置 4 之后接受率骤降,官方建议的 n=7 反而白费两次 draft;重启/首次请求有一次性 Triton JIT 编译尖刺,详见 `docs/dspark-upgrade-cn.md`)|
 
-1M ctx,每节点权重 ~74GB(`--gpu-memory-utilization 0.80`——2026-06-29 曾在 0.85 触发头节点
-整机 OOM,详见提交历史/会话记录)。
+1M ctx,每节点权重 ~83GB(0731 共 166.9GB 按 TP=2 对半;`--gpu-memory-utilization 0.80`——
+2026-06-29 曾在 0.85 触发头节点整机 OOM,详见提交历史/会话记录)。

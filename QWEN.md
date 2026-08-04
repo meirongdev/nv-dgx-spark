@@ -2,269 +2,123 @@
 
 ## Project Overview
 
-This is an Ansible-based infrastructure project for managing an NVIDIA DGX Spark cluster running large language model inference services. It provides Makefile-driven workflows for:
+Deployment tooling for vLLM inference on a two-node NVIDIA DGX Spark (GB10)
+cluster. Two stacks live in this repo:
 
-- **Infrastructure management**: SSH connectivity testing, Ansible inventory, system unification
-- **vLLM deployment**: Multiple LLM models with GPU-optimized configurations
-- **Bifrost gateway** (`maximhq/bifrost`): OpenAI-compatible gateway with provider-scoped routing, virtual-key auth, and governance. Runs on server 1 :8080.
-- **tmux resilience**: SSH-drop-proof deployments via named tmux sessions
+- **Current primary — DeepSeek-V4-Flash-0731** (284B/13B-active, official FP8):
+  **one** dual-node TP=2 vLLM instance across both servers (jasl/vllm fork via
+  the eugr `spark-vllm-docker` harness — **not** Ansible) + **DSpark**
+  speculative decoding (`num_speculative_tokens=5`), ~56 tok/s warm
+  single-stream, 1M context. Served on server 1 `:8000` as `deepseek-v4-flash`.
+- **Retired (revivable) — Qwen/Gemma per-node vLLM + Bifrost gateway**,
+  Ansible-driven (`make stack-deploy`, `make bifrost-*`). Torn down to free both
+  GPUs for V4-Flash; playbooks/targets/config still work, but model weights and
+  the `vllm-node-tf5` image were deleted — re-download/rebuild before reviving.
 
 **Target Infrastructure:**
-- `100.97.87.120` — DGX Spark (GB10 Grace Blackwell, 128GB unified memory)
-- `100.67.164.92` — DGX Spark (GB10 Grace Blackwell, 128GB unified memory)
+- `100.97.87.120` — server 1 (V4-Flash head; serves the OpenAI API on `:8000`)
+- `100.67.164.92` — server 2 (V4-Flash TP worker; no separate endpoint)
+- SSH: user `admin`, key `~/.ssh/vgio`
+- `192.168.200.101/102` — 200G CX7 link (RoCE/NCCL TP traffic between the nodes)
 
-Both hosts use SSH key `/Users/matthew/.ssh/vgio` with user `admin`.
+## Hardware
 
-## Hardware Architecture
+**NVIDIA DGX Spark (GB10 Grace Blackwell Superchip), per node:**
+- GPU GB10 Blackwell (`sm_121`, CUDA 13.0), 20-core ARM CPU, 4TB NVMe
+- 128GB LPDDR5X **unified coherent memory** (CPU+GPU share one pool)
+- Constraints: swap **must** stay off; don't over-allocate
+  `--gpu-memory-utilization` (V4-Flash uses **0.80** — 0.85 OOM'd the head node
+  on 2026-06-29; the retired single-node stack needed 0.70). `nvidia-smi` shows
+  `[N/A]` per-process memory on GB10 — watch `free -h`.
 
-**NVIDIA DGX Spark (GB10 Grace Blackwell Superchip):**
-- **GPU**: GB10 Blackwell (sm_121, CUDA 13.0)
-- **CPU**: 20-core ARM (Cortex-X925 + Cortex-A725)
-- **Memory**: 128GB LPDDR5X **unified coherent memory** (CPU+GPU share the same pool)
-- **Storage**: 4TB NVMe SSD
-- **Key Constraint**: Unified memory requires careful management — `--gpu-memory-utilization 0.7` is mandatory, swap must be disabled (causes full system freeze on unified memory)
+## Common Commands
 
-## Technologies
-
-| Technology | Purpose |
-|------------|---------|
-| **Ansible** | Configuration management and remote execution |
-| **vLLM** | High-performance LLM inference (PagedAttention + FlashInfer) |
-| **Docker** | Container runtime with NVIDIA Container Toolkit |
-| **uv** | Fast Python package installer and venv manager |
-| **Bifrost** (`maximhq/bifrost`) | OpenAI-compatible gateway — provider routing, virtual keys, governance |
-| **tmux** | SSH-drop-proof session management |
-
-## Project Structure
-
-```
-├── playbooks/          # Ansible playbooks (vLLM deploy, system unification, Bifrost)
-├── scripts/            # Helper scripts (GPU validation, memory monitor, patching)
-├── config/             # vllm.env, vllm.service, bifrost-config.json
-├── benchmarks/         # Performance scripts and reports
-├── docs/               # Deployment guides and design docs
-├── inventory.ini       # Ansible inventory (generated)
-├── Makefile            # Primary interface for all operations
-└── .venv/              # Python virtual environment (managed via uv)
-```
-
-## Quick Start
+### Current stack — DeepSeek-V4-Flash (eugr harness, not Ansible)
 
 ```bash
-# Full setup: venv + inventory + SSH test
-make all
+make v4flash-run        # launch dual-node TP=2 (systemd if autostart installed, else tmux)
+make v4flash-status     # /v1/models + container state
+make v4flash-test       # coding smoke test + tok/s
+make v4flash-load       # who is using the engine now (running/waiting reqs, KV%, client IPs)
+make v4flash-logs       # tail head-node log
+make v4flash-stop       # stop both nodes
+
+# Boot autostart (systemd unit on the head; survives reboot)
+make v4flash-autostart | v4flash-autostart-start | v4flash-autostart-status | v4flash-autostart-remove
 ```
 
-## Available Commands
+Recipe: `config/deepseek-v4-flash.yaml` (mirror of the live one on server 1).
+Full runbook: `docs/deepseek-v4-flash-cn.md`; DSpark details: `docs/dspark-upgrade-cn.md`.
 
-### Infrastructure Management
+### Misc / monitoring
 
-| Command | Description |
-|---------|-------------|
-| `make venv` / `make install` | Create `.venv` and install Ansible via `uv` |
-| `make test` / `make ping` | Test SSH/Ansible connectivity to all hosts |
-| `make facts` | Gather system facts from hosts |
-| `make cmd COMMAND="uptime"` | Run any ad-hoc command on all hosts |
-| `make inventory` | Regenerate `inventory.ini` |
-| `make unify-system` | Unify kernel and NVIDIA driver across cluster |
-| `make unify-status` | Check system version status |
-| `make all` | `make venv inventory test` |
-| `make clean` | Remove `.venv` and `inventory.ini` |
-
-### vLLM Deployment — Single Node (Primary)
-
-Each DGX Spark runs an **independent** vLLM instance. Cross-node Tensor Parallelism (TP=2) has known hang risks and is under development.
-
-| Command | Description |
-|---------|-------------|
-| `make vllm-deploy` | Full deployment (system hardening + container) |
-| `make vllm-single-deploy` | Deploy with custom model/port/tool parser |
-| `make vllm-test` | Validate API health, completions, and chat endpoints |
-| `make vllm-status` | Check container, API, and GPU utilization |
-| `make vllm-stop` | Stop all vLLM containers |
-| `make vllm-benchmark` | Run inference performance benchmark |
-| `make vllm-monitor` | Real-time unified memory monitoring |
-| `make vllm-logs HOST=... VLLM_CONTAINER=...` | Follow logs from a specific container on a host |
-
-**Customization:**
 ```bash
-make vllm-deploy VLLM_MODEL=Qwen/Qwen3-8B GPU_MEMORY_UTIL=0.75 VLLM_PORT=8001
+make ping                          # ansible ping all hosts
+make cmd COMMAND="uptime"          # ad-hoc command on all hosts
+make node-exporter-deploy          # node_exporter (docker, :9100) on both hosts
+make smartctl-exporter-deploy      # smartctl_exporter (systemd, :9633) on both hosts
+make modelscope-download MS_MODEL=<id>   # download a model via ModelScope
 ```
 
-### Per-Model Deployments
+Metrics are scraped over Tailscale by the homelab Prometheus/Grafana
+(`meirongdev/homelab` repo), dashboard "DGX Spark / Node Exporter".
 
-Three pre-configured model deployments with their own container names and configurations:
-
-| Model | Container | Port | Description |
-|-------|-----------|------|-------------|
-| Qwen3.5-122B-A10B-NVFP4 | `vllm-qwen` | 30000 | Chat template + chat_utils patch + tool calling |
-| Gemma-4-31B-IT-NVFP4 | `vllm-gemma4` | 30000 | Local HF cache + gemma4 parser patch |
-| Qwen3.6-35B-A3B-FP8 | `vllm-qwen36` | 30000 | ModelScope cache, 256K context, tool calling |
+### tmux resilient sessions (SSH rides a flaky DERP relay)
 
 ```bash
-# Deploy specific model
-make vllm-qwen-deploy
-make vllm-gemma4-deploy
-make vllm-qwen36-deploy
-
-# Status/stop/logs for any model
-make vllm-qwen-status
-make vllm-qwen-stop
-make vllm-qwen-logs HOST=100.97.87.120
-```
-
-### Bifrost Gateway (primary)
-
-`maximhq/bifrost` on server 1 :8080. OpenAI-compatible endpoints; requires
-the `model` field as `<provider>/<model>` (e.g. `vllm-server1/Qwen3.6-35B-A3B`).
-Providers, keys and virtual keys live in `config/bifrost-config.json`.
-
-| Command | Description |
-|---------|-------------|
-| `make bifrost-deploy` | Deploy Bifrost container + push config |
-| `make bifrost-test`   | Validate providers and a chat completion |
-| `make bifrost-status` | Container status + `/api/health` |
-| `make bifrost-stop`   | Stop the Bifrost container |
-
-Routing:
-- `/v1/responses*` is enabled only on `vllm-server1` (Responses API keeps
-  `previous_response_id` state in memory on one node).
-- `/v1/chat/completions` is enabled on both `vllm-server1` and `vllm-server2`
-  — the client picks which by using the provider prefix. There is no
-  cross-provider round-robin unless a CEL `routing_rule` is added.
-- Bearer tokens are matched against `governance.virtual_keys[]`. Primary VK:
-  `sk-bf-dgx-spark-cluster-2026`.
-
-### tmux Resilient Sessions
-
-Commands running inside named tmux sessions survive SSH disconnections:
-
-```bash
-# Deploy in tmux (survives network drops)
-make tmux-vllm-deploy
-
-# Run any command in a tmux session
-make tmux-cmd COMMAND="docker pull nvcr.io/nvidia/vllm:26.01-py3" SESSION="docker-pull"
-
-# Manage sessions on a host
+make tmux-cmd COMMAND="..." SESSION="my-task"
 make tmux-list HOST=100.97.87.120
 make tmux-attach HOST=100.97.87.120 SESSION=vllm-deploy
 make tmux-kill HOST=100.97.87.120 SESSION=vllm-deploy
 ```
 
-### Model Download
+### Retired stack (only when reviving it)
 
 ```bash
-# Download from ModelScope (survives SSH disconnection)
-make modelscope-download
+make all                           # bootstrap: venv + inventory + SSH test
+make stack-deploy                  # vLLM on both servers + Bifrost; STACK_MODEL=qwen36|qwen|gemma4
+make vllm-qwen36-{deploy,status,stop,logs}
+make bifrost-{deploy,test,status,stop}
 ```
 
-## vLLM Best Practices for DGX Spark
+## Using the endpoint from this Mac
 
-### Unified Memory Management (Critical)
-1. `--gpu-memory-utilization 0.7` — mandatory (leaves 30% headroom for fragmentation)
-2. **Disable swap** — causes system-wide freeze on unified memory
-3. OOM protection configured for SSH processes
-
-### Performance Optimization
-- `VLLM_ATTENTION_BACKEND=FLASHINFER` — Blackwell-optimized attention
-- `VLLM_USE_FLASHINFER_MOE=1` — MoE acceleration
-- KV cache in FP8 — 50% memory savings with minimal quality loss
-
-### Tool Calling Support
-```bash
-make vllm-single-deploy \
-  VLLM_MODEL=Qwen/Qwen3.5-35B-A3B \
-  TOOL_CALL_PARSER=qwen3_coder
-```
-
-**Supported parsers:** `qwen3_coder`, `llama3_json`, `pythonic`, `hermes`, `mistral`, `gemma4`
-
-### Model Recommendations
-
-| Use Case | Model | Memory | Expected Throughput |
-|----------|-------|--------|-------------------|
-| Quick validation | `Qwen3-0.6B` | <5GB | >200 tok/s |
-| Daily workload | `Qwen2.5-7B-Instruct` | ~15GB | 100-150 tok/s |
-| MoE high perf | `Qwen3.5-35B-A3B` | ~70GB | 30-100 tok/s |
-| Edge case | `Qwen3.5-122B-A10B-NVFP4` | ~75GB | 10-30 tok/s |
-
-## Deployment Flow
+Unauthenticated vLLM at `http://100.97.87.120:8000/v1` (any API key accepted),
+model `deepseek-v4-flash`; serves `/v1/chat/completions` and `/v1/responses`.
+Qwen Code reads `.qwen/.env` in this repo (gitignored):
 
 ```
-1. System Hardening
-   ├─ Disable swap
-   ├─ Configure OOM protection
-   ├─ Add admin to docker group
-   └─ Deploy environment files
-
-2. vLLM Deployment
-   ├─ Pull Docker image
-   ├─ Start container with optimized flags
-   ├─ Mount HuggingFace/ModelScope cache
-   └─ Wait for model loading
-
-3. Validation
-   ├─ Health check (/health)
-   ├─ Test completions API
-   ├─ Test chat API
-   └─ Verify GPU utilization
+OPENAI_BASE_URL=http://100.97.87.120:8000/v1
+OPENAI_MODEL=deepseek-v4-flash
+OPENAI_API_KEY=dummy
 ```
 
-## Key Configuration
+Thinking is on by default and is a **binary** toggle via
+`chat_template_kwargs.thinking` — Qwen Code's built-in `reasoning:false` is a
+no-op against self-hosted vLLM; inject
+`chat_template_kwargs:{"thinking":false}` via extra-body to turn it off.
 
-| File | Purpose |
-|------|---------|
-| `config/vllm.env` | Environment variables (FlashInfer, memory limits, model config) |
-| `config/vllm.service` | Systemd service template (OOM protection, restart policy) |
-| `scripts/monitor-unified-memory.sh` | Real-time unified memory monitoring |
-| `scripts/validate-gpu.sh` | GPU passthrough validation |
-| `playbooks/vllm-model-deploy.yml` | Generic model-specific deployment playbook |
-| `playbooks/bifrost-deploy.yml` | Bifrost gateway deployment |
-| `config/bifrost-config.json` | Bifrost providers + virtual keys |
+## Key Gotchas (details in CLAUDE.md and docs/)
 
-## Development Conventions
+- **Never build/`docker build` on S1 without stopping the production stack
+  first** — even "lightweight" builds compile native deps and have OOM'd the
+  head node (2026-07-04).
+- `docker build` on S1 is silently forced through the xray proxy by
+  `~/.docker/config.json` `proxies.default` — move the file aside for
+  domestic-mirror builds (18 KB/s proxied vs 1.6 MB/s direct).
+- Serve models from the **local container path**, never an HF repo-id; HF-cache
+  symlinks must be **relative**.
+- Mainland-China networking: Docker images via `docker.m.daocloud.io/...` +
+  retag; models via ModelScope; Python via Tsinghua PyPI. Runbook:
+  `docs/china-network-mirrors-cn.md`.
+- Lab DHCP hands out **no DNS** — static `nmcli ipv4.dns` config on both nodes
+  is load-bearing.
+- Ansible runs via `uv run ansible` / `uv run ansible-playbook`; hosts are edited
+  via `HOSTS` in the Makefile, then `make inventory`.
 
-- **Ansible**: YAML best practices, descriptive variable names in playbooks
-- **Scripts**: Python for complex logic (patching), Bash for system automation
-- **Naming**: kebab-case for all files (e.g., `vllm-tp2-deploy.yml`)
-- **Environment**: `uv` for Python dependency management — never `pip`/`venv` directly
-- **All Ansible commands**: use `uv run` for virtual environment execution
-- **SSH**: Strict host key checking disabled (`StrictHostKeyChecking=no`) for automation
-- **Commits**: Conventional Commits format (`feat:`, `fix:`, `docs:`, `perf:`)
+## Conventions
 
-## Troubleshooting
-
-### vLLM Won't Start
-```bash
-make vllm-logs HOST=100.97.87.120 VLLM_CONTAINER=vllm-server
-make cmd COMMAND="docker logs vllm-server --tail 100"
-make cmd COMMAND="nvidia-smi"
-```
-
-### Out of Memory
-- Verify `--gpu-memory-utilization 0.7` (not default 0.9)
-- Confirm swap is disabled: `make cmd COMMAND="swapon --show"`
-- Reduce `--max-model-len` or `--max-num-seqs`
-
-### Tool Calling Errors (OpenClaw returns 400)
-```bash
-# Requires --enable-auto-tool-choice
-make vllm-single-deploy \
-  VLLM_MODEL=Qwen/Qwen3.5-35B-A3B \
-  TOOL_CALL_PARSER=qwen3_coder
-```
-
-### Slow Inference
-- Confirm FlashInfer: `make cmd COMMAND="echo $$VLLM_ATTENTION_BACKEND"`
-- Check GPU utilization: `make vllm-status`
-
-## Health Monitoring
-
-```bash
-# Real-time unified memory monitoring
-make vllm-monitor
-
-# Manual checks
-make vllm-status VLLM_CONTAINER=vllm-qwen36 VLLM_PORT=30000
-```
+- Current image on both servers: `vllm-node-dsv4:latest` (jasl fork build,
+  driver 580.142 / CUDA 13.0).
+- kebab-case file names; Python for complex patching, Bash for automation.
+- Conventional Commits (`feat:`, `fix:`, `docs:`, `perf:`).

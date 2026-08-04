@@ -36,6 +36,7 @@ Blackwell) servers. Two stacks live in this repo:
 make v4flash-run        # launch dual-node TP=2 (systemd if autostart installed, else tmux)
 make v4flash-status     # /v1/models + container state
 make v4flash-test       # coding smoke test + tok/s
+make v4flash-load       # who is using the engine now (running/waiting reqs, KV%, client IPs)
 make v4flash-logs       # tail head-node log
 make v4flash-stop       # stop both nodes (via systemd if the unit is active)
 
@@ -53,13 +54,18 @@ make ping                          # ansible ping all hosts
 make cmd COMMAND="uptime"          # ad-hoc command on all hosts
 ```
 
-### Monitoring (node_exporter → homelab Prometheus/Grafana)
+### Monitoring (node_exporter + smartctl_exporter → homelab Prometheus/Grafana)
 
 ```bash
 make node-exporter-deploy          # deploy node_exporter (docker) on BOTH hosts
 make node-exporter-status          # docker ps + /metrics probe per host
 make node-exporter-logs            # tail logs (NODE_EXPORTER_LOG_HOST=<ip> to pick a host)
 make node-exporter-stop            # remove the container on both hosts
+
+make smartctl-exporter-deploy      # deploy smartctl_exporter (systemd, :9633) on BOTH hosts
+make smartctl-exporter-status      # service state + /metrics probe per host
+make smartctl-exporter-logs        # journal (SMARTCTL_EXPORTER_LOG_HOST=<ip> to pick a host)
+make smartctl-exporter-stop        # disable the service on both hosts
 ```
 
 Host metrics are surfaced in the **homelab** Grafana stack (the `meirongdev/homelab`
@@ -73,6 +79,10 @@ repo), not locally:
   a swap-must-be-0 guard, disk, network incl. the 200G CX7 link, temps).
 - The image is pulled via the **daocloud** mirror (`quay.m.daocloud.io/...`) then
   retagged — quay.io/github reset from mainland China.
+- smartctl_exporter (NVMe SMART disk health) is **not** a container — the quay
+  image is amd64-only, so the GitHub linux-arm64 binary is downloaded on the
+  control machine (DGX can't reach github.com) and shipped over SSH as a root
+  systemd service on `:9633` (Prometheus job `smartctl-dgx-spark`).
 
 (Retired-stack commands — `stack-deploy`, `vllm-<model>-*`, `bifrost-*` — are in
 the [Retired stack](#retired-stack-revivable) section.)
@@ -103,10 +113,12 @@ pure TP worker reached over the 200G link — there is no separate endpoint on i
 ## DeepSeek-V4-Flash deploy notes (GB10 → vLLM jasl fork)
 
 Full deploy: `docs/deepseek-v4-flash-cn.md`; recipe `config/deepseek-v4-flash.yaml`;
-ops `make v4flash-{run,status,test,logs,stop}`.
+ops `make v4flash-{run,status,test,load,logs,stop}`.
 
-- **Why two nodes:** the official FP8 weights are ~149GB (46 shards) — more than
-  one GB10's 128GB. TP=2 splits them (~74GB/node), leaving room for KV cache.
+- **Why two nodes:** the official FP8 weights don't fit one GB10's 128GB — the
+  serving checkpoint `DeepSeek-V4-Flash-0731` is ~167GB / 48 shards (the pre-0731
+  base without the DSpark module was ~149GB / 46 shards). TP=2 splits them
+  (~83GB/node), leaving room for KV cache.
 - **Engine = jasl/vllm `codex/ds4-sm120-min-enable`**, built via the eugr
   `spark-vllm-docker` harness. GB10 is `sm_121`; stock builds lack a kernel for
   V4's sparse MLA, so the fork swaps in a Triton implementation via
@@ -124,7 +136,7 @@ ops `make v4flash-{run,status,test,logs,stop}`.
   throughput (~25 → ~42 tok/s). `cudagraph_mode=FULL_AND_PIECEWISE`, `--max-model-len 1000000`.
 - **DSpark** (spec-decode successor to MTP, live since 2026-07-03): serves a
   checkpoint with the DSpark module attached +
-  `--speculative-config '{"method":"dspark","num_speculative_tokens":3}'`.
+  `--speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"greedy"}'`.
   Since 2026-07-31 that checkpoint is `DeepSeek-V4-Flash-0731` (166.9GB,
   ModelScope) — the official release ships the module built in, same structure
   and byte-identical config.json as the preview-era `DeepSeek-V4-Flash-DSpark`
@@ -189,8 +201,9 @@ does **not** come back on its own unless the unit below is installed. One-time:
 
 - 128 GB LPDDR5X coherent memory shared between CPU and GPU, per node.
 - **Don't over-allocate `gpu-memory-utilization`** — too high risks OOM freezes of
-  sshd itself. V4-Flash uses **0.85** (weights split TP=2, ~74GB/node → headroom);
-  the retired single-node-full-model Qwen/Gemma stack needed **0.70**.
+  sshd itself. V4-Flash uses **0.80** (0.85 caused a full head-node OOM on
+  2026-06-29 — lowered and kept there since); the retired single-node-full-model
+  Qwen/Gemma stack needed **0.70**.
 - Swap **must** be disabled (`swapoff -a`).
 - `nvidia-smi` reports `[N/A]` for per-process memory on GB10; watch `free -h`.
 
@@ -313,6 +326,9 @@ crawl. Each DGX pulls fine over its own fast domestic link — no proxy/VPN/rela
 - `playbooks/node-exporter-deploy.yml` — deploys Prometheus node_exporter (docker,
   `--net=host --pid=host`) on both hosts for homelab Grafana monitoring
   (`make node-exporter-deploy`).
+- `playbooks/smartctl-exporter-deploy.yml` — installs smartctl_exporter as a host
+  systemd service (linux-arm64 binary shipped over SSH) on both hosts
+  (`make smartctl-exporter-deploy`).
 - _Retired stack:_ `playbooks/vllm-model-deploy.yml`, `playbooks/bifrost-deploy.yml`,
   `config/bifrost-config.json`, `scripts/run-vllm-qwen.sh`,
   `scripts/vllm-entrypoint.sh` + `scripts/patch-vllm-*.py`.
