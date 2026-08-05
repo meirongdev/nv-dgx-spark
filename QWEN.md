@@ -8,8 +8,10 @@ cluster. Two stacks live in this repo:
 - **Current primary — DeepSeek-V4-Flash-0731** (284B/13B-active, official FP8):
   **one** dual-node TP=2 vLLM instance across both servers (jasl/vllm fork via
   the eugr `spark-vllm-docker` harness — **not** Ansible) + **DSpark**
-  speculative decoding (`num_speculative_tokens=5`), ~56 tok/s warm
-  single-stream, 1M context. Served on server 1 `:8000` as `deepseek-v4-flash`.
+  speculative decoding (`num_speculative_tokens=5`), warm single-stream
+  **31–84 tok/s depending on content** (mean 67; acceptance is content-driven —
+  baseline and measurement traps in `benchmarks/bench-full-2026-08-05/`), 1M
+  context. Served on server 1 `:8000` as `deepseek-v4-flash`.
 - **Retired (revivable) — Qwen/Gemma per-node vLLM + Bifrost gateway**,
   Ansible-driven (`make stack-deploy`, `make bifrost-*`). Torn down to free both
   GPUs for V4-Flash; playbooks/targets/config still work, but model weights and
@@ -93,10 +95,13 @@ OPENAI_MODEL=deepseek-v4-flash
 OPENAI_API_KEY=dummy
 ```
 
-Thinking is on by default and is a **binary** toggle via
-`chat_template_kwargs.thinking` — Qwen Code's built-in `reasoning:false` is a
-no-op against self-hosted vLLM; inject
+Thinking is on by default, toggled via `chat_template_kwargs.thinking` — Qwen
+Code's built-in `reasoning:false` is a no-op against self-hosted vLLM; inject
 `chat_template_kwargs:{"thinking":false}` via extra-body to turn it off.
+
+`reasoning_effort` also works, but **only the value `"max"`** — the engine's
+bundled (preview-era) encoder injects a prefix for `"max"` and silently ignores
+everything else, including `"high"`. Details + measurements in CLAUDE.md.
 
 ## Key Gotchas (details in CLAUDE.md and docs/)
 

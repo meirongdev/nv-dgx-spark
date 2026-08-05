@@ -10,7 +10,8 @@ Blackwell) servers. Two stacks live in this repo:
 - **Current primary — DeepSeek-V4-Flash-0731** (official release, upgraded
   2026-07-31 from the preview build; 284B/13B-active, official FP8) across
   **both** servers: dual-node TP=2 vLLM (jasl/vllm fork) + **DSpark** speculative
-  decoding (upgraded 2026-07-03 from MTP), ~56 tok/s warm single-stream,
+  decoding (upgraded 2026-07-03 from MTP), warm single-stream **31–84 tok/s
+  depending on content** (mean 67, see [Measuring throughput](#measuring-throughput-read-this-before-quoting-a-toks-number)),
   **1M ctx**, served on server 1 `:8000` as `deepseek-v4-flash`.
   This stack is **NOT** Ansible-driven — it uses the eugr `spark-vllm-docker`
   harness. Deploy/run via `make v4flash-*`; full runbook
@@ -148,8 +149,10 @@ ops `make v4flash-{run,status,test,load,logs,stop}`.
   passes per step; 6-way concurrency re-validated clean at n=5).
   `served_model_name` unchanged so clients need no reconfiguration.
   `max_num_seqs=6` / `max_num_batched_tokens=8192` is the validated concurrency
-  ceiling (real 6-way concurrency confirmed, no garbling/crash, ~50 tok/s
-  aggregate) — **`max_num_seqs=16` fails outright** (KV-cache preflight check
+  ceiling (real 6-way concurrency confirmed, no garbling/crash, **186 tok/s
+  aggregate / 33.5 per stream** — re-measured 2026-08-05; the "~50 aggregate" in
+  older notes was a streaming-chunk-counting artifact) — **`max_num_seqs=16`
+  fails outright** (KV-cache preflight check
   rejects the config; `Restart=on-failure` will then loop on the bad config
   until you revert). Full runbook + gotchas in `docs/dspark-upgrade-cn.md`.
   Rebuilds need `--build-only --force-build` (`--build-only` alone is a no-op
@@ -158,9 +161,19 @@ ops `make v4flash-{run,status,test,load,logs,stop}`.
   measurement, retest. **jasl fork is now needed for DSpark only** — 2026-07-04
   testing showed stock upstream vLLM *can* serve plain V4-Flash TP=2 on GB10
   (sm121) fine, given `DG_JIT_USE_NVRTC=0` + `DG_JIT_NVCC_COMPILER=...` (missing
-  these looks like an architecture-support failure but isn't). Watch PR #41834
-  for DSpark itself landing upstream — once merged, eugr prebuilt wheels make
-  future upgrades ~15 min, zero compile.
+  these looks like an architecture-support failure but isn't). **The "wait for
+  PR #41834" plan is obsolete** — #41834 is still open (checked 2026-08-05), but
+  eugr shipped DSpark anyway: the `b12x` branch merged into main on 2026-08-04
+  with a `deepseek-v4-flash-0731` recipe (DSpark k=5, fp8 KV, full B12X backends)
+  and **prebuilt images on Docker Hub** (`./build-and-copy.sh --exp-b12x -c`, no
+  compile). That is the realistic path off the jasl fork now — but it is a
+  **watch item, not a to-do**: the last comment on
+  [eugr#331](https://github.com/eugr/spark-vllm-docker/issues/331) reports b12x
+  crashing after 1–2 h with higher memory use (unanswered before close), eugr
+  quotes "~50 t/s average" (below our measured mean 67.2), the recipe runs
+  `gpu_memory_utilization: 0.85` (the value that OOM'd this head node on
+  2026-06-29), and the image is an obscure Docker Hub org that daocloud probably
+  won't mirror.
 - **Never build/`docker build` on S1 without stopping the production stack
   first** — even the "lightweight" prebuilt-wheel path still compiles native
   deps (DeepGEMM/QuTLASS) from source in the runner-image stage, and doing this
@@ -171,6 +184,79 @@ ops `make v4flash-{run,status,test,load,logs,stop}`.
   (`scripts/v2rayn-launch.sh`; `XRAY_NODE=<ip>` picks the SS node — the default
   node has died before; always verify `curl -x http://172.17.0.1:10809
   https://github.com` → 200 before building).
+
+## Measuring throughput (read this before quoting a tok/s number)
+
+DSpark decode speed is `steps/s × accepted-tokens-per-step`, and acceptance is
+**content-driven** — so a single-prompt tok/s figure describes the prompt as much
+as the cluster. One config, one server, measured 2026-08-05: **31 tok/s (prose)
+→ 84 tok/s (count-to-300)**, mean 67. Quote a range and say what the prompt was.
+
+Current baseline (`benchmarks/bench-full-2026-08-05/`, warm, temp 0,
+`stream:false`, thinking off):
+
+| axis | measured |
+|---|---|
+| decode peak / mean | 84.3 / 67.2 tok/s |
+| aggregate c1 / c2 / c4 / c6 | 67 / 113 / 143 / 186 tok/s (33.5 per stream at c6) |
+| prefill 8K / 32K / 100K | 1760 / 2203 / 2084 tok/s (median of 3, ±2%) |
+| DSpark acceptance | 75.8%, 4.79 tok/step (p0..p4 = .90/.81/.74/.68/.65) |
+
+Three traps, all of which produced wrong numbers in this repo's own docs:
+
+1. **Streaming under-reports by the acceptance length.** Under spec decode vLLM
+   emits at most one SSE chunk per decode *step*, carrying every token accepted
+   in that step — counting stream deltas measures **steps/s** (~14 vs ~60 on the
+   same request). Read `usage.completion_tokens` over wall time with
+   `stream:false`, as `scripts/v4-test.sh` does, or divide the server's
+   `vllm:generation_tokens_total` by wall time.
+2. **Cold *and idle* decay ≈30%.** The first requests after a (re)start — or
+   after ~30 min idle — run ~30% slow, and nothing in the log says so (this is on
+   top of the one-time Triton JIT spike). Short calls don't clear it; it takes
+   several 500+-token generations. Never benchmark straight after a lull.
+3. **Short replies are overhead-capped.** ~0.5 s fixed per-request cost means a
+   130-token reply can't post a high tok/s however predictable it is. Use
+   500–1400-token generations.
+
+Acceptance is observable live — no instrumentation needed:
+`curl -s localhost:8000/metrics | grep spec_decode` (diff two snapshots around a
+request; `accept_diff.py` in the benchmark dir does the arithmetic).
+
+### Ruled out: the "0731 DSpark 1M NVFP4 KV" forum recipe (2026-08-05)
+
+The NVIDIA-forum recipe
+([thread](https://forums.developer.nvidia.com/t/deepseek-v4-flash-0731-dspark-1m-nvfp4-kv-2x-dgx-spark/378824),
+repo `tonyd2wild/DeepSeek-v4-Flash-0731-DSpark-1M-NVFP4-KV-2x-DGX-Spark`) was
+benchmarked head-to-head with its own harness: **our stack matches or beats it on
+every axis except 100K prefill.** Don't rebuild on it — full write-up and the
+per-claim analysis in `benchmarks/bench-full-2026-08-05/README.md`. Short version:
+its Stage C `nvfp4_ds_mla` keeps DeepSeek's 584-byte cache envelope, so 4-bit KV
+saves **zero** memory vs our `fp8_ds_mla` — measured from both sides' boot logs at
+the same `--block-size 256`: **7,606 B/tok theirs vs 7,424 ours** (a real 416-byte
+layout would be ~5,288); its "B12X ≈ 2×" is 2× against its own base image's
+fallback, not against this build; and its Patch 4 draft-loader bug (halves 0731
+acceptance) doesn't apply to the jasl fork. Adopting it would mean moving back to a
+frozen vLLM 0.21.1 + ~15 hand-maintained overlay files.
+
+**NVFP4 KV itself stays a watch item** — the verdict is against *this* recipe, not
+against 4-bit sparse-MLA KV (a real layout would cut ~29% of B/tok). Revisit when a
+416-byte `nvfp4_ds_mla` store/decode kernel survives past ~411 real prompt tokens
+**and** runs on a runtime no older than ours. Judge it by the boot-log B/tok, not
+the README wording: **below ~6,000 is real, 7,4xx–7,6xx is the padded fake.**
+Not urgent — at 1.34M tok / 1.39x concurrency @1M ctx with `max_num_seqs=6` we have
+no use for the freed memory. Trigger conditions in `benchmarks/bench-full-2026-08-05/README.md`.
+
+Its one real lead is **100K prefill, 2639 vs our 2084 tok/s (+27%)** — and there
+is **no free lever to close it**. `--async-scheduling` (in its launcher, absent
+from our recipe) is a **no-op here**: this build treats `async_scheduling=None`
+as auto-enable-unless-incompatible and `dspark` is whitelisted
+(`config/vllm.py:981-1060`), so every boot already logs *"Asynchronous scheduling
+is enabled"* — don't add the flag expecting a win. Its
+`VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=256` is *tighter* than our 512 default, and
+flashinfer autotune is already on. The remaining likely cause is its B12X MXFP4
+MoE kernel (deep prefill = large-M MoE GEMM), which is welded to that frozen
+runtime. Untested and not free: `--max-num-batched-tokens` 8192 → 16384, which
+trades in-flight decode latency and KV pool for prefill chunk size.
 
 ## Boot autostart (systemd, survives reboot)
 
@@ -227,10 +313,28 @@ qwen
 ```
 
 `:8000` serves both `/v1/chat/completions` and `/v1/responses`. Thinking is **on
-by default** and is a **binary toggle** via `chat_template_kwargs.thinking` (no
-graduated effort level). Note: codex/qwen built-in `reasoning:false` only reaches
-`api.deepseek.com`, **not** a self-hosted vLLM — to force thinking off, inject
-`chat_template_kwargs:{"thinking":false}` via the client's extra-body.
+by default**, toggled via `chat_template_kwargs.thinking`. Note: codex/qwen
+built-in `reasoning:false` only reaches `api.deepseek.com`, **not** a self-hosted
+vLLM — to force thinking off, inject `chat_template_kwargs:{"thinking":false}`
+via the client's extra-body.
+
+**`reasoning_effort` — on this engine only `"max"` does anything** (verified
+2026-08-05). The 0731 checkpoint's own encoder defines three levels (`low`
+default / `high` / `max`), but we serve through the engine's bundled
+`vllm/tokenizers/deepseek_v4_encoding.py`, which is the preview-era copy: it
+injects a prefix **only** for `reasoning_effort == "max"`, and its `assert`
+doesn't fire, so every other value — including `"high"` and typos — is a
+**silent no-op**. Measured with `/tokenize` (same message, thinking on):
+
+| `chat_template_kwargs` | prompt tokens |
+|---|---|
+| `{"thinking":true}` / `+"low"` / `+"high"` / `+"bogus"` | 10 |
+| `{"thinking":true,"reasoning_effort":"max"}` | **89** (+79-token prefix) |
+
+So: to make it deliberate more, send `"max"` — copying eugr's
+`reasoning_effort=high` gets you nothing here. Our `"max"` injects the text that
+0731's own table calls `high`; 0731's real `max` prefix is unreachable until the
+engine ships an encoder updated for 0731.
 
 > To use the retired Bifrost gateway instead, revive that stack — see below.
 
@@ -311,7 +415,10 @@ crawl. Each DGX pulls fine over its own fast domestic link — no proxy/VPN/rela
   `docker commit` + copies to S2 (fixes the torch-CPU build trap).
 - `scripts/v2rayn-launch.sh` — revives the S1 v2rayN proxy headless (needed for
   the github clone during the V4-Flash build).
-- `scripts/v4-test.sh` — coding smoke test against `:8000`, prints tok/s.
+- `scripts/v4-test.sh` — coding smoke test against `:8000`, prints tok/s (one
+  short prompt — a smoke test, not a benchmark; see [Measuring throughput](#measuring-throughput-read-this-before-quoting-a-toks-number)).
+- `benchmarks/bench-full-2026-08-05/` — decode-by-content + c1..c6 + prefill-at-depth
+  baseline, and the head-to-head that ruled out the forum NVFP4-KV recipe.
 - `scripts/v4flash-boot.sh` — boot launcher: waits for the worker (ssh+docker+GPU
   over the 200G link), tears down stale containers, then `exec`s the recipe in
   the foreground. Copied to `/home/admin/v4flash-boot.sh` by `make v4flash-autostart`.

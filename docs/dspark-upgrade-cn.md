@@ -2,7 +2,7 @@
 
 > 状态:**已上线**(2026-07-03,jasl fork tip `444fe3ac` + DSpark checkpoint)。
 > 实测单流 warm **~51-53 tok/s**(此前 MTP ~42);**并发上限是 `max_num_seqs=6`**(2026-07-04
-> 验证稳定,聚合 ~50 tok/s,接受率随并发下降到 16-33%);**`max_num_seqs=16` 会导致启动失败**
+> 验证稳定);**`max_num_seqs=16` 会导致启动失败**
 > (KV 显存不够,详见下方"并发上限实测"一节),已回滚。
 >
 > **📌 2026-07-31 更新(当前生产状态)**:checkpoint 换成**官方正式版
@@ -10,8 +10,15 @@
 > preview 组合逐字节一致 → 纯换权重,引擎/recipe 只改 model 路径);同日扫描把
 > `num_speculative_tokens` 从 3 调到 **5**(n=3 ≈ 53.9、n=5 ≈ 56.6、n=7 ≈ 52.4 tok/s——
 > `dspark_block_size=5`,draft 位置 4 之后接受率骤降到 4.7%/0.3%,官方建议的 n=7 白费两次
-> draft;6 路并发在 n=5 复验干净),另按官方模型卡对齐 `top_p=0.95`。单流 warm **~56 tok/s**。
+> draft;6 路并发在 n=5 复验干净),另按官方模型卡对齐 `top_p=0.95`。
 > 下文步骤/数值是 07-03 升级当时的记录,按史料读。
+>
+> **📌 2026-08-05 全轴重测(取代本文所有 tok/s 数字)**:单流 **peak 84.3 / mean 67.2**
+> (按内容 31–84)、聚合 c1/c2/c4/c6 = 67/113/143/**186** tok/s、prefill 8K/32K/100K =
+> 1760/2203/2084 tok/s(3 次中位数)、DSpark 接受率 **75.8% / 4.79 tok/step**。本文早先的
+> "单流 ~56"是单个短 prompt 的形状产物;"6 路聚合 ~50"则低报了约 3.7 倍,最可能的原因是
+> 按 streaming chunk 计数(spec decode 下一个 SSE chunk = 一个 decode step,按接受长度
+> 低报)。基线与方法见 `benchmarks/bench-full-2026-08-05/`。
 > 本文记录**为什么这么做、怎么做最快、以及所有踩过的坑**,供任何机器/会话复现。
 > 基础栈背景见 `docs/deepseek-v4-flash-cn.md`。
 >
@@ -137,14 +144,19 @@ make v4flash-run && make v4flash-status && make v4flash-test
 | `max_num_seqs` | `max_num_batched_tokens` | 结果 |
 |---|---|---|
 | 2(原始) | 4192 | ✅ 稳定(3周+) |
-| **6** | **8192** | **✅ 稳定,当前生产值**——4/6 路并发无乱码无 crash,聚合 ~50 tok/s,`journal` 确认 `Running: 6 reqs, Waiting: 0 reqs`(真并发,非排队) |
+| **6** | **8192** | **✅ 稳定,当前生产值**——4/6 路并发无乱码无 crash,`journal` 确认 `Running: 6 reqs, Waiting: 0 reqs`(真并发,非排队)。聚合吞吐 2026-08-05 重测为 **186 tok/s / 每流 33.5**(此处原记 ~50,是 streaming 计数低报) |
 | 16 | 16384 | ❌ **启动失败**——`ValueError: ... 10.84 GiB KV cache is needed ... available KV cache memory (6.44 GiB)`。原因:`max_num_batched_tokens` 翻倍后 CUDA graph/prefill 显存开销跟着涨,挤压 KV 池到连"1 个请求跑满 1M ctx"都保证不了。**已回滚到 6**。 |
 
 **并发下接受率会掉**:单流 DSpark 接受率 63-85%,6 路并发时掉到 **16-33%**(`Mean acceptance
-length` 从 2.9-3.6 掉到 1.5-2.0)。这不是配置错误,是 DSpark 在没打"并发正确性补丁"的 fork 上
-的已知特性(参考 [MiaAI-Lab 项目](https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark)
-专门带了 `drowzeys/Keys-Concurrency-Patch`,大概率就是修这个的——但那是另一个 fork/checkpoint,
-细节见文末"MiaAI-Lab 方案"待办)。
+length` 从 2.9-3.6 掉到 1.5-2.0)。当时怀疑这是 DSpark 在没打"并发正确性补丁"的 fork 上的
+已知缺陷。
+
+> **⚠️ 2026-08-05 更正:接受率会掉是真的,但它不是"缺补丁"造成的损失。** 重测聚合吞吐
+> c1/c2/c4/c6 = 67/113/143/**186** tok/s(c6 每流 33.5),和专门打了
+> `Keys-Concurrency-Patch` 的社区栈(61/92/151/197,每流 33.6)几乎逐格一致 —— 也就是说
+> 打了补丁的栈在同样并发下也掉到同一个位置,这是共享 GPU + 混合 prefill/decode 批次的
+> 正常代价,不是我们这套 fork 独有的缺陷,补丁补不回来。上面的 "6 路聚合 ~50" 是错的
+> (低报 3.7 倍)。详见 `benchmarks/bench-full-2026-08-05/README.md`。
 
 **想再冲更高并发**,两条路径都要取舍,不要在生产 endpoint 上直接试 16:
 1. 降 `max_model_len`(比如 100K-200K)换出 KV 显存空间给更大的 `max_num_seqs`——放弃 1M 长上下文。
@@ -233,24 +245,31 @@ make v4flash-run
     简化测试配置时容易被当成"jasl 专属"误删,漏掉就会看到
     `CUDA_ERROR_INVALID_IMAGE`,和真正的架构缺陷长得几乎一样。
 
-## 待办:MiaAI-Lab 方案(暂不做,下次有完整时间窗口再评估)
+## ✅ 已结:MiaAI-Lab / Keys / nvfp4_ds_mla 这条线(2026-08-05 否决)
 
-[MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark](https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark)
-声称在 2×DGX Spark 上用**另一条技术栈**(rafaelcaricio/vllm fork 的
-`codex/dspark-harness-integration` 分支 + `drowzeys/Keys-Concurrency-Patch` 并发补丁 +
-`nvfp4_ds_mla` KV 量化 + 第三方 `fraserprice/DeepSeek-V4-Flash-DSpark` "C12" checkpoint)
-实现了并发下 230-315 tok/s(相比我们当前 6 路 ~50 tok/s)。真实项目(76 star,活跃 commit),
-但和我们现在这套完全不共用组件,是一次新的构建+验证投入,不是配置调整。
+原待办:[MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark](https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark)
+声称在 2×DGX Spark 上用**另一条技术栈**(rafaelcaricio/vllm fork +
+`drowzeys/Keys-Concurrency-Patch` 并发补丁 + `nvfp4_ds_mla` KV 量化 + 第三方
+`fraserprice/DeepSeek-V4-Flash-DSpark` "C12" checkpoint)实现了并发下 230-315 tok/s,
+当时以为对比我们的 ~50 是 5 倍差距,所以列为待评估。
 
-2026-07-04 的"官方 vLLM 能在 GB10 跑通"发现,只验证了 `fp8_ds_mla`(标准路径),**没有**验证
-`nvfp4_ds_mla`、rafaelcaricio 的 DSpark 实现、或 Keys 补丁——这几项风险敞口都还是未知数,
-不能因为前者能跑就假设这套也行。真要评估,需要单独排一个不那么赶的时间窗口,按以下顺序来:
-1. 确认 rafaelcaricio/vllm 是否发布预编译 wheel(如果只能源码编译,工作量参考本文档的
-   jasl fork 构建流程);
-2. 单独验证 `nvfp4_ds_mla` 能否在 GB10 初始化(参考本文档"官方 vLLM 能否替代 jasl fork"
-   一节的验证方法:先单机排除内存因素,再双机真跑);
-3. 确认 `gpu_memory_utilization=0.85`(该项目文档值)在我们的 host 上是否安全——**不要直接
-   套用**,这个值曾在我们自己的机器上触发过 OOM(2026-06-29 事故)。
+**2026-08-05 结论:不做。** 这条线的下游集成(tonyd2wild 的
+`DeepSeek-v4-Flash-0731-DSpark-1M-NVFP4-KV-2x-DGX-Spark`,同时含 Keys 补丁 +
+`nvfp4_ds_mla` + Patch 3/4)已用**它自己的 harness** 与我们现网做了对照:
+
+- 我们 c6 聚合 **186** vs 它 197(每流 33.5 vs 33.6),单流 peak/mean **84.3/67.2**
+  vs 它 84.3/67.6(它在 0731 上自报只有 78 峰值 / ~55 mean)—— 5 倍差距源于我们旧数
+  记错,不存在;Keys 补丁在同样并发下并没有换来更高的每流吞吐。
+- `nvfp4_ds_mla` 的 Stage C 实现**保留 584 字节 envelope**,相比 `fp8_ds_mla`
+  一点内存都不省(真 416 字节布局在 ~411 个真实 prompt token 后就崩,作者自己弃用了)。
+- 上面第 3 条顾虑得到印证:该项目文档里的 `gpu_memory_utilization=0.85` 确实是雷,
+  它自己的 issue #8 记录了 0.80 都会在首个真实请求崩(spec decode 的 buffer 是第一个
+  真实请求时才分配的,不是启动时)。
+
+逐条分析见 `benchmarks/bench-full-2026-08-05/README.md`。它唯一领先的是 100K prefill
+(2639 vs 我们 2084 tok/s,+27%),而且**没有免费杠杆能拿到**——`--async-scheduling`
+在本 build 里默认就是开的(`dspark` 在自动启用白名单里,见 `config/vllm.py:981-1060`,
+journal 每次启动都打 `Asynchronous scheduling is enabled`),加了是 no-op。
 
 ## 参考
 
@@ -260,4 +279,7 @@ make v4flash-run
   DeepGEMM 覆盖缺口:#41063
 - eugr prebuilt wheels:https://github.com/eugr/spark-vllm-docker/releases
 - 2×Spark DSpark 实测(NVIDIA 论坛):forums.developer.nvidia.com/t/374846
-- MiaAI-Lab DSpark 方案(待评估,见上):https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark
+- MiaAI-Lab DSpark 方案(已否决,见上):https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark
+- 1M NVFP4-KV 配方 + 论坛帖(已否决,见 `benchmarks/bench-full-2026-08-05/`):
+  https://github.com/tonyd2wild/DeepSeek-v4-Flash-0731-DSpark-1M-NVFP4-KV-2x-DGX-Spark ·
+  forums.developer.nvidia.com/t/378824

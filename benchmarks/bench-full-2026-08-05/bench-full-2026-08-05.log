@@ -1,0 +1,28 @@
+=== current-jasl-fp8kv @ http://localhost:8000/v1 ===
+
+--- [current-jasl-fp8kv] DECODE by content (temp 0, warm) ---
+prompt       tok    sec    tok/s
+count300     600   7.12     84.3
+mult12       900  11.45     78.6
+json60       800  10.26     78.0
+bst          600   9.41     63.8
+story        274   8.72     31.4
+  PEAK 84.3 (count300)   MEAN 67.2
+
+--- [current-jasl-fp8kv] CONCURRENCY (same prompt, 400 tok each) ---
+ conc   ok   agg tok/s  per-stream    wall
+    1    1        66.9        67.0    5.98
+    2    2       112.5        56.6    7.11
+    4    4       143.0        38.0   11.19
+    6    6       186.2        33.5   12.89
+
+--- [current-jasl-fp8kv] PREFILL (TTFT method, 1 output token) ---
+  target  prompt tok     sec     tok/s
+    8000        6234     3.6      1723
+   32000       24900    11.3      2207
+  100000       77790    39.4      1975
+
+===== SUMMARY [current-jasl-fp8kv] =====
+decode peak 84.3 | mean 67.2
+concurrency agg: c1=67  c2=113  c4=143  c6=186
+prefill: 8K=1723t/s  32K=2207t/s  100K=1975t/s

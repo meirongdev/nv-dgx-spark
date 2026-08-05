@@ -2,9 +2,14 @@
 
 当前主力栈(2026-05-31 起;2026-07-03 从 MTP 升级到 DSpark;2026-07-31 换到 **0731 官方正式版**
 checkpoint `DeepSeek-V4-Flash-0731` 并把 `num_speculative_tokens` 调到 5):**DeepSeek-V4-Flash
-(284B / 13B-active,官方 FP8)跨两台 GB10 双机 TP=2 跑 vLLM**,单流 warm **~56 tok/s**
-(DSpark n=5;n=3 时 ~51-53,此前 MTP ~42,不开投机解码约 ~25),1M 上下文。
+(284B / 13B-active,官方 FP8)跨两台 GB10 双机 TP=2 跑 vLLM**,单流 warm
+**31–84 tok/s(随内容,mean 67)**,1M 上下文。
 服务在 head `100.97.87.120:8000`,模型名 `deepseek-v4-flash`。
+
+> ⚠️ 报数前先看 [性能](#性能)。DSpark 的 decode 速度 = `steps/s × 每步接受 token 数`,
+> 接受率**由内容决定**,所以单个 prompt 的 tok/s 说的是那个 prompt 而不是这套集群。
+> 此前文档里的 "~56 tok/s" 是 `scripts/v4-test.sh` 单个短 fib prompt + thinking on
+> 的形状产物,已按 2026-08-05 全轴实测校正。
 
 > 这条栈**不走本仓库的 Ansible/Makefile-vLLM 流程**,而是用 eugr 的 `spark-vllm-docker` 工具链 + jasl/vllm fork。
 > 便捷封装见 `make v4flash-run | v4flash-status | v4flash-test | v4flash-load | v4flash-logs | v4flash-stop`。
@@ -105,12 +110,57 @@ make v4flash-autostart-remove   # 卸载(disable + 删 unit)
 
 ## 性能
 
+**当前基线**(2026-08-05 全轴实测,warm、temp 0、`stream:false`、thinking off;
+原始数据与复现方法见 `benchmarks/bench-full-2026-08-05/`):
+
+| 轴 | 实测 |
+|---|---|
+| 单流 decode peak / mean | **84.3 / 67.2 tok/s** |
+| 按内容 | count300 84.3 · 乘法表 78.6 · JSON 78.0 · BST 代码 63.8 · 散文 31.4 |
+| 聚合 c1 / c2 / c4 / c6 | 67 / 113 / 143 / **186** tok/s(c6 每流 33.5)|
+| prefill 8K / 32K / 100K | 1760 / 2203 / 2084 tok/s(3 次中位数,方差 ±2%)|
+| DSpark 接受率 | benchmark 窗口 75.8% / 4.79 tok/step;真实流量生命周期 **48.5% / 3.43**(thinking 的推理段是散文型,接受率最低)|
+
+重启/首次请求还有一次性 Triton JIT 编译尖刺(DSpark Markov-sampler kernel),详见
+`docs/dspark-upgrade-cn.md`——那一次的数直接丢掉重测。
+
+历史对照(各配置的单流数,均为**同一个短编码 prompt**,只用于比较配置、不代表集群上限):
+
 | 配置 | 单流 decode |
 |---|---|
 | 无投机解码 | ~25 tok/s |
 | MTP(num_speculative_tokens=2) | ~42 tok/s warm(社区 2×Spark 报 ~44)|
-| DSpark(num_speculative_tokens=3,2026-07-03 起) | ~51-53 tok/s warm(接受率随内容波动 40-85%)|
-| **DSpark 0731(num_speculative_tokens=5,当前)** | **~56 tok/s warm**(2026-07-31 扫描:n=3 ≈ 53.9、n=5 ≈ 56.6、n=7 ≈ 52.4——`dspark_block_size=5`,draft 位置 4 之后接受率骤降,官方建议的 n=7 反而白费两次 draft;重启/首次请求有一次性 Triton JIT 编译尖刺,详见 `docs/dspark-upgrade-cn.md`)|
+| DSpark(num_speculative_tokens=3,2026-07-03 起) | ~51-53 tok/s warm |
+| **DSpark 0731(num_speculative_tokens=5,当前)** | **~56 tok/s**(2026-07-31 扫描:n=3 ≈ 53.9、n=5 ≈ 56.6、n=7 ≈ 52.4——`dspark_block_size=5`,draft 位置 4 之后接受率骤降,官方建议的 n=7 反而白费两次 draft)|
+
+**测量三个坑**(本仓库文档都踩过):
+
+1. **streaming 会按接受长度低报。** spec decode 下 vLLM 每个 decode *step* 最多发一个
+   SSE chunk(携带该步全部被接受的 token),数 stream delta 量到的是 **steps/s**
+   (同一请求 ~14 vs ~60)。要用 `stream:false` + `usage.completion_tokens` / 墙钟
+   (`scripts/v4-test.sh` 就是这么做的),或用 `vllm:generation_tokens_total` / 墙钟。
+2. **冷启动**和**空闲**都会掉 ~30%。(重)启动后、或空闲 ~30 分钟后的头几个请求慢约
+   30%,日志里完全看不出来(这在一次性 Triton JIT 尖刺之外)。短请求清不掉,要几次
+   500+ token 的生成才回到稳态 —— 刚闲下来别测。
+3. **短回复被固定开销压住。** 每请求 ~0.5s 固定成本,130 token 的回复无论多好预测都
+   跑不出高 tok/s。测就用 500–1400 token 的生成。
+
+接受率可以直接观测:`curl -s localhost:8000/metrics | grep spec_decode`,请求前后各取
+一次快照做差(`benchmarks/bench-full-2026-08-05/accept_diff.py` 负责算术)。
 
 1M ctx,每节点权重 ~83GB(0731 共 166.9GB 按 TP=2 对半;`--gpu-memory-utilization 0.80`——
-2026-06-29 曾在 0.85 触发头节点整机 OOM,详见提交历史/会话记录)。
+2026-06-29 曾在 0.85 触发头节点整机 OOM,详见提交历史/会话记录)。KV pool 实测
+1.34M token @ gmu 0.80(1M 请求最大并发 1.34x;这个值每次启动会浮动 ~10%)。
+
+### 已否决:论坛的 "0731 DSpark 1M NVFP4 KV" 配方(2026-08-05)
+
+用它自己的 harness 做了对照:**除 100K prefill 外我们全面打平或更快**,不要照它重建。
+它的 Stage C `nvfp4_ds_mla` 保留了 DeepSeek 的 584 字节 cache envelope,4-bit KV 相比
+我们的 `fp8_ds_mla` **一点内存都不省**;"B12X ≈ 2×" 是相对它自己 base image 的
+fallback;它那个会让 0731 接受率腰斩的 Patch 4 draft-loader bug 对 jasl fork 不适用。
+唯一真实领先项是 100K prefill(2639 vs 我们 2084 tok/s,+27%),但**没有免费杠杆能拿到**:
+`--async-scheduling` 在本 build 里是**默认就开着**的(`dspark` 在自动启用白名单里,
+每次启动 journal 都打 `Asynchronous scheduling is enabled`),加了也是 no-op;他们的
+`VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=256` 比我们默认的 512 还紧。剩下最可能是 B12X MoE
+kernel,绑死在他们那套冻结 runtime 上。完整逐条分析见
+`benchmarks/bench-full-2026-08-05/README.md`。

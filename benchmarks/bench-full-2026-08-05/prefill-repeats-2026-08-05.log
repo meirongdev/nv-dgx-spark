@@ -1,0 +1,22 @@
+warming up (5 long generations — required, warm state decays when idle)...
+  warm  700 tok  10.5s  66.7 tok/s
+  warm  441 tok  11.2s  39.2 tok/s
+  warm  600 tok   8.5s  70.9 tok/s
+  warm  443 tok   5.7s  77.9 tok/s
+  warm  600 tok  13.6s  44.1 tok/s
+
+  repeat   target   prompt tok      sec      tok/s
+       1     8000         6252      3.6       1747
+       1    32000        24918     12.1       2063
+       1   100000        77808     37.9       2051
+       2     8000         6253      3.6       1760
+       2    32000        24919     11.2       2228
+       2   100000        77809     37.3       2084
+       3     8000         6255      3.5       1800
+       3    32000        24921     11.3       2203
+       3   100000        77811     37.1       2095
+
+===== prefill summary (tok/s) =====
+     8K  runs=1747 1760 1800  median=1760  best=1800
+    32K  runs=2063 2228 2203  median=2203  best=2228
+   100K  runs=2051 2084 2095  median=2084  best=2095
