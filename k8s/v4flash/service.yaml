@@ -1,0 +1,16 @@
+# 集群内入口(以及未来 ClusterMesh 全局服务的挂载点)。
+# 外部客户端仍直连 100.97.87.120:8000 (hostNetwork),不经过此 Service。
+# homelab 对接时: 两侧同名 Service + 本侧标注 service.cilium.io/global: "true"。
+apiVersion: v1
+kind: Service
+metadata:
+  name: deepseek-v4-flash
+  namespace: v4flash
+spec:
+  type: ClusterIP
+  selector:
+    app: v4flash-leader
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

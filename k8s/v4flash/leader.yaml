@@ -1,0 +1,111 @@
+# v4flash-leader — rank0, S1 (spark-ccf3), 对外 :8000 (hostNetwork)
+# 形态 1:1 复刻生产 docker run: --privileged --ipc=host --network host --gpus all
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: v4flash-leader
+  namespace: v4flash
+spec:
+  replicas: 1            # 稳态 1(切换已完成 2026-08-13);停机用 make v4flash-stop
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: v4flash-leader
+  template:
+    metadata:
+      labels:
+        app: v4flash-leader
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: spark-ccf3
+      hostNetwork: true
+      hostIPC: true
+      runtimeClassName: nvidia
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: vllm
+          image: docker.io/library/vllm-node-dsv4:latest
+          imagePullPolicy: Never
+          command: ["/bin/bash", "/scripts/rank0.sh"]
+          workingDir: /workspace
+          securityContext:
+            privileged: true          # RoCE 设备访问 (对齐 docker --privileged)
+          resources:
+            limits:
+              nvidia.com/gpu: 1       # 统一内存上仅做调度记账,无内存隔离
+          env:
+            - name: VLLM_HOST_IP
+              value: "192.168.200.101"
+            - name: NCCL_SOCKET_IFNAME
+              value: "enp1s0f0np0"
+            - name: GLOO_SOCKET_IFNAME
+              value: "enp1s0f0np0"
+            - name: TP_SOCKET_IFNAME
+              value: "enp1s0f0np0"
+            - name: UCX_NET_DEVICES
+              value: "enp1s0f0np0"
+            - name: OMPI_MCA_btl_tcp_if_include
+              value: "enp1s0f0np0"
+            - name: MN_IF_NAME
+              value: "enp1s0f0np0"
+            - name: NCCL_IB_HCA
+              value: "rocep1s0f0,roceP2p1s0f0"
+            - name: NCCL_IB_DISABLE
+              value: "0"
+            - name: NCCL_IGNORE_CPU_AFFINITY
+              value: "1"
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+            - name: vllm-cache
+              mountPath: /root/.cache/vllm
+            - name: flashinfer-cache
+              mountPath: /root/.cache/flashinfer
+            - name: triton-cache
+              mountPath: /root/.triton
+            - name: scripts
+              mountPath: /scripts
+          startupProbe:               # 167GB 权重加载 + 初始化,给足 30min
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 15
+            failureThreshold: 120
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+          # ⚠️ /health 和 /v1/models 都是静态端点,TP 组挂死时它们照常 200,
+          # 所以 readiness 探到的只是「API server 进程活着」。真正的存活判据在
+          # /scripts/liveness.py:「有活但零进展」= 卡死(注释里有完整推理和
+          # 2026-08-13 那次探针误杀事故)。3×60s 后重启;因为健康的引擎必然在
+          # 推进 steps,满载不会误判,所以阈值可以收紧。
+          livenessProbe:
+            exec:
+              command: ["python3", "/scripts/liveness.py"]
+            periodSeconds: 60
+            timeoutSeconds: 20
+            failureThreshold: 3
+      volumes:
+        - name: hf-cache
+          hostPath:
+            path: /home/admin/.cache/huggingface
+        - name: vllm-cache
+          hostPath:
+            path: /home/admin/.cache/vllm
+        - name: flashinfer-cache
+          hostPath:
+            path: /home/admin/.cache/flashinfer
+        - name: triton-cache
+          hostPath:
+            path: /home/admin/.triton
+        - name: scripts
+          configMap:
+            name: v4flash-launch
+            defaultMode: 0755

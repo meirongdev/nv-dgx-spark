@@ -1,0 +1,105 @@
+# v4flash-worker — rank1 --headless, S2 (spark-2435), 无 API 端点
+# 健康语义 = 进程存活 (vllm 是容器 PID 1,退出即重启);无 HTTP 探针。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: v4flash-worker
+  namespace: v4flash
+spec:
+  replicas: 1            # 稳态 1(切换已完成 2026-08-13);停机用 make v4flash-stop
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: v4flash-worker
+  template:
+    metadata:
+      labels:
+        app: v4flash-worker
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: spark-2435
+      hostNetwork: true
+      hostIPC: true
+      runtimeClassName: nvidia
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: vllm
+          image: docker.io/library/vllm-node-dsv4:latest
+          imagePullPolicy: Never
+          command: ["/bin/bash", "/scripts/rank1.sh"]
+          workingDir: /workspace
+          securityContext:
+            privileged: true
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          env:
+            - name: VLLM_HOST_IP
+              value: "192.168.200.102"
+            - name: NCCL_SOCKET_IFNAME
+              value: "enp1s0f0np0"
+            - name: GLOO_SOCKET_IFNAME
+              value: "enp1s0f0np0"
+            - name: TP_SOCKET_IFNAME
+              value: "enp1s0f0np0"
+            - name: UCX_NET_DEVICES
+              value: "enp1s0f0np0"
+            - name: OMPI_MCA_btl_tcp_if_include
+              value: "enp1s0f0np0"
+            - name: MN_IF_NAME
+              value: "enp1s0f0np0"
+            - name: NCCL_IB_HCA
+              value: "rocep1s0f0,roceP2p1s0f0"
+            - name: NCCL_IB_DISABLE
+              value: "0"
+            - name: NCCL_IGNORE_CPU_AFFINITY
+              value: "1"
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+            - name: vllm-cache
+              mountPath: /root/.cache/vllm
+            - name: flashinfer-cache
+              mountPath: /root/.cache/flashinfer
+            - name: triton-cache
+              mountPath: /root/.triton
+            - name: scripts
+              mountPath: /scripts
+          # 共同命运:worker 是 --headless,没有自己的端点可探。改为盯 leader ——
+          # leader 一旦重启/消失,worker 也自杀,两侧一起重来重新 rendezvous。
+          # (2026-08-13 演练教训:单侧重建 = 僵尸 TP 组,必须成组重启。)
+          # initialDelay 覆盖 leader 的 167GB 加载窗口,否则启动期就会自杀。
+          livenessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - |
+                  import urllib.request
+                  urllib.request.urlopen("http://192.168.200.101:8000/health", timeout=10)
+            initialDelaySeconds: 900
+            periodSeconds: 60
+            timeoutSeconds: 15
+            failureThreshold: 5
+      volumes:
+        - name: hf-cache
+          hostPath:
+            path: /home/admin/.cache/huggingface
+        - name: vllm-cache
+          hostPath:
+            path: /home/admin/.cache/vllm
+        - name: flashinfer-cache
+          hostPath:
+            path: /home/admin/.cache/flashinfer
+        - name: triton-cache
+          hostPath:
+            path: /home/admin/.triton
+        - name: scripts
+          configMap:
+            name: v4flash-launch
+            defaultMode: 0755

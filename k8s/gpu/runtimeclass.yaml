@@ -1,0 +1,8 @@
+# nvidia RuntimeClass — k3s 检测到 nvidia-container-runtime 后会在 containerd
+# 配置里生成 "nvidia" handler;此对象把它暴露给 Pod spec 使用。
+# (新版 k3s 会自动创建同名 RuntimeClass,apply 本文件是幂等兜底。)
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: nvidia
+handler: nvidia

@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-status vllm-stop vllm-logs vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-test v4flash-load v4flash-stop v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
+.PHONY: venv install test ping all clean vllm-status vllm-stop vllm-logs vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -508,24 +508,31 @@ DSV4_HEAD   ?= 100.97.87.120
 DSV4_HARNESS ?= /home/admin/spark-vllm-docker
 DSV4_PORT   ?= 8000
 DSV4_WORKER ?= 192.168.200.102
-# Boot autostart (systemd unit on the head node)
+# Boot autostart (systemd unit on the head node) — RETIRED 2026-08-13, kept as
+# the rollback path (unit still installed but disabled). See k8s/README.md.
 DSV4_SERVICE  ?= deepseek-v4-flash
 DSV4_BOOT_SRC ?= scripts/v4flash-boot.sh
 DSV4_UNIT_SRC ?= config/deepseek-v4-flash.service
+# k3s (current runtime): kubeconfig on this machine, namespace, manifests.
+K8S           ?= kubectl --kubeconfig $(HOME)/.kube/dgx-spark.yaml
+DSV4_NS       ?= v4flash
 
-# Launch. If the autostart unit is installed, go through systemd (so the boot
-# path and the manual path are identical); otherwise fall back to the tmux
-# launch used during builds / before the unit exists.
+# Launch = scale both ranks to 1. Boot autostart is k3s's own systemd service
+# (nodes Ready + GPU registered gate the pods), so there is no separate unit.
 v4flash-run:
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
-		"if systemctl list-unit-files 2>/dev/null | grep -q '^$(DSV4_SERVICE).service'; then sudo systemctl restart $(DSV4_SERVICE) && echo 'started via systemd ($(DSV4_SERVICE)); loads ~3-4min, poll: make v4flash-status'; else cd $(DSV4_HARNESS) && tmux kill-session -t dsv4run 2>/dev/null; tmux new-session -d -s dsv4run 'DOTENV_CONTAINER_HF_HUB_OFFLINE=1 DOTENV_CONTAINER_TRANSFORMERS_OFFLINE=1 ./run-recipe.sh deepseek-v4-flash --no-ray > /tmp/dsv4-run.log 2>&1' && echo 'started in tmux (no autostart unit); loads ~3-4min, poll: make v4flash-status'; fi"
+	$(K8S) -n $(DSV4_NS) scale deploy v4flash-worker v4flash-leader --replicas=1
+	@echo "loads ~5min (167GB weights), poll: make v4flash-status"
 
 v4flash-status:
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
-		"curl -s http://localhost:$(DSV4_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'; docker ps --format '{{.Names}} | {{.Status}}' | grep -i vllm || true"
+	@$(K8S) -n $(DSV4_NS) get pods -o wide
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
+		"curl -s http://localhost:$(DSV4_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'"
 
 v4flash-logs:
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) "tail -n 60 /tmp/dsv4-run.log"
+	$(K8S) -n $(DSV4_NS) logs --tail=60 deploy/v4flash-leader
+
+v4flash-logs-worker:
+	$(K8S) -n $(DSV4_NS) logs --tail=60 deploy/v4flash-worker
 
 v4flash-test:
 	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) "BASE=http://localhost:$(DSV4_PORT) bash /home/admin/v4-test.sh"
@@ -534,18 +541,25 @@ v4flash-test:
 # saturation (max_num_seqs=6), not the engine — check this before anything else
 # (2026-08-02 incident: a 6-way batch workload was misread as an upgrade regression).
 v4flash-load:
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
 		"curl -s http://localhost:$(DSV4_PORT)/metrics | grep -E 'num_requests_(running|waiting)\{|kv_cache_usage' | grep -v '^#'; \
 		echo '--- client IPs on :$(DSV4_PORT) ---'; \
-		ss -tn | grep ':$(DSV4_PORT)' | awk '{print \$$5}' | cut -d: -f1 | sort | uniq -c | sort -rn; \
-		echo '--- engine last minute ---'; \
-		journalctl -u $(DSV4_SERVICE) --since '1 minute ago' --no-pager 2>/dev/null | grep 'loggers.py' | tail -3"
+		ss -tn | grep ':$(DSV4_PORT)' | awk '{print \$$5}' | cut -d: -f1 | sort | uniq -c | sort -rn"
+	@echo '--- engine last minute ---'
+	@$(K8S) -n $(DSV4_NS) logs --since=1m deploy/v4flash-leader 2>/dev/null | grep 'loggers.py' | tail -3 || true
 
-# Stop. When the unit is active, stop via systemd (runs ExecStop teardown and
-# avoids a Restart=on-failure fight); otherwise tear the containers down by hand.
+# Stop = scale both ranks to 0. NOTE: k8s/v4flash/*.yaml carry `replicas: 1`,
+# so a later `kubectl apply` restarts the stack — that is intended (apply should
+# converge to the steady state), but don't apply while you mean to stay stopped.
 v4flash-stop:
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
-		"if systemctl is-active --quiet $(DSV4_SERVICE); then sudo systemctl stop $(DSV4_SERVICE) && echo 'stopped via systemd ($(DSV4_SERVICE))'; else docker rm -f vllm_node 2>/dev/null; ssh -o StrictHostKeyChecking=no $(DSV4_WORKER) 'docker rm -f vllm_node 2>/dev/null'; echo stopped; fi"
+	$(K8S) -n $(DSV4_NS) scale deploy v4flash-leader v4flash-worker --replicas=0
+
+# Restart both ranks together. Never restart one alone: a single-rank restart
+# leaves the surviving rank hung in collectives (zombie TP group — /health still
+# returns 200). See docs/k3s-migration-design-cn.md §4.7.
+v4flash-restart:
+	$(K8S) -n $(DSV4_NS) delete pod --all
+	@echo "both ranks recreated; loads ~5min, poll: make v4flash-status"
 
 # ---- Boot autostart: install/enable the systemd unit so the stack comes back
 # ---- after a reboot. One unit on the head; it drives the worker over SSH.

@@ -1,0 +1,138 @@
+# rank0.sh / rank1.sh = 2026-08-12 从生产容器 /workspace/exec-script.sh 逐字抓取
+# (eugr run-recipe.sh --no-ray 对 config/deepseek-v4-flash.yaml 的渲染产物)。
+# 改 vLLM 参数 → 改这里 + kubectl apply + 依次重建两个 Pod。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: v4flash-launch
+  namespace: v4flash
+data:
+  # leader liveness:判据是「有活但零进展」,不是「探针请求能否返回」。
+  #
+  # 2026-08-13 事故:第一版探针发一个 max_tokens:1 的真实生成请求。引擎被真实流量
+  # 打满(Running 6 / Waiting 2)时,探针请求排在队尾 → 连续 5 次超时 → kubelet
+  # SIGKILL 掉一个完全健康的 leader,worker 5 分钟后跟着重启 = ~10 分钟无谓中断。
+  # 教训:任何进入请求队列的探针都无法区分「卡死」和「忙」。
+  #
+  # 现判据用 /metrics(由 API server 直接应答,不排队,满载和卡死时都能秒回):
+  #   demand == 0                 → 健康(空闲,本来就没活干)
+  #   steps 比上次增加            → 健康(引擎在推进,不管多忙)
+  #   demand > 0 且 steps 没动    → 卡死(有活却零进展)——唯一判失败的情形
+  # steps = vllm:iteration_tokens_total_count,每个 engine iteration +1;
+  # 分块 prefill(max_num_batched_tokens=8192)保证超长提示也会持续推进。
+  liveness.py: |
+    import sys, urllib.request
+
+    STATE = "/tmp/.v4flash_liveness_steps"
+    try:
+        body = urllib.request.urlopen("http://localhost:8000/metrics", timeout=10).read().decode()
+    except Exception as e:
+        sys.exit(f"metrics unreachable: {e}")          # API server 没了 → 真失败
+
+    def metric(prefix):
+        """返回 None 表示该指标此刻不存在——与 0 严格区分(见下方 fail-open)。"""
+        for line in body.splitlines():
+            if line.startswith(prefix):
+                return float(line.split()[-1])
+        return None
+
+    steps = metric("vllm:iteration_tokens_total_count{")
+    running = metric("vllm:num_requests_running{") or 0.0
+    waiting = metric("vllm:num_requests_waiting{") or 0.0
+    demand = running + waiting
+
+    # fail-open:指标缺失时不判死。vLLM 的直方图在第一次 engine iteration 完成前
+    # 根本不出现,早期版本把「缺失」当 0,导致「刚就绪 + 首个请求在飞行中」被误判为
+    # 卡死(2026-08-13 实际触发过一次)。探针只在有正面证据时才杀。
+    if steps is None:
+        sys.exit(0)
+
+    try:
+        with open(STATE) as f:
+            prev = float(f.read().strip())
+    except Exception:
+        prev = -1.0                                    # 首次探测:记下基线即通过
+    with open(STATE, "w") as f:
+        f.write(str(steps))
+
+    if demand == 0 or steps > prev or prev < 0:
+        sys.exit(0)
+    sys.exit(f"TP group appears hung: demand={demand:.0f} but steps stuck at {steps:.0f}")
+  rank0.sh: |
+    #!/bin/bash
+    # Generated from recipe: DeepSeek-V4-Flash
+    # Environment variables
+    export TORCH_CUDA_ARCH_LIST="12.1a"
+    export VLLM_ALLOW_LONG_MAX_MODEL_LEN="1"
+    export VLLM_TRITON_MLA_SPARSE="1"
+    export FLASHINFER_DISABLE_VERSION_CHECK="1"
+    export TILELANG_CLEANUP_TEMP_FILES="1"
+    export DG_JIT_USE_NVRTC="0"
+    export DG_JIT_NVCC_COMPILER="/usr/local/cuda/bin/nvcc"
+    export DG_JIT_PRINT_COMPILER_COMMAND="1"
+    export NCCL_IB_DISABLE="0"
+    export NCCL_DEBUG="WARN"
+    # Run the model
+    vllm serve /root/.cache/huggingface/hub/DeepSeek-V4-Flash-0731 \
+        --served-model-name deepseek-v4-flash \
+        --host 0.0.0.0 \
+        --port 8000 \
+        --trust-remote-code \
+        --tensor-parallel-size 2 \
+        --pipeline-parallel-size 1 \
+        --kv-cache-dtype fp8 \
+        --block-size 256 \
+        --enable-prefix-caching \
+        --max-model-len 1000000 \
+        --max-num-seqs 6 \
+        --max-num-batched-tokens 8192 \
+        --gpu-memory-utilization 0.8 \
+        --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}' \
+        --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"greedy"}' \
+        --override-generation-config '{"top_p":0.95}' \
+        --tokenizer-mode deepseek_v4 \
+        --tool-call-parser deepseek_v4 \
+        --enable-auto-tool-choice \
+        --reasoning-parser deepseek_v4 \
+        --reasoning-config '{"reasoning_parser":"deepseek_v4","reasoning_start_str":"<think>","reasoning_end_str":"</think>"}' \
+        --default-chat-template-kwargs '{"thinking":true}' \
+        --load-format safetensors --nnodes 2 --node-rank 0 --master-addr 192.168.200.101 --master-port 29501
+  rank1.sh: |
+    #!/bin/bash
+    # Generated from recipe: DeepSeek-V4-Flash
+    # Environment variables
+    export TORCH_CUDA_ARCH_LIST="12.1a"
+    export VLLM_ALLOW_LONG_MAX_MODEL_LEN="1"
+    export VLLM_TRITON_MLA_SPARSE="1"
+    export FLASHINFER_DISABLE_VERSION_CHECK="1"
+    export TILELANG_CLEANUP_TEMP_FILES="1"
+    export DG_JIT_USE_NVRTC="0"
+    export DG_JIT_NVCC_COMPILER="/usr/local/cuda/bin/nvcc"
+    export DG_JIT_PRINT_COMPILER_COMMAND="1"
+    export NCCL_IB_DISABLE="0"
+    export NCCL_DEBUG="WARN"
+    # Run the model
+    vllm serve /root/.cache/huggingface/hub/DeepSeek-V4-Flash-0731 \
+        --served-model-name deepseek-v4-flash \
+        --host 0.0.0.0 \
+        --port 8000 \
+        --trust-remote-code \
+        --tensor-parallel-size 2 \
+        --pipeline-parallel-size 1 \
+        --kv-cache-dtype fp8 \
+        --block-size 256 \
+        --enable-prefix-caching \
+        --max-model-len 1000000 \
+        --max-num-seqs 6 \
+        --max-num-batched-tokens 8192 \
+        --gpu-memory-utilization 0.8 \
+        --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}' \
+        --speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"greedy"}' \
+        --override-generation-config '{"top_p":0.95}' \
+        --tokenizer-mode deepseek_v4 \
+        --tool-call-parser deepseek_v4 \
+        --enable-auto-tool-choice \
+        --reasoning-parser deepseek_v4 \
+        --reasoning-config '{"reasoning_parser":"deepseek_v4","reasoning_start_str":"<think>","reasoning_end_str":"</think>"}' \
+        --default-chat-template-kwargs '{"thinking":true}' \
+        --load-format safetensors --nnodes 2 --node-rank 1 --master-addr 192.168.200.101 --master-port 29501 --headless

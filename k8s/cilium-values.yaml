@@ -1,0 +1,21 @@
+# Cilium helm values — dgx-spark 集群 (docs/k3s-migration-design-cn.md §4.4)
+# 安装: helm install cilium cilium/cilium -n kube-system -f k8s/cilium-values.yaml
+# cluster.id/name + routingMode/mtu 是 ClusterMesh 接口约定,装完不可改。
+cluster:
+  name: dgx-spark
+  id: 1
+kubeProxyReplacement: true          # k3s 已 --disable-kube-proxy
+k8sServiceHost: 192.168.200.102
+k8sServicePort: 6443
+routingMode: tunnel                 # vxlan;跨集群只要求节点 IP 互通(homelab 对接前提)
+tunnelProtocol: vxlan
+ipam:
+  mode: kubernetes                  # 沿用 k3s 分配的 node PodCIDR (10.44.0.0/16)
+mtu: 1200                           # 最窄路径 = Tailscale 1280;CNI 平面无重流量,开销无感
+hubble:
+  relay:
+    enabled: true
+  ui:
+    enabled: true
+operator:
+  replicas: 1

@@ -1,0 +1,18 @@
+# k3s containerd registry mirrors — 目标: /etc/rancher/k3s/registries.yaml (两节点)
+# 国外 registry 一律经 daocloud 镜像 (见 docs/china-network-mirrors-cn.md)
+mirrors:
+  docker.io:
+    endpoint:
+      - "https://docker.m.daocloud.io"
+  quay.io:
+    endpoint:
+      - "https://quay.m.daocloud.io"
+  nvcr.io:
+    endpoint:
+      - "https://nvcr.m.daocloud.io"
+  registry.k8s.io:
+    endpoint:
+      - "https://k8s.m.daocloud.io"
+  ghcr.io:
+    endpoint:
+      - "https://ghcr.m.daocloud.io"
