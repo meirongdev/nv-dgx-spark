@@ -13,9 +13,11 @@ Blackwell) servers. Two stacks live in this repo:
   decoding (upgraded 2026-07-03 from MTP), warm single-stream **31–84 tok/s
   depending on content** (mean 67, see [Measuring throughput](#measuring-throughput-read-this-before-quoting-a-toks-number)),
   **1M ctx**, served on server 1 `:8000` as `deepseek-v4-flash`.
-  This stack is **NOT** Ansible-driven — it uses the eugr `spark-vllm-docker`
-  harness. Deploy/run via `make v4flash-*`; full runbook
-  `docs/deepseek-v4-flash-cn.md`; DSpark upgrade details `docs/dspark-upgrade-cn.md`.
+  **Runs on k3s since 2026-08-13** (two pinned Pods; migrated off the eugr
+  `spark-vllm-docker` harness + systemd, which stay as the rollback path).
+  Ops via `make v4flash-*` → kubectl. Cluster design `docs/k3s-migration-design-cn.md`,
+  manifests `k8s/README.md`; engine build + baseline `docs/deepseek-v4-flash-cn.md`;
+  DSpark details `docs/dspark-upgrade-cn.md`.
 - **Retired (revivable) — Qwen/Gemma + Bifrost gateway**, Ansible-driven through
   the Makefile (`make stack-deploy`, `make bifrost-*`). Torn down to free both
   GPUs for V4-Flash; the playbooks/targets/config still work to bring it back.
@@ -31,22 +33,32 @@ Blackwell) servers. Two stacks live in this repo:
 
 ## Common Commands
 
-### Current stack — DeepSeek-V4-Flash (eugr harness, not Ansible)
+### Current stack — DeepSeek-V4-Flash (k3s since 2026-08-13)
+
+Runs as two pinned Pods in the `dgx-spark` k3s cluster (`v4flash` namespace).
+kubectl runs from **this machine** — `~/.kube/dgx-spark.yaml`. Full design +
+gotchas: `docs/k3s-migration-design-cn.md`; manifests + ops: `k8s/README.md`.
 
 ```bash
-make v4flash-run        # launch dual-node TP=2 (systemd if autostart installed, else tmux)
-make v4flash-status     # /v1/models + container state
+make v4flash-run        # scale both ranks to 1 (loads ~5min)
+make v4flash-status     # pods + /v1/models
 make v4flash-test       # coding smoke test + tok/s
 make v4flash-load       # who is using the engine now (running/waiting reqs, KV%, client IPs)
-make v4flash-logs       # tail head-node log
-make v4flash-stop       # stop both nodes (via systemd if the unit is active)
-
-# Boot autostart (systemd unit on the head; survives reboot)
-make v4flash-autostart          # install + enable the unit (one-time)
-make v4flash-autostart-start    # start it now (= sudo systemctl restart)
-make v4flash-autostart-status   # systemctl status + recent journal
-make v4flash-autostart-remove   # disable + delete the unit
+make v4flash-logs       # leader (rank0) log;  v4flash-logs-worker for rank1
+make v4flash-restart    # recreate BOTH ranks (never restart one alone — see below)
+make v4flash-stop       # scale both to 0
 ```
+
+**Never restart a single rank.** A single-rank restart leaves the surviving rank
+hung in collectives — Pod stays `1/1 Running`, `/health` and `/v1/models` keep
+returning 200, and every real generation times out. Liveness probes now catch
+this (leader does a real 1-token generation; worker watches the leader's
+`/health`), but recovery costs ~10 min, so use `make v4flash-restart`.
+
+Boot autostart is k3s's own systemd service — nodes must be Ready and the GPU
+registered before the Pods schedule, which replaces the old boot-race wrapper.
+The retired `deepseek-v4-flash.service` unit is still installed but **disabled**,
+kept as the rollback path (`make v4flash-autostart-*` targets still drive it).
 
 ### Misc
 
@@ -91,18 +103,18 @@ the [Retired stack](#retired-stack-revivable) section.)
 ## Architecture (current — V4-Flash)
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                   DGX Spark Cluster                          │
+┌─ k3s cluster "dgx-spark" (cluster.id=1, Cilium CNI) ─────────┐
 │  ┌──────────────────┐  200G CX7  ┌──────────────────┐        │
-│  │ Server 1 (head)   │ ◄────────► │ Server 2 (worker) │       │
+│  │ S1 spark-ccf3     │ ◄────────► │ S2 spark-2435     │       │
 │  │ 192.168.200.101   │ RoCE/NCCL  │ 192.168.200.102   │       │
-│  │ vLLM :8000        │   TP=2     │  (TP rank 1)      │       │
-│  │ deepseek-v4-flash │            │                   │       │
+│  │ k3s agent         │   TP=2     │ k3s server        │       │
+│  │ Pod v4flash-leader│ (bypasses  │ Pod v4flash-worker│       │
+│  │ rank0, vLLM :8000 │   the CNI) │ rank1 --headless  │       │
 │  └──────────────────┘            └──────────────────┘        │
 └──────────────────────────┬───────────────────────────────────┘
                            │ Tailscale VPN (100.x)
                   ┌────────▼──────────┐
-                  │   Mac (client)    │
+                  │   Mac (client)    │  kubectl → S2:6443
                   │ codex --profile dgx → 100.97.87.120:8000
                   └───────────────────┘
 ```
@@ -110,6 +122,8 @@ the [Retired stack](#retired-stack-revivable) section.)
 The two nodes form **one** TP=2 vLLM instance; only server 1 exposes the OpenAI
 API (`:8000`, both `/v1/chat/completions` and `/v1/responses`). Server 2 is a
 pure TP worker reached over the 200G link — there is no separate endpoint on it.
+Both Pods are `hostNetwork` + `privileged`, so NCCL/RoCE and the API behave
+exactly as they did under docker; the CNI carries only system traffic.
 
 ## DeepSeek-V4-Flash deploy notes (GB10 → vLLM jasl fork)
 
@@ -133,47 +147,27 @@ ops `make v4flash-{run,status,test,load,logs,stop}`.
 - **Serve from the local model PATH** (`/root/.cache/huggingface/hub/DeepSeek-V4-Flash-0731`),
   not the HF repo id — the worker node has no proxy, and HF-cache symlinks must
   be relative to resolve inside the container.
-- **MTP** (`deepseek_mtp`, `num_speculative_tokens=2`) roughly doubles single-stream
-  throughput (~25 → ~42 tok/s). `cudagraph_mode=FULL_AND_PIECEWISE`, `--max-model-len 1000000`.
-- **DSpark** (spec-decode successor to MTP, live since 2026-07-03): serves a
-  checkpoint with the DSpark module attached +
-  `--speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"greedy"}'`.
-  Since 2026-07-31 that checkpoint is `DeepSeek-V4-Flash-0731` (166.9GB,
-  ModelScope) — the official release ships the module built in, same structure
-  and byte-identical config.json as the preview-era `DeepSeek-V4-Flash-DSpark`
-  combo it replaced, so it was a pure weight swap (no engine/recipe changes
-  beyond the model path). `num_speculative_tokens=5` is the GB10-tuned value
-  (2026-07-31 sweep on 0731: n=3 ≈ 53.9 tok/s, n=5 ≈ 56.6, n=7 ≈ 52.4 —
-  acceptance craters past draft position 4 (4.7%/0.3% at pos 5/6) because
-  `dspark_block_size` is 5, so DeepSeek's recommended n=7 just wastes two draft
-  passes per step; 6-way concurrency re-validated clean at n=5).
-  `served_model_name` unchanged so clients need no reconfiguration.
-  `max_num_seqs=6` / `max_num_batched_tokens=8192` is the validated concurrency
-  ceiling (real 6-way concurrency confirmed, no garbling/crash, **186 tok/s
-  aggregate / 33.5 per stream** — re-measured 2026-08-05; the "~50 aggregate" in
-  older notes was a streaming-chunk-counting artifact) — **`max_num_seqs=16`
-  fails outright** (KV-cache preflight check
-  rejects the config; `Restart=on-failure` will then loop on the bad config
-  until you revert). Full runbook + gotchas in `docs/dspark-upgrade-cn.md`.
-  Rebuilds need `--build-only --force-build` (`--build-only` alone is a no-op
-  when the image exists). First request after a (re)start pays a one-time
-  Triton JIT-compile spike for the DSpark Markov-sampler kernels — ignore that
-  measurement, retest. **jasl fork is now needed for DSpark only** — 2026-07-04
-  testing showed stock upstream vLLM *can* serve plain V4-Flash TP=2 on GB10
-  (sm121) fine, given `DG_JIT_USE_NVRTC=0` + `DG_JIT_NVCC_COMPILER=...` (missing
-  these looks like an architecture-support failure but isn't). **The "wait for
-  PR #41834" plan is obsolete** — #41834 is still open (checked 2026-08-05), but
-  eugr shipped DSpark anyway: the `b12x` branch merged into main on 2026-08-04
-  with a `deepseek-v4-flash-0731` recipe (DSpark k=5, fp8 KV, full B12X backends)
-  and **prebuilt images on Docker Hub** (`./build-and-copy.sh --exp-b12x -c`, no
-  compile). That is the realistic path off the jasl fork now — but it is a
-  **watch item, not a to-do**: the last comment on
-  [eugr#331](https://github.com/eugr/spark-vllm-docker/issues/331) reports b12x
-  crashing after 1–2 h with higher memory use (unanswered before close), eugr
-  quotes "~50 t/s average" (below our measured mean 67.2), the recipe runs
-  `gpu_memory_utilization: 0.85` (the value that OOM'd this head node on
-  2026-06-29), and the image is an obscure Docker Hub org that daocloud probably
-  won't mirror.
+- **DSpark** (spec-decode, replaced MTP 2026-07-03; MTP itself had replaced
+  no-spec ~25 → ~42 tok/s):
+  `--speculative-config '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"greedy"}'`,
+  `cudagraph_mode=FULL_AND_PIECEWISE`, `--max-model-len 1000000`.
+  **`n=5` is the GB10-tuned value** — `dspark_block_size` is 5, so acceptance
+  craters past draft position 4 and DeepSeek's recommended n=7 just wastes two
+  draft passes (sweep: n=3 ≈ 53.9, n=5 ≈ 56.6, n=7 ≈ 52.4 on the same prompt).
+  **`max_num_seqs=6` / `max_num_batched_tokens=8192` is the validated ceiling**;
+  `max_num_seqs=16` fails the KV-cache preflight outright and will CrashLoop
+  until reverted. First request after a (re)start pays a one-time Triton
+  JIT-compile spike — discard that measurement. Full runbook:
+  `docs/dspark-upgrade-cn.md`.
+- **The jasl fork is needed for DSpark only.** Stock upstream vLLM can serve
+  plain V4-Flash TP=2 on GB10, given `DG_JIT_USE_NVRTC=0` +
+  `DG_JIT_NVCC_COMPILER=...` (missing these looks like an architecture-support
+  failure but isn't). **Watch item, not a to-do:** eugr's `b12x` (merged
+  2026-08-04) ships DSpark with prebuilt Docker Hub images — but
+  [eugr#331](https://github.com/eugr/spark-vllm-docker/issues/331) reports it
+  crashing after 1–2 h, eugr quotes ~50 t/s (below our mean 67.2), its recipe
+  uses the `gpu_memory_utilization: 0.85` that OOM'd this head node, and the
+  image lives in an org daocloud probably won't mirror.
 - **Never build/`docker build` on S1 without stopping the production stack
   first** — even the "lightweight" prebuilt-wheel path still compiles native
   deps (DeepGEMM/QuTLASS) from source in the runner-image stage, and doing this
@@ -224,64 +218,45 @@ request; `accept_diff.py` in the benchmark dir does the arithmetic).
 
 ### Ruled out: the "0731 DSpark 1M NVFP4 KV" forum recipe (2026-08-05)
 
-The NVIDIA-forum recipe
-([thread](https://forums.developer.nvidia.com/t/deepseek-v4-flash-0731-dspark-1m-nvfp4-kv-2x-dgx-spark/378824),
-repo `tonyd2wild/DeepSeek-v4-Flash-0731-DSpark-1M-NVFP4-KV-2x-DGX-Spark`) was
-benchmarked head-to-head with its own harness: **our stack matches or beats it on
-every axis except 100K prefill.** Don't rebuild on it — full write-up and the
-per-claim analysis in `benchmarks/bench-full-2026-08-05/README.md`. Short version:
-its Stage C `nvfp4_ds_mla` keeps DeepSeek's 584-byte cache envelope, so 4-bit KV
-saves **zero** memory vs our `fp8_ds_mla` — measured from both sides' boot logs at
-the same `--block-size 256`: **7,606 B/tok theirs vs 7,424 ours** (a real 416-byte
-layout would be ~5,288); its "B12X ≈ 2×" is 2× against its own base image's
-fallback, not against this build; and its Patch 4 draft-loader bug (halves 0731
-acceptance) doesn't apply to the jasl fork. Adopting it would mean moving back to a
-frozen vLLM 0.21.1 + ~15 hand-maintained overlay files.
+Benchmarked head-to-head with its own harness: **our stack matches or beats it on
+every axis except 100K prefill — don't rebuild on it.** Its "NVFP4 KV" saves
+**zero** memory (Stage C `nvfp4_ds_mla` keeps DeepSeek's 584-byte envelope:
+7,606 B/tok theirs vs 7,424 ours), its "B12X ≈ 2×" is measured against its own
+base image's fallback, and adopting it means a frozen vLLM 0.21.1 + ~15
+hand-maintained overlay files. Full per-claim analysis:
+`benchmarks/bench-full-2026-08-05/README.md`.
 
-**NVFP4 KV itself stays a watch item** — the verdict is against *this* recipe, not
-against 4-bit sparse-MLA KV (a real layout would cut ~29% of B/tok). Revisit when a
-416-byte `nvfp4_ds_mla` store/decode kernel survives past ~411 real prompt tokens
-**and** runs on a runtime no older than ours. Judge it by the boot-log B/tok, not
-the README wording: **below ~6,000 is real, 7,4xx–7,6xx is the padded fake.**
-Not urgent — at 1.34M tok / 1.39x concurrency @1M ctx with `max_num_seqs=6` we have
-no use for the freed memory. Trigger conditions in `benchmarks/bench-full-2026-08-05/README.md`.
+- **NVFP4 KV stays a watch item** — the verdict is against *this* recipe, not
+  against 4-bit sparse-MLA KV. Judge any future one by the boot-log B/tok:
+  **below ~6,000 is real, 7,4xx–7,6xx is the padded fake.** Not urgent (we have
+  no use for the freed memory at `max_num_seqs=6`).
+- **Its one real lead is 100K prefill (2639 vs 2084, +27%) and there is no free
+  lever to close it.** `--async-scheduling` is already auto-enabled here (every
+  boot logs it) — adding the flag is a no-op; its
+  `VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=256` is tighter than our default. The
+  likely cause is its B12X MXFP4 MoE kernel, welded to that frozen runtime.
 
-Its one real lead is **100K prefill, 2639 vs our 2084 tok/s (+27%)** — and there
-is **no free lever to close it**. `--async-scheduling` (in its launcher, absent
-from our recipe) is a **no-op here**: this build treats `async_scheduling=None`
-as auto-enable-unless-incompatible and `dspark` is whitelisted
-(`config/vllm.py:981-1060`), so every boot already logs *"Asynchronous scheduling
-is enabled"* — don't add the flag expecting a win. Its
-`VLLM_SPARSE_INDEXER_MAX_LOGITS_MB=256` is *tighter* than our 512 default, and
-flashinfer autotune is already on. The remaining likely cause is its B12X MXFP4
-MoE kernel (deep prefill = large-M MoE GEMM), which is welded to that frozen
-runtime. Untested and not free: `--max-num-batched-tokens` 8192 → 16384, which
-trades in-flight decode latency and KV pool for prefill chunk size.
+## k3s runtime (design + manifests: `docs/k3s-migration-design-cn.md`, `k8s/`)
 
-## Boot autostart (systemd, survives reboot)
-
-A reboot wipes the stack (`--rm` containers, no restart policy) — the cluster
-does **not** come back on its own unless the unit below is installed. One-time:
-`make v4flash-autostart` (installs `scripts/v4flash-boot.sh` →
-`/home/admin/v4flash-boot.sh` + `config/deepseek-v4-flash.service` →
-`/etc/systemd/system/`, `daemon-reload`, `enable`).
-
-- **One unit, on the head only** (`User=admin`). The head's `launch-cluster.sh`
-  drives the TP worker over SSH, so the worker needs no unit — just docker +
-  sshd (both default-enabled).
-- **A docker `--restart` policy can't do this**: vLLM runs as a foreground
-  `docker exec` *inside* a `sleep infinity --rm` container, so a restart policy
-  would only revive the sleep. The whole orchestration (`run-recipe.sh
-  --no-ray`) must re-run — which is what the unit's `ExecStart` does.
-- **Boot-race handling:** `v4flash-boot.sh` waits (≤15 min, `DSV4_WAIT_TIMEOUT`)
-  for the worker's ssh+docker+GPU over the 200G link before launching, so a
-  simultaneous reboot of both nodes doesn't make `launch-cluster.sh` abort.
-  `Restart=on-failure` is the backstop (and gives free crash-recovery).
-- **Once installed, `make v4flash-run`/`v4flash-stop` route through systemd**
-  (`systemctl restart`/`stop`) so the manual and boot paths are identical and a
-  manual `docker rm` can't trigger a `Restart=on-failure` fight. The tmux launch
-  is the fallback only when the unit isn't installed (e.g. during a rebuild).
-  Logs move from `/tmp/dsv4-run.log` to `journalctl -u deepseek-v4-flash`.
+- **Cluster:** k3s v1.36.3, server on **S2** / agent on **S1** (the head OOM'd
+  once, so it carries the lighter role), node IPs on the 200G link. Cilium 1.19.6
+  kube-proxy-less, tunnel/vxlan, MTU 1200, Pod/Svc CIDR `10.44`/`10.45` — chosen
+  to not collide with a future homelab ClusterMesh peer.
+- **Boot autostart is k3s's own service**: Pods stay Pending until the node is
+  Ready and the device plugin has registered the GPU, which replaces the old
+  boot-race wrapper. NVIDIA device plugin must be **≥ v0.17.4** on GB10 (older
+  ones crash on unified memory).
+- **The image is local-only.** After any rebuild:
+  `docker save vllm-node-dsv4:latest | sudo k3s ctr -n k8s.io images import -` on
+  **both** nodes, then re-pin (`io.cri-containerd.pinned=pinned`) — Pods use
+  `imagePullPolicy: Never` and nothing can re-pull it.
+- **Never restart one rank alone** (`make v4flash-restart` does both). See the
+  zombie-TP-group trap under [Known Gotchas](#a-single-rank-restart-creates-a-zombie-tp-group).
+- **`kubectl apply` converges replicas to the manifest value (1)** — don't apply
+  while you mean to stay stopped. (A leftover `replicas: 0` scaled production to
+  zero during the migration.)
+- **Rollback** to the docker/systemd path (kept installed but disabled):
+  `make v4flash-stop` then `ssh <head> sudo systemctl enable --now deepseek-v4-flash`.
 
 ## Unified memory constraints (DGX Spark GB10)
 
@@ -339,6 +314,40 @@ engine ships an encoder updated for 0731.
 > To use the retired Bifrost gateway instead, revive that stack — see below.
 
 ## Known Gotchas
+
+### A single-rank restart creates a zombie TP group
+Restarting/deleting **one** rank leaves the survivor hung inside the collective
+**without exiting**: the Pod stays `1/1 Running` with `restartCount=0`, `/health`
+and `/v1/models` keep returning 200, and every real generation times out
+(measured 2026-08-13). Any single-rank event does this — process OOM, CUDA error,
+one node rebooting, a stray `kubectl delete pod`. The old systemd unit was immune
+because restarting it tore down *both* nodes' containers.
+
+Liveness probes now catch it. The leader's probe (`liveness.py` in
+`k8s/v4flash/configmap-launch.yaml`) tests for **work pending with zero
+progress**: it reads `/metrics` and fails only when
+`num_requests_running+waiting > 0` *and* `vllm:iteration_tokens_total_count`
+hasn't advanced since the last check. The worker's probe watches the leader's
+`/health` for shared fate. Recovery costs ~10 min, so restart deliberately with
+`make v4flash-restart`.
+
+**Three probe rules, each learned the hard way here:**
+1. For multi-node TP/PP serving, a static HTTP endpoint is not a health signal.
+2. **A probe that issues a real request can't tell "hung" from "busy."** v1 sent a
+   `max_tokens:1` generation; it queued behind a saturated engine
+   (`Running: 6/Waiting: 2`, all healthy) and got a good leader SIGKILLed for a
+   ~10 min outage. No timeout is generous enough — queueing delay is unbounded.
+   Read health off a non-queueing side channel, and predicate on *progress*.
+3. **Kill only on positive evidence; missing data must pass.** v2 treated an
+   absent metric as `0`, and vLLM histograms don't exist until the first engine
+   iteration completes — so "just became ready, first request in flight" read as
+   hung. A false kill costs a full reload; noticing a real hang a minute later
+   costs almost nothing.
+
+### `NCCL WARN ... GID table changed` is pre-existing noise
+Appears every ~45 s on `roceP2p1s0f0`. Unrelated to k3s — it occurred ~194k times
+in the old systemd journal, back to 2026-06-05. Ignore it; filter it out when
+reading logs.
 
 ### `docker build` on S1 is silently forced through the xray proxy
 `~/.docker/config.json` sets `proxies.default` → `http://172.17.0.1:10809`, so the
@@ -409,8 +418,13 @@ crawl. Each DGX pulls fine over its own fast domestic link — no proxy/VPN/rela
 
 - `Makefile` — single user-facing interface (`v4flash-*` for the current stack;
   `stack-*`/`vllm-*`/`bifrost-*` for the retired one), plus per-model defaults.
-- `config/deepseek-v4-flash.yaml` — V4-Flash recipe (mirror of the live one in
-  the eugr harness on server 1).
+- `k8s/` — everything the live cluster runs on: `README.md` (versions + ops +
+  the two traps), `registries.yaml`, `cilium-values.yaml`, `gpu/` (RuntimeClass
+  + vendored device plugin), `v4flash/` (ConfigMap with the per-rank launch
+  scripts, leader/worker Deployments, Service).
+- `config/deepseek-v4-flash.yaml` — V4-Flash recipe. Now the **source of the
+  vLLM flags only**; the live launch commands are `k8s/v4flash/configmap-launch.yaml`
+  (rendered from this recipe). Change both together.
 - `scripts/vllm-fix-torch.sh` — reinstalls cu130 torch in the built image +
   `docker commit` + copies to S2 (fixes the torch-CPU build trap).
 - `scripts/v2rayn-launch.sh` — revives the S1 v2rayN proxy headless (needed for
@@ -419,12 +433,13 @@ crawl. Each DGX pulls fine over its own fast domestic link — no proxy/VPN/rela
   short prompt — a smoke test, not a benchmark; see [Measuring throughput](#measuring-throughput-read-this-before-quoting-a-toks-number)).
 - `benchmarks/bench-full-2026-08-05/` — decode-by-content + c1..c6 + prefill-at-depth
   baseline, and the head-to-head that ruled out the forum NVFP4-KV recipe.
-- `scripts/v4flash-boot.sh` — boot launcher: waits for the worker (ssh+docker+GPU
-  over the 200G link), tears down stale containers, then `exec`s the recipe in
-  the foreground. Copied to `/home/admin/v4flash-boot.sh` by `make v4flash-autostart`.
-- `config/deepseek-v4-flash.service` — systemd unit (head node) that runs the
-  boot launcher; installed to `/etc/systemd/system/` + enabled by the same target.
-- `docs/deepseek-v4-flash-cn.md` — full V4-Flash deploy runbook (Chinese).
+- `scripts/v4flash-boot.sh` + `config/deepseek-v4-flash.service` — the retired
+  docker/systemd launch path. **Kept as the rollback** (unit installed but
+  disabled on the head; `make v4flash-autostart-*` still drives it).
+- `docs/k3s-migration-design-cn.md` — cluster design, the ClusterMesh interface
+  contract for a homelab peer, and the migration's execution record (Chinese).
+- `docs/deepseek-v4-flash-cn.md` — engine build/prep runbook + perf baseline
+  (Chinese). One-time setup only; day-to-day ops are `make v4flash-*`.
 - `docs/dspark-upgrade-cn.md` — DSpark upgrade runbook: version landscape, fastest
   paths, step-by-step + gotchas (Chinese).
 - `docs/china-network-mirrors-cn.md` — daocloud/ModelScope/Tsinghua mirror runbook.

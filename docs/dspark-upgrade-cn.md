@@ -20,6 +20,12 @@
 > 按 streaming chunk 计数(spec decode 下一个 SSE chunk = 一个 decode step,按接受长度
 > 低报)。基线与方法见 `benchmarks/bench-full-2026-08-05/`。
 > 本文记录**为什么这么做、怎么做最快、以及所有踩过的坑**,供任何机器/会话复现。
+>
+> **📌 2026-08-13 起服务跑在 k3s 上**,下文的 `systemctl stop/start deepseek-v4-flash`
+> 一律换成 `make v4flash-stop` / `make v4flash-run`。**镜像重编后多一步必做**:
+> 在两台各自 `docker save vllm-node-dsv4:latest | sudo k3s ctr -n k8s.io images import -`
+> 并重新 pin,否则 k8s 仍跑旧镜像(`imagePullPolicy: Never`),表现为"重编了却毫无变化"。
+> 详见 `k8s/README.md`。
 > 基础栈背景见 `docs/deepseek-v4-flash-cn.md`。
 >
 > **⚠️ 2026-07-04 重大更正**:此前认为"官方 vLLM 在 GB10(sm121)上稀疏 MLA 完全跑不起来"
@@ -86,7 +92,7 @@ rsync -a --info=progress2 ~/.cache/huggingface/hub/DeepSeek-V4-Flash-DSpark/ \
     192.168.200.102:/home/admin/.cache/huggingface/hub/DeepSeek-V4-Flash-DSpark/
 
 # 3) 停栈(编译要 RAM;S1 平时只剩 ~1GB 空闲)→ 停机窗口开始
-sudo systemctl stop deepseek-v4-flash
+make v4flash-stop        # 2026-08-13 前是 sudo systemctl stop deepseek-v4-flash
 
 # 4) 重编到 fork tip(tmux!)。注意 --force-build,见坑 #1
 cd /home/admin/spark-vllm-docker
@@ -228,8 +234,8 @@ make v4flash-run
    编译 DeepGEMM/QuTLASS 等原生依赖**(能看到 `Cloning into 'deepgemm-src'`、
    `Building CUDA object ...`),吃的 CPU/内存和源码编译 vLLM 本身没差多少。在生产栈
    (~103GiB 占用)还跑着的时候起了这么一个"以为很轻"的构建,直接触发了 host OOM,
-   内核杀掉了生产的 `VLLM::Worker_TP` 进程,服务中断到手动 `systemctl restart` 恢复。
-   **不管构建看起来多"轻",动手前一律 `sudo systemctl stop deepseek-v4-flash`。**
+   内核杀掉了生产的 `VLLM::Worker_TP` 进程,服务中断到手动重启才恢复。
+   **不管构建看起来多"轻",动手前一律 `make v4flash-stop`。**
 8. 想强制重新下载官方/别的上游 wheel(而不是复用本地已编译好的 jasl wheel)时,
    `try_download_wheels` 会因为本地文件更新而跳过下载——得先把 `wheels/*.whl` 和
    隐藏的 `.vllm-commit`/`.flashinfer-commit` 都挪开。**`mv backup/* .` 不会带上以 `.`
