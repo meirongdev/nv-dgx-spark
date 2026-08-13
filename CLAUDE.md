@@ -244,8 +244,14 @@ hand-maintained overlay files. Full per-claim analysis:
   to not collide with a future homelab ClusterMesh peer.
 - **Boot autostart is k3s's own service**: Pods stay Pending until the node is
   Ready and the device plugin has registered the GPU, which replaces the old
-  boot-race wrapper. NVIDIA device plugin must be **≥ v0.17.4** on GB10 (older
-  ones crash on unified memory).
+  boot-race wrapper. **Verified 2026-08-13 by rebooting both nodes at once:**
+  nodes Ready at +34 s, GPU re-registered and Pods scheduled at +47 s, real
+  inference served at **+5 m29 s**, no intervention. The pinned local image
+  survives the reboot (Pods start instantly, nothing to pull). Stale pre-reboot
+  Pod objects linger as `Unknown` for a while — cosmetic, they hold no GPU
+  allocation; clear with `kubectl -n v4flash delete pod <name> --force`.
+  NVIDIA device plugin must be **≥ v0.17.4** on GB10 (older ones crash on
+  unified memory).
 - **The image is local-only.** After any rebuild:
   `docker save vllm-node-dsv4:latest | sudo k3s ctr -n k8s.io images import -` on
   **both** nodes, then re-pin (`io.cri-containerd.pinned=pinned`) — Pods use

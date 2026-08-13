@@ -450,10 +450,34 @@ ClusterMesh(tunnel 模式)要求两侧**节点 IP 互通** + 双方 clustermesh-
   214MB 经 Tailscale DERP 约 14 分钟。与 vLLM 镜像的分发路径相同(§4.6)。
 - 结论:daocloud 不可作为唯一依赖。新增镜像时优先考虑 Mac 中转导入。
 
-### 遗留 / 下一步
+### 整机重启恢复演练(2026-08-13 08:09,两台**同时**重启)
 
-- **未演练整机重启**(会打断服务,留到下次计划窗口)。理论上 k3s 的 systemd
-  服务 + Pod `replicas: 1` 已覆盖,但**未经证实**。
+原设计声称"k3s 的调度器天然替代 `v4flash-boot.sh` 的 boot-race 等待逻辑",
+已实测证实。两台同时 `systemctl reboot`,全程无人干预:
+
+| 相对时刻 | 事件 |
+|---|---|
+| +0s | 下发重启 |
+| +18s / +27s | 两台完成关机+启动(DGX 启动很快) |
+| +34s | k3s(server/agent)自启完成,**两节点 Ready** |
+| +47s | device plugin 重新注册 GPU;**两个 Pod 已调度并启动** |
+| **+5m29s** | leader Ready,**真实推理请求通过**(端到端,经 Tailscale) |
+
+重启后复核:两节点 Ready 且各报 1 块 GPU、kube-system 全部 Running、
+swap 仍为 0、每节点余量 17–18Gi。
+
+要点:
+
+- **pin 住的本地镜像在重启后幸存**(Pod 秒级启动、零拉取)——这是最关键的一项,
+  因为 `vllm-node-dsv4` 无处可重拉。
+- **rendezvous 无需任何等待逻辑**:worker 先起来就在 `:29501` 等,leader 起来
+  即握手。旧方案要专门等 worker 的 ssh+docker+GPU,k8s 由"节点 Ready + GPU
+  已注册才调度"天然覆盖。
+- **副作用(仅观感)**:重启前的 Pod 对象会以 `Unknown` 残留一段时间,与新 Pod
+  并存。它们不占 GPU 记账(新 Pod 照常调度成功),会被 GC 回收;确认服务正常后
+  可 `kubectl -n v4flash delete pod <name> --force` 手动清掉。
+
+### 遗留 / 下一步
 - coredns/hubble 起来后未复测集群 DNS(vLLM 走 hostNetwork 不依赖它)。
 - ClusterMesh 对接待 homelab 侧就绪(§6),本集群侧已 ready。
 - 观察期结束前保留 S1 上已 disable 的 `deepseek-v4-flash.service` 与 eugr harness。
