@@ -489,8 +489,10 @@ make tmux-kill HOST=100.97.87.120 SESSION=vllm-deploy
 
 The Qwen3.6-35B-A3B / Gemma-4 / Qwen3.5-122B per-node vLLM split + Bifrost
 gateway. Torn down to free both GPUs for V4-Flash; everything below still works
-to bring it back. (Note: those model weights were deleted during cleanup —
-re-download via ModelScope before redeploying.)
+to bring it back. **All of these model weights are gone from both nodes** —
+Gemma-4/Qwen3.5 during the original teardown, and Qwen3.6-35B-A3B-FP8 (35GB per
+node) on 2026-08-13, after it turned out to have survived that teardown despite
+this note claiming otherwise. Re-download via ModelScope before redeploying.
 
 ### Commands
 
