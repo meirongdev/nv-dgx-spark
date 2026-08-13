@@ -70,14 +70,33 @@ sudo k3s ctr -n k8s.io images label docker.io/library/vllm-node-dsv4:latest io.c
 kubectl -n v4flash rollout restart deploy   # 注意:重启付 167GB 加载 + JIT + 热身
 ```
 
-## ClusterMesh(对接其他集群时)
+## ClusterMesh —— ❌ 不做(2026-08-13 否决)
 
-前提与步骤见设计文档 §6。本集群侧已就绪:cluster.id=1、tunnel、MTU 1200。
-对端集群要求:Cilium CNI(1.19.x 对齐)、cluster.id≠1、Pod/Service CIDR 与
-10.44.0.0/16 / 10.45.0.0/16 不重叠、节点 IP 经 Tailscale subnet route 互通。
+☠️ **下面这三条命令不要跑。** 与 homelab 对接经实测否决,原"本集群侧已就绪"的说法
+**不成立**:
+
+- 本集群 `cluster.id=1` **与 homelab 相同**(homelab 也是 1,oracle-k3s 是 2)——撞 id
+  是身份空间重叠,不是性能问题;
+- `MTU 1200` **从未生效**:chart 的键是 `MTU`(全大写),`k8s/cilium-values.yaml` 里
+  写的是小写 `mtu`,helm 静默忽略未知键,实际设备停在自动探测的 1280。
+  **别去"修正"大小写**——homelab 2026-07-07 因显式 MTU=1200 踩过静默黑洞;
+- 最关键的:**"节点 IP 经 Tailscale subnet route 互通"做不到**。两台 Spark 是
+  **外部 tailnet 的共享节点**,节点共享不携带 subnet route,而 `192.168.200.101/102`
+  正是 VXLAN 要发往的地址 → 跨集群节点平面无法存在。
+
+实测数据、替代方案(homelab 侧 Service + 手写 Endpoints)与重评条件:
+设计文档 [§6](../docs/k3s-migration-design-cn.md) 与 homelab 仓库
+`docs/decisions/dgx-clustermesh-not-adopted.md`。
+
+<details>
+<summary>原始步骤(已作废,仅存档)</summary>
 
 ```bash
+# ❌ 不要执行:前提不成立,cilium clustermesh enable 会在本集群装出一个
+#    永远等不到对端的 clustermesh-apiserver
 cilium clustermesh enable --service-type NodePort
 cilium clustermesh connect --destination-context <homelab-context>
 cilium connectivity test --multi-cluster <homelab-context>
 ```
+
+</details>

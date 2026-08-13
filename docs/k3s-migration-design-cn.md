@@ -2,9 +2,15 @@
 
 > 状态:**已执行完成**(2026-08-13 01:18 切换,生产已跑在 k3s 上)。
 > 实际执行与本文的偏差、以及演练推翻的一个关键假设,见 §4.7 和 §11。
+> ⚠️ **§6(ClusterMesh 对接)已被取代——该方案 2026-08-13 否决,不要照它执行。**
+> 本文"ClusterMesh-ready"的说法(目标 #2/#3、§4.2、§6)**不成立**:两台 Spark 是
+> **外部 tailnet(`kaixinhuang3307@`)的共享节点**,而 Tailscale 节点共享不携带
+> subnet route,§6.2 依赖的连通性方案封死。结论与实测证据见 homelab 仓库
+> `docs/decisions/dgx-clustermesh-not-adopted.md`。**迁移本身(§1–§5、§7、§11)
+> 不受影响**,仍是当前形态的依据。
 > 范围:把生产 DeepSeek-V4-Flash-0731 双节点 TP=2 栈从 systemd + eugr harness
 > 迁入单个双节点 k3s 集群(Cilium CNI),并为后续与 homelab 集群的
-> Cilium ClusterMesh 对接预留全部条件。
+> Cilium ClusterMesh 对接预留全部条件(**后半句已作废**,见上)。
 > 相关:现状 runbook `deepseek-v4-flash-cn.md`;基线 `benchmarks/bench-full-2026-08-05/`。
 
 ## 1. 目标与非目标
@@ -13,7 +19,9 @@
 1. V4-Flash 生产服务迁入 k3s,客户端零感知(仍是 `100.97.87.120:8000`、
    模型名 `deepseek-v4-flash`,vLLM 参数一字不改)。
 2. Cilium 做 CNI(kube-proxy-less),安装即 ClusterMesh-ready。
+   → ⚠️ **后半句已作废**:接口约定里只有 CIDR 规划成立,见文首与 §6.1。
 3. 后续 homelab 集群可通过 ClusterMesh 与本集群对接(全局服务互访)。
+   → ❌ **已否决**(2026-08-13),改用 homelab 侧 Endpoints 直连,见 §6.4。
 4. 保留一键回滚到 systemd 路径的能力,直到新栈稳定观察期结束。
 
 **非目标**
@@ -27,7 +35,7 @@
 | 资料 | 结论 |
 |---|---|
 | [collabnix: Building AI Agents on DGX Spark with Kubernetes](https://collabnix.com/building-ai-agents-on-dgx-spark-with-kubernetes-a-complete-tutorial/) | **可参考,不可作设计依据。** 有效信息:GB10 上 NVIDIA device plugin **必须 ≥ v0.17.4**(旧版在统一内存上崩:`error getting device memory: Not Supported`,NVIDIA/gpu-operator#1794);k3s 基本安装与 `nvidia.com/gpu` 资源请求方式与我们一致。未覆盖:多节点 TP、RDMA/NCCL、hostNetwork、CNI 选型(默认 Flannel)、国内网络、本地构建镜像(它假设镜像可直接拉取)。 |
-| [Cilium ClusterMesh 官方文档](https://docs.cilium.io/en/stable/network/clustermesh/) | 对接 homelab 的依据(前提条件见 §6)。 |
+| [Cilium ClusterMesh 官方文档](https://docs.cilium.io/en/stable/network/clustermesh/) | ~~对接 homelab 的依据~~ —— 对接已否决(§6),此条仅供理解 tunnel 模式对节点 IP 互通的要求。 |
 | LeaderWorkerSet (LWS) | 可选的后续增强(组重启语义),初版不引入,见 §5.5。 |
 
 ## 3. 现状(2026-08-12 从生产环境抓取的 ground truth)
@@ -50,7 +58,7 @@
 ## 4. 目标架构
 
 ```
-                 Tailscale(管理平面 + 未来跨集群平面)
+                 Tailscale(管理平面;跨集群平面已否决,见 §6)
    Mac(kubectl/helm) ──────────────┐
                                    │
 ┌──────────────────────────────────▼───────────────────────────┐
@@ -67,7 +75,7 @@
 │  └───────────────────┘          └────────────────────┘        │
 └───────────────────────────────────────────────────────────────┘
         客户端不变:100.97.87.120:8000 / deepseek-v4-flash
-未来:homelab cluster (cluster.id=2, Cilium) ⇄ ClusterMesh over Tailscale
+已否决(2026-08-13):homelab 是 cluster.id=1 且为外部 tailnet 的共享节点 → 见 §6
 ```
 
 ### 4.1 拓扑与角色
@@ -81,16 +89,23 @@
   `https://100.67.164.92:6443`;S2 证书加 tls-san)。同时规避了国内拉
   helm chart(GitHub Pages)的问题——chart 在 Mac 下好后 `helm install ./chart.tgz`。
 
-### 4.2 CIDR 规划(为 ClusterMesh 预留,**装完不可改**)
+### 4.2 CIDR 规划(**装完不可改**)
 
-| | dgx-spark(本集群) | homelab(假设 k3s 默认) |
-|---|---|---|
-| cluster.id / name | 1 / `dgx-spark` | 2 / `homelab` |
-| Pod CIDR | **10.44.0.0/16** | 10.42.0.0/16 |
-| Service CIDR | **10.45.0.0/16** | 10.43.0.0/16 |
+> ⚠️ 2026-08-13 用实物核对了本表的 homelab 列。**"为 ClusterMesh 预留"这个前提已作废**
+> (见文首与 §6),但 CIDR 规划本身仍然有效——它是"装完不可改"的真实约束。
 
-刻意避开 k3s 默认值,保证与 homelab **不重叠**(ClusterMesh 硬性前提)。
-homelab 实际 CIDR 在 Phase 1 前确认(见 §9 待决问题)。
+| | dgx-spark(本集群) | homelab(**实测**) | oracle-k3s(**实测**) |
+|---|---|---|---|
+| cluster.id / name | 1 / `dgx-spark` | **1** / `homelab` ⚠️ | **2** / `oracle-k3s` |
+| Pod CIDR | **10.44.0.0/16** | 10.42.0.0/16 | 10.52.0.0/16 |
+| Service CIDR | **10.45.0.0/16** | 10.43.0.0/16 | — |
+
+刻意避开 k3s 默认值,保证三方 Pod/Service CIDR **不重叠**——**这一条经实测成立**,
+是当初唯一猜对的接口约定。
+
+⚠️ 但 `cluster.id` **猜错了**:原表假设 homelab 是 2,实际 homelab 是 **1**(与本集群相同)、
+`2` 早被 oracle-k3s 占用。若将来真要接 mesh,要改的是**本集群**(改成 3),
+因为 homelab 是三者中唯一挂着 Gateway、跑有状态负载、且已与 oracle 建好跨集群 CA 互信的一侧。
 
 ### 4.3 k3s 安装参数
 
@@ -134,13 +149,15 @@ mirrors:
 ### 4.4 Cilium(helm values 核心)
 
 ```yaml
-cluster: {name: dgx-spark, id: 1}        # ClusterMesh-ready,装完不可改
+cluster: {name: dgx-spark, id: 1}        # 可改(cilium-config 键,helm upgrade+滚重启即可);
+                                         # 当前无消费者,撞 id 无害,保持 1;重评 mesh 才改 3
 kubeProxyReplacement: true               # kube-proxy-less(k3s 已 --disable-kube-proxy)
 k8sServiceHost: 192.168.200.102
 k8sServicePort: 6443
 routingMode: tunnel                      # vxlan;见下方取舍说明
 ipam: {mode: kubernetes}                 # 沿用 k3s 分配的 node PodCIDR
-mtu: 1200                                # 预留 Tailscale(1280)+vxlan 开销,跨集群不炸 PMTU
+mtu: 1200                                # ⚠️ 从未生效!chart 的键是 `MTU`(全大写),
+                                         #    小写被 helm 静默忽略。别改大小写,见下
 hubble:
   relay: {enabled: true}
   ui: {enabled: true}                    # 学习/排障用,只在集群内暴露
@@ -151,8 +168,17 @@ operator: {replicas: 1}
 autoDirectNodeRoutes 省掉封装开销,但 (a) CNI 平面上没有重流量(§3),vxlan
 开销无感;(b) 跨集群走 tunnel 时只要求**节点 IP 互通**,不必把 Pod CIDR 注入
 Tailscale 路由表,homelab 对接的前提大幅简化;(c) 两侧路由模式一致,少一类
-排障变量。**MTU 1200** 同理:统一按最窄路径(Tailscale 1280)预留,避免跨集群
-PMTU 黑洞;仅影响 CNI 流量,vLLM 的 hostNetwork/RoCE 不受影响。
+排障变量。(b) 那条理由随 §6 否决而失效,但 (a)(c) 仍成立,故路由模式不改。
+
+☠️ **`mtu: 1200` 从未生效,而且别去修它。** Cilium chart 的键是 **`MTU`(全大写)**
+(`helm show values cilium/cilium --version 1.19.6 | grep '^MTU'` → `MTU: 0`);
+小写 `mtu` 是未知键,helm 不报错、静默忽略。实测两节点 `cilium_vxlan` 与 pod 侧
+`lxc*` 全部是**自动探测的 1280**。
+
+**这是运气**:真生效了会踩静默黑洞——显式 MTU 时 Cilium **不减**隧道开销,
+pod 与 vxlan 设备拿到同一个数,区间顶部 50 字节的包被静默丢弃(homelab 2026-08-13
+实测确认该机制,其 `k8s/cilium/values.yaml` 有专门注释禁止显式设值)。
+所以:**保持现状,不要把 `mtu` 改成 `MTU`**。
 
 ### 4.5 GPU 栈
 
@@ -250,7 +276,7 @@ worker 与 leader 的差异:钉 S2、跑 `rank1.sh`(`--node-rank 1 --headless`)�
 
 另建一个 ClusterIP Service `deepseek-v4-flash`(selector 指向 leader,端口
 8000)。客户端仍直连 `100.97.87.120:8000`(hostNetwork),这个 Service 是给
-**集群内消费者和未来 ClusterMesh 全局服务**用的入口(§6.3)。
+**集群内消费者**用的入口。(原写"未来 ClusterMesh 全局服务",该方案已否决 → §6.4)
 
 **崩溃/重启语义(2026-08-13 演练推翻了原假设,已修正)**
 
@@ -325,39 +351,89 @@ kubectl delete pod)都会走到同一状态。老 systemd 方案没有这个问�
 `make v4flash-stop` → `ssh <head> sudo systemctl enable --now deepseek-v4-flash`。
 观察期结束前不删 systemd unit、不删 eugr harness。
 
-## 6. ClusterMesh 对接设计(homelab ⇄ dgx-spark)
+## 6. ClusterMesh 对接设计(homelab ⇄ dgx-spark)—— ⚠️ 已被取代,不要执行
 
-### 6.1 homelab 侧前提(不满足则对接不成立)
+> **状态:❌ 已否决(2026-08-13)。** 本节 §6.1/§6.2 的前提经实测**全部不成立**,
+> §6.2 的连通性方案**做不到**。完整评估、实测数据与替代方案见 homelab 仓库
+> `docs/decisions/dgx-clustermesh-not-adopted.md`(该 ADR 是此结论的唯一真相源)。
+> 下面保留原文并逐条标注错在哪,供理解"为什么当初以为可行"。
+> §6.3 的两个用例仍然有效,但**用另一种方式实现**,见 §6.4。
 
-1. CNI 必须是 **Cilium**(两侧版本同一 minor 为佳),`cluster.id=2`、
-   `cluster.name=homelab`,同样建议 `routingMode: tunnel` + `mtu: 1200`。
-2. Pod/Service CIDR 与本集群(10.44/10.45)**不重叠**(§4.2)。
-3. 若 homelab 现在不是 Cilium:对接前需先完成 homelab 的 CNI 迁移,
-   那是 homelab 仓库的独立变更,本文档只锁定接口(id/name/CIDR/MTU)。
+### 6.1 homelab 侧前提(~~不满足则对接不成立~~ 三条实测全错)
 
-### 6.2 跨集群连通性:Tailscale subnet router
+原文与实测对照:
 
-ClusterMesh(tunnel 模式)要求两侧**节点 IP 互通** + 双方 clustermesh-apiserver
-可达。两侧节点 IP 都在各自内网,方案:
+| 原文前提 | 实测 |
+|---|---|
+| `cluster.id=2` | ❌ homelab 是 **1**,`2` 被 oracle-k3s 占用(§4.2) |
+| 两侧版本同一 minor 为佳 | ❌ homelab/oracle 已是 **v1.20.0**,本集群 v1.19.6,差一个 minor |
+| 建议 `mtu: 1200` | ❌ **有害**。homelab 2026-07-07 因显式 MTU=1200 踩过静默黑洞(Cilium 对显式值**不减**隧道开销)。本集群 `k8s/cilium-values.yaml` 里那行 `mtu: 1200` 之所以没出事,是因为 **chart 的键是 `MTU`(全大写)**,小写 `mtu` 是未知键被 helm 静默忽略——**别去"修正"大小写** |
+| Pod/Service CIDR 不重叠 | ✅ 唯一成立的一条 |
 
-- DGX 侧:任一节点(建议 S2)`tailscale up --advertise-routes=192.168.200.0/24`;
-- homelab 侧:其 subnet router 通告 homelab 节点网段;
-- 双方节点开启路由接受,tailnet ACL 放行两网段互访;
-- `cilium clustermesh enable --service-type NodePort`(NodePort 落在节点 IP 上,
-  经 subnet route 可达),然后在 Mac 上用双方 kubeconfig 执行
-  `cilium clustermesh connect`(自动完成 CA/证书交换);
-- 验收:`cilium connectivity test --multi-cluster`(重点看大包用例,验证
-  MTU 1200 的余量足够)。
+### 6.2 ~~跨集群连通性:Tailscale subnet router~~ —— ❌ 此路封死
 
-### 6.3 对接后的用例
+**根因:两台 Spark 不在 homelab 那个 tailnet 里。** 它们属于
+`kaixinhuang3307@gmail.com` 的 tailnet(`*.tailf63175.ts.net`),经 **Tailscale 节点共享**
+进入对方 netmap。**节点共享只共享设备本身,不携带 subnet route 与 exit node**,
+所以原方案第 1、2 条(两侧互相通告网段)从机制上就不可能生效。
+
+实测(2026-08-13):
+
+```
+DGX     → ping 10.10.10.10      100% loss   # homelab 节点 IP;pve 通告的 /24 我们收不到
+homelab → ping 192.168.200.101  100% loss   # 本集群节点 IP;我们通告了也没人收
+DGX: tailscale debug prefs      "RouteAll": false
+DGX: ip route get 10.10.10.10   via 10.14.20.1 dev enP7s7   # 落到自己 LAN 网关,黑洞
+DGX → TCP 100.94.186.7:32379    不通         # homelab clustermesh NodePort
+```
+
+而 `192.168.200.101/102` 正是 ClusterMesh 做 VXLAN 封装要**发往**的地址
+(`kubectl get ciliumnodes` 的 `spec.addresses`),所以**跨集群节点平面无法存在**。
+
+⚠️ **`tailscale ping` 通 ≠ 端口可达**:它对共享节点照样 `pong`(via DERP,64–82ms),
+但真实 TCP 被拦。判据要用真实连接,别拿 `tailscale ping` 当放行证据。
+
+另:链路全程 **DERP 中继**(hkg/sin 双向不同节点,未打洞),实测吞吐 **2.28 MB/s**。
+即便节点平面补通了,把 clustermesh-apiserver 的 etcd watch 常驻在这条链路上也不合适。
+
+### 6.3 对接后的用例(目标仍有效,实现方式改了 → §6.4)
 
 - **homelab 侧消费 GB10 推理**:把 §4.7 的 `deepseek-v4-flash` Service 标注
   `service.cilium.io/global: "true"`,homelab 侧建同名 namespace/Service,
   homelab 的 Pod 即可用集群内 DNS 名调用 V4-Flash——AI agent 等轻负载跑在
   homelab,重推理留在 GB10。
+  → ⚠️ global Service 依赖 mesh,**改用 §6.4**。
 - **观测融合**:homelab Prometheus 可改为经 mesh 抓集群内 exporter;
   现有 Tailscale 抓取路径(node_exporter/smartctl)**迁移期间保持不动**,
   mesh 稳定后再评估切换,避免一次动两条链路。
+  → ✅ **现状即终态**:继续走 Tailscale 直抓,不需要 mesh。
+
+### 6.4 采纳的替代方案:homelab 侧 Service + 手写 Endpoints
+
+homelab 侧建一个无头 Service,Endpoints 直接指向 head 的 Tailscale IP。
+**本集群零改动**,不动 `cluster.id`、不动 MTU、不装 clustermesh-apiserver:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata: { name: deepseek-v4-flash, namespace: <ns> }
+spec:
+  clusterIP: None
+  ports: [{ port: 8000, targetPort: 8000 }]
+---
+apiVersion: v1
+kind: Endpoints
+metadata: { name: deepseek-v4-flash, namespace: <ns> }
+subsets:
+  - addresses: [{ ip: 100.97.87.120 }]
+    ports: [{ port: 8000 }]
+```
+
+⚠️ **只有 homelab 能这么做,oracle-k3s 不能**:节点共享是**授予"人"而非授予 tailnet** 的,
+oracle 的 `node0` 是 `tagged-devices`(tailnet 所有、非用户所有),两台 Spark 根本不在它的
+netmap 里——放宽 ACL 也无效。oracle 侧若要消费本集群,需要在 homelab 上架代理
+(历史方案 `dgx-proxy` 已随 bifrost 于 2026-08-08 退役)。详见 homelab 仓库
+`docs/reference/tailscale-network.md`。
 
 ## 7. 验证清单(任何重大变更后复用)
 
@@ -387,22 +463,32 @@ ClusterMesh(tunnel 模式)要求两侧**节点 IP 互通** + 双方 clustermesh-
 | Tailscale 故障影响面 | 集群内部(node-ip、NCCL、API)零依赖 Tailscale;只影响 Mac 管理入口与未来 mesh |
 | k3s 版本升级引入变量 | 升级视同维护窗口操作,先停 vLLM Pod;不开启自动升级 |
 
-## 9. 待决问题(ClusterMesh 对接前确认)
+## 9. 待决问题 —— ✅ 已全部关闭(2026-08-13)
 
 迁移期的问题已全部解决(hostname `spark-ccf3`/`spark-2435`、Cilium 1.19.6,
-均已落到 `k8s/`)。剩下的都属于 §6 的 homelab 对接:
+均已落到 `k8s/`)。原先剩下的两条属于 §6 的 homelab 对接,**均已实测答复,
+结论是不接 mesh**(§6.2 / §6.4):
 
-1. **homelab 集群现状**:发行版、CNI(是否已是 Cilium 及版本)、Pod/Service
-   CIDR——决定 §6.1 是否需要 homelab 侧先行改造。
-2. tailnet ACL 是否允许 homelab ⇄ DGX 子网互访(现有 `tag:homelab → *:*`
-   只覆盖单向)。
+1. ~~**homelab 集群现状**~~ → **已核**:k3s v1.34.5+k3s1、**Cilium v1.20.0**、
+   `cluster.id=1`、Pod `10.42.0.0/16` / Service `10.43.0.0/16`、节点 IP `10.10.10.10`。
+   另有第三个集群 oracle-k3s(`cluster.id=2`、Pod `10.52.0.0/16`)。见 §4.2 修订表。
+2. ~~**tailnet ACL 是否允许子网互访**~~ → **问题不成立**:两侧不在同一 tailnet,
+   两台 Spark 是**共享节点**。ACL 怎么放都没用——subnet route 不跨节点共享传播,
+   对端网段永远不在各自 netmap 里(§6.2 实测)。
+
+**若将来要重新评估**(需先满足第一条,否则后两条无从谈起):
+
+- 两台 Spark **迁入 homelab 那个 tailnet**(不再是共享节点),两侧各有 subnet router;
+- `tailscale ping` 显示 **direct** 且吞吐进入可用区间(当前 2.28 MB/s 不够);
+- 出现真实的 **pod↔pod** 跨集群需求(不只是调一个 HTTP 端点)。
 
 ## 10. 交付物
 
 均已落库,见 `k8s/README.md`(版本记录 + 操作速查)。目录结构:
 `k8s/{registries,cilium-values}.yaml`、`k8s/gpu/{runtimeclass,nvidia-device-plugin}.yaml`、
 `k8s/v4flash/{namespace,configmap-launch,leader,worker,service}.yaml`;
-`Makefile` 的 `v4flash-*` 已改指 kubectl。ClusterMesh 的执行手册待对接时再写。
+`Makefile` 的 `v4flash-*` 已改指 kubectl。~~ClusterMesh 的执行手册待对接时再写~~
+—— **不会再写**,该方案已否决(§6)。
 
 ---
 
@@ -413,7 +499,7 @@ ClusterMesh(tunnel 模式)要求两侧**节点 IP 互通** + 双方 clustermesh-
 | 项 | 结果 |
 |---|---|
 | k3s | v1.36.3+k3s1;server=S2 `spark-2435`,agent=S1 `spark-ccf3`,node-ip 走 200G |
-| Cilium | 1.19.6,kube-proxy-less,tunnel/vxlan,MTU 1200,`cluster.id=1` — `ClusterMesh: 0/0 remote clusters ready`(等对端) |
+| Cilium | 1.19.6,kube-proxy-less,tunnel/vxlan,`cluster.id=1` — `ClusterMesh: 0/0 remote clusters ready`。⚠️ 当晚记的"MTU 1200"与"等对端"两处**事后都不成立**:小写 `mtu` 键从未生效(实际 1280,§4.4),对接已否决(§6),`0/0` 就是终态 |
 | GPU | 两节点各 `nvidia.com/gpu: 1`;device plugin v0.17.4 日志确认 GB10 名场面被正确容忍:`Ignoring error getting device memory: Not Supported` |
 | 切换 | 01:09 停 systemd → 01:18 k3s 上真实推理通过 |
 | 内存 | 每节点 104Gi used / **16–17Gi 可用**(docker 时代是 14Gi,反而更宽松);swap=0 |
@@ -479,5 +565,7 @@ swap 仍为 0、每节点余量 17–18Gi。
 
 ### 遗留 / 下一步
 - coredns/hubble 起来后未复测集群 DNS(vLLM 走 hostNetwork 不依赖它)。
-- ClusterMesh 对接待 homelab 侧就绪(§6),本集群侧已 ready。
+- ~~ClusterMesh 对接待 homelab 侧就绪(§6),本集群侧已 ready。~~
+  → **已否决(2026-08-13)**,且"本集群侧已 ready"不成立(撞 id、MTU 未生效、
+  节点平面无法建立)。改用 homelab 侧 Endpoints 直连,见 §6.4。
 - 观察期结束前保留 S1 上已 disable 的 `deepseek-v4-flash.service` 与 eugr harness。

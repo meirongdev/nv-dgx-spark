@@ -240,8 +240,14 @@ hand-maintained overlay files. Full per-claim analysis:
 
 - **Cluster:** k3s v1.36.3, server on **S2** / agent on **S1** (the head OOM'd
   once, so it carries the lighter role), node IPs on the 200G link. Cilium 1.19.6
-  kube-proxy-less, tunnel/vxlan, MTU 1200, Pod/Svc CIDR `10.44`/`10.45` — chosen
-  to not collide with a future homelab ClusterMesh peer.
+  kube-proxy-less, tunnel/vxlan, Pod/Svc CIDR `10.44`/`10.45` (non-overlapping with
+  homelab `10.42`/`10.43` and oracle-k3s `10.52` — that part held up).
+  ⚠️ **ClusterMesh with homelab was evaluated and rejected 2026-08-13** (the Sparks are
+  *shared* nodes from another tailnet, so subnet routes — and therefore the cross-cluster
+  node plane — cannot exist). Also note `cluster.id=1` **collides** with homelab's, and
+  the `mtu: 1200` in `k8s/cilium-values.yaml` **never took effect** (chart key is `MTU`;
+  do NOT "fix" the casing). See design doc §6 and homelab's
+  `docs/decisions/dgx-clustermesh-not-adopted.md`.
 - **Boot autostart is k3s's own service**: Pods stay Pending until the node is
   Ready and the device plugin has registered the GPU, which replaces the old
   boot-race wrapper. **Verified 2026-08-13 by rebooting both nodes at once:**
@@ -442,8 +448,9 @@ crawl. Each DGX pulls fine over its own fast domestic link — no proxy/VPN/rela
 - `scripts/v4flash-boot.sh` + `config/deepseek-v4-flash.service` — the retired
   docker/systemd launch path. **Kept as the rollback** (unit installed but
   disabled on the head; `make v4flash-autostart-*` still drives it).
-- `docs/k3s-migration-design-cn.md` — cluster design, the ClusterMesh interface
-  contract for a homelab peer, and the migration's execution record (Chinese).
+- `docs/k3s-migration-design-cn.md` — cluster design and the migration's execution
+  record (Chinese). ⚠️ Its §6 (ClusterMesh peering with homelab) is **superseded —
+  rejected 2026-08-13**; §6.4 has the adopted alternative (homelab-side Endpoints).
 - `docs/deepseek-v4-flash-cn.md` — engine build/prep runbook + perf baseline
   (Chinese). One-time setup only; day-to-day ops are `make v4flash-*`.
 - `docs/dspark-upgrade-cn.md` — DSpark upgrade runbook: version landscape, fastest

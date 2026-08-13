@@ -1,6 +1,13 @@
 # Cilium helm values — dgx-spark 集群 (docs/k3s-migration-design-cn.md §4.4)
 # 安装: helm install cilium cilium/cilium -n kube-system -f k8s/cilium-values.yaml
-# cluster.id/name + routingMode/mtu 是 ClusterMesh 接口约定,装完不可改。
+# ⚠️ 原注释说 cluster.id/name + routingMode 是「ClusterMesh 接口约定」——该对接已于
+#    2026-08-13 否决(设计文档 §6)。`routingMode: tunnel` 保留(tunnel 也是本机 CNI 形态)。
+#    `cluster.id=1` 目前无任何消费者(不接 mesh),撞不撞号无所谓,保持现状。
+#    可改性:cluster.id 只是 cilium-config 的键,补 helm upgrade + 滚重启 Cilium 就能改
+#    (若重评 mesh 需改成 3);真正"装完不可改"的是 k3s 的 Pod/Service CIDR,不在此文件。
+# ☠️ 下面那行 `mtu: 1200` **从未生效**:chart 的键是 `MTU`(全大写),小写是未知键被 helm
+#    静默忽略,实际设备停在自动探测的 1280。**不要改成大写**——显式 MTU 会让 Cilium 不减
+#    隧道开销,区间顶部 50 字节静默黑洞(homelab 踩过)。详见设计文档 §4.4。
 cluster:
   name: dgx-spark
   id: 1
