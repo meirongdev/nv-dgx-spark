@@ -20,7 +20,8 @@
 
 ## 1. 起因:2026-08-15 S2 硬件死机
 
-**08:29:40 CST,server 2(spark-2435)整机猝死**,至今未恢复。
+**08:29:40 CST,server 2(spark-2435)整机猝死**,人到现场通电后 **15:03 恢复**
+(停机 ~6.5 小时)。
 
 判定方法(三条**互相独立**的路径同时消失 → 排除网络问题):
 
@@ -42,8 +43,11 @@
 - S1 的 dmesg 在 08:29:40 之前只有 tailscaled 的 apparmor 噪声
 
 → 最可能是 **S2 本地的电源级事件**(适配器/USB-C PD 供电、插头接触、整机保护跳闸)。
-不是全屋断电(S1 同房间正常)。**确凿死因要等开机后看 `journalctl -b -1`**:
-日志戛然而止=断电,有 panic 栈=软件。
+不是全屋断电(S1 同房间正常)。
+
+✅ **2026-08-15 15:03 开机后已验尸,确认断电**:`journalctl -b -1` 的最后一行是
+08:29:18 的 tailscaled keepalive,**没有 shutdown 序列、没有 panic 栈**,日志戛然而止。
+三条独立路径 + 直连线载波消失的判断成立,本次是电源级事件而非软件挂起。
 
 ### 1.1 远程抢救手段:只有 WoL,且失败了
 
@@ -444,9 +448,9 @@ wire_api = "responses"           # codex 0.142+ 删掉了 "chat",必须用 respo
 
 **两栈互斥** —— V4-Flash 需要两台各 ~83GB,qwen38 占着 S1 的 ~91GB。**必须先停后起。**
 
-### 7.1 当前已做的封锁
+### 7.1 降级期间做的封锁
 
-S1 上 `k3s-agent` 已 `systemctl disable --now`,因此:
+S1 上 `k3s-agent` `systemctl disable --now`,因此:
 
 - v4flash-leader(`nodeSelector: spark-ccf3`,即 S1)**无法落地** → 不会抢内存
 - 即使 S1 重启也不会自启(已 `disable`)
@@ -454,9 +458,23 @@ S1 上 `k3s-agent` 已 `systemctl disable --now`,因此:
 
 ### 7.2 S2 回来后的步骤
 
+> ✅ **2026-08-15 15:03 S2 通电回归,本流程已实跑一遍并按实况修订**
+> (加了下面的步骤 0)。全程约 10 分钟,`:8000` 15:22 恢复服务。
+
 ```bash
+# 0) ⚠️ 先 scale 到 0 —— 这一步是实跑补上的
+#    Deployment 的 replicas 一直是 1,所以 S2 一开机 worker 就自己起来了,
+#    单独等在 rank0 的 TCPStore(192.168.200.101:29501)上,600s 超时后崩掉。
+#    不清掉它就等于"只起一个 rank",正是僵尸 TP 组的温床。
+make v4flash-stop
+# 顺带清理死机遗留的 Unknown/Terminating Pod:
+#   kubectl -n v4flash delete pod <name> --force --grace-period=0
+#   (机器是硬断电重启的,那些容器确定已经不存在了,force 是安全的)
+
 # 1) 先取证:日志戛然而止=断电,有 panic 栈=软件问题
 ssh admin@100.67.164.92 'last -x | head -5; sudo journalctl -b -1 -e --no-pager | tail -50'
+#    2026-08-15 实况:上一个 boot 的日志停在 08:29:18 的 tailscale keepalive,
+#    没有 shutdown 序列、没有 panic → 断电,证实了 §1 的判断。
 
 # 2) 停掉降级栈,把 S1 的内存还回来
 make qwen38-stop
@@ -465,9 +483,11 @@ make qwen38-stop
 ssh admin@100.97.87.120 'sudo systemctl enable --now k3s-agent'
 
 # 4) 等两节点 Ready 且 GPU 重新注册(约 30~50s),再拉起主栈
+#    判据要卡到 GPU 而不只是 Ready:
+#    kubectl get node spark-ccf3 -o jsonpath='{.status.allocatable.nvidia\.com/gpu}'
 make v4flash-status          # 两个 node 都 Ready 再往下
-make v4flash-run             # 两个 rank 一起,约 5 分钟加载
-make v4flash-test
+make v4flash-run             # 两个 rank 一起,实测 240s 后 /v1/models 可用
+make v4flash-test            # 必须真实生成:/v1/models 返回 200 证明不了 TP 组健康
 
 # 5) 客户端切回
 ./scripts/qwen-model-switch.sh v4flash

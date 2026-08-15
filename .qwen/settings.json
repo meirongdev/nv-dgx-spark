@@ -5,11 +5,11 @@
     }
   },
   "model": {
-    "name": "qwen38-27b",
+    "name": "deepseek-v4-flash",
     "generationConfig": {
       "timeout": 300000,
       "maxRetries": 8,
-      "contextWindowSize": 262144
+      "contextWindowSize": 1000000
     }
   },
   "permissions": {

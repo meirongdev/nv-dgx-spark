@@ -37,16 +37,17 @@ Always `make qwen38-stop` before `make v4flash-run`, and vice versa.
 - `192.168.200.101/102` — the internal 200G CX7 link. Carries the TP=2 NCCL
   traffic (bypassing the CNI) and inter-node file copies.
 
-## ⚠️ Current state (2026-08-15) — S2 is dead, running on the fallback
+## Current state (2026-08-15) — recovered, back on V4-Flash
 
-**S2 died at 08:29:40 CST 2026-08-15 and has not returned.** Power-level
-whole-machine death, not a network fault. DGX Spark has **no BMC/IPMI** and
-Wake-on-LAN failed — **recovery needs someone physically at the box.**
+**S2 died 08:29:40 and was power-cycled back at 15:03 CST 2026-08-15.** The
+fallback stack is stopped, `k3s-agent` is re-enabled on S1, and V4-Flash is
+serving on `:8000` again (both ranks 1/1, ~104 GB used per node). Both CLIs
+default to `deepseek-v4-flash`.
 
-- **V4-Flash is stopped** and cannot run. `k3s-agent` on S1 is `disable --now`,
-  so the leader Pod can't land and fight the fallback for memory.
-  `kubectl` / `make v4flash-*` are also dead — the **k3s control plane is on S2**.
-- **Qwen3.8-27B is serving on S1 `:8888`**; both CLIs default to it.
+The outage itself: whole-machine power-level death, not a network fault — the
+previous boot's journal ends mid-keepalive with no shutdown sequence and no
+panic. DGX Spark has **no BMC/IPMI** and Wake-on-LAN failed, so recovery needed
+someone physically at the box (~6.5 h down).
 
 Post-mortem, evidence and the ordered recovery procedure:
 `docs/qwen38-27b-fallback-cn.md` §1 and §7.
