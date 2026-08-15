@@ -80,6 +80,7 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 | [`docs/gotchas-cn.md`](docs/gotchas-cn.md) | **8 traps, each paid for in downtime.** Scan the headings before debugging anything |
 | [`docs/benchmarking-cn.md`](docs/benchmarking-cn.md) | How to measure throughput correctly + the current baseline |
 | [`docs/clients-cn.md`](docs/clients-cn.md) | codex / Qwen Code setup, reasoning-effort semantics, rebuilding on a new machine |
+| [`docs/auto-mitigation-cn.md`](docs/auto-mitigation-cn.md) | Crash-hardening spec: cgroup memory limit (this repo) + Prometheus alerting rules (homelab) |
 
 ### Design decisions
 

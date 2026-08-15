@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
+.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -246,11 +246,6 @@ DSV4_HEAD   ?= 100.97.87.120
 DSV4_HARNESS ?= /home/admin/spark-vllm-docker
 DSV4_PORT   ?= 8000
 DSV4_WORKER ?= 192.168.200.102
-# Boot autostart (systemd unit on the head node) — RETIRED 2026-08-13, kept as
-# the rollback path (unit still installed but disabled). See k8s/README.md.
-DSV4_SERVICE  ?= deepseek-v4-flash
-DSV4_BOOT_SRC ?= scripts/v4flash-boot.sh
-DSV4_UNIT_SRC ?= config/deepseek-v4-flash.service
 # k3s (current runtime): kubeconfig on this machine, namespace, manifests.
 K8S           ?= kubectl --kubeconfig $(HOME)/.kube/dgx-spark.yaml
 DSV4_NS       ?= v4flash
@@ -299,26 +294,22 @@ v4flash-restart:
 	$(K8S) -n $(DSV4_NS) delete pod --all
 	@echo "both ranks recreated; loads ~5min, poll: make v4flash-status"
 
-# ---- Boot autostart: install/enable the systemd unit so the stack comes back
-# ---- after a reboot. One unit on the head; it drives the worker over SSH.
-v4flash-autostart:
-	@echo ">> Installing boot launcher + systemd unit on $(DSV4_HEAD)"
-	scp -i $(SSH_KEY) -o StrictHostKeyChecking=no $(DSV4_BOOT_SRC) $(SSH_USER)@$(DSV4_HEAD):/home/$(SSH_USER)/v4flash-boot.sh
-	scp -i $(SSH_KEY) -o StrictHostKeyChecking=no $(DSV4_UNIT_SRC) $(SSH_USER)@$(DSV4_HEAD):/tmp/$(DSV4_SERVICE).service
-	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(DSV4_HEAD) \
-		"chmod +x /home/$(SSH_USER)/v4flash-boot.sh && sudo install -m 0644 /tmp/$(DSV4_SERVICE).service /etc/systemd/system/$(DSV4_SERVICE).service && rm -f /tmp/$(DSV4_SERVICE).service && sudo systemctl daemon-reload && sudo systemctl enable $(DSV4_SERVICE) && echo 'enabled $(DSV4_SERVICE) (auto-starts on boot). start now: make v4flash-autostart-start'"
+# ---- Host-level memory watchdog (防整机 OOM). See scripts/mem-watch.sh ----
+# On GB10 unified memory, vLLM's ~100GB pre-allocation bypasses the container
+# cgroup (verified 2026-08-15), so node-level available memory is the only
+# signal that sees it. The watchdog polls both nodes over SSH and, before the
+# node OOMs, scales BOTH vLLM ranks to 0 (clean, no zombie TP group). No
+# auto-restore — bring the engine back with `make v4flash-run`.
+MEMWATCH ?= scripts/mem-watch.sh
 
-v4flash-autostart-start:
-	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(DSV4_HEAD) \
-		"sudo systemctl restart $(DSV4_SERVICE) && echo 'started; loads ~3-4min, poll: make v4flash-status'"
+memwatch-check:            # 单次打印两节点 available%(只读)
+	$(MEMWATCH) --once
 
-v4flash-autostart-status:
-	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(DSV4_HEAD) \
-		"systemctl status $(DSV4_SERVICE) --no-pager -l | head -n 25; echo; echo '--- last 20 journal lines ---'; journalctl -u $(DSV4_SERVICE) -n 20 --no-pager"
+memwatch:                  # 常驻循环(防 OOM,建议放 tmux)
+	$(MEMWATCH)
 
-v4flash-autostart-remove:
-	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(DSV4_HEAD) \
-		"sudo systemctl disable --now $(DSV4_SERVICE) 2>/dev/null; sudo rm -f /etc/systemd/system/$(DSV4_SERVICE).service; sudo systemctl daemon-reload; echo 'removed $(DSV4_SERVICE) (no longer auto-starts)'"
+memwatch-reset:            # 清除已触发状态,解除保持
+	$(MEMWATCH) --reset
 
 # ----------------------------------------
 # Qwen3.8-27B-NVFP4 — single-node FALLBACK stack (S1 only, plain docker)
