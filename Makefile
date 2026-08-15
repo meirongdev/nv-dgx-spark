@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean vllm-status vllm-stop vllm-logs vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
+.PHONY: venv install test ping all clean vllm-status vllm-stop vllm-logs vllm-qwen-deploy vllm-qwen-test vllm-qwen-status vllm-qwen-stop vllm-qwen-logs vllm-gemma4-deploy vllm-gemma4-status vllm-gemma4-stop vllm-gemma4-logs vllm-qwen36-deploy vllm-qwen36-status vllm-qwen36-stop vllm-qwen36-logs bifrost-deploy bifrost-test bifrost-stop bifrost-status stack-deploy stack-stop stack-status unify-system unify-status tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -581,3 +581,47 @@ v4flash-autostart-status:
 v4flash-autostart-remove:
 	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(DSV4_HEAD) \
 		"sudo systemctl disable --now $(DSV4_SERVICE) 2>/dev/null; sudo rm -f /etc/systemd/system/$(DSV4_SERVICE).service; sudo systemctl daemon-reload; echo 'removed $(DSV4_SERVICE) (no longer auto-starts)'"
+
+# ----------------------------------------
+# Qwen3.8-27B-NVFP4 — single-node FALLBACK stack (S1 only, plain docker)
+# ----------------------------------------
+# Exists because V4-Flash is TP=2 and indivisible: when one node dies the whole
+# service dies (2026-08-15 S2 hardware death). This stack keeps serving on the
+# surviving node. It is SLOWER (24.9 vs 67.2 tok/s mean — dense 27B beats no
+# MoE with 13B active) and weaker at agentic coding; it is a fallback, not an
+# upgrade. Full runbook + benchmark: docs/qwen38-27b-fallback-cn.md
+#
+# MUTUALLY EXCLUSIVE with V4-Flash — both want the same GPU memory. Always
+# `make qwen38-stop` before `make v4flash-run`, and vice versa.
+Q38_HOST      ?= 100.97.87.120
+Q38_PORT      ?= 8888
+Q38_CONTAINER ?= qwen38-27b
+Q38_START_SRC ?= scripts/qwen38-start.sh
+Q38_TEST_SRC  ?= scripts/qwen38-test.sh
+
+qwen38-run:
+	scp -i $(SSH_KEY) -o StrictHostKeyChecking=no $(Q38_START_SRC) $(SSH_USER)@$(Q38_HOST):/home/$(SSH_USER)/qwen38-start.sh
+	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(Q38_HOST) \
+		"chmod +x /home/$(SSH_USER)/qwen38-start.sh && bash /home/$(SSH_USER)/qwen38-start.sh"
+	@echo "loads ~220s (22GB weights), poll: make qwen38-status"
+
+qwen38-status:
+	@ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(Q38_HOST) \
+		"docker ps -a --filter name=$(Q38_CONTAINER) --format '{{ .Names }}  {{ .Status }}'; \
+		curl -s http://localhost:$(Q38_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'; \
+		free -h | head -2"
+
+# Full benchmark: 3 warm-ups (discarded) + 4 prompt shapes + MTP acceptance.
+# Never count SSE deltas under spec decode — that measures steps/s, not tok/s.
+qwen38-test:
+	scp -i $(SSH_KEY) -o StrictHostKeyChecking=no $(Q38_TEST_SRC) $(SSH_USER)@$(Q38_HOST):/home/$(SSH_USER)/qwen38-test.sh
+	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(Q38_HOST) \
+		"BASE=http://localhost:$(Q38_PORT) bash /home/$(SSH_USER)/qwen38-test.sh"
+
+qwen38-logs:
+	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(Q38_HOST) \
+		"docker logs --tail=60 $(Q38_CONTAINER)"
+
+qwen38-stop:
+	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(Q38_HOST) \
+		"docker rm -f $(Q38_CONTAINER) 2>/dev/null; echo 'stopped'; free -h | head -2"
