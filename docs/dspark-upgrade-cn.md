@@ -1,40 +1,29 @@
 # DSpark 升级 runbook(DeepSeek-V4-Flash → DSpark 投机解码)
 
-> 状态:**已上线**(2026-07-03,jasl fork tip `444fe3ac` + DSpark checkpoint)。
-> 实测单流 warm **~51-53 tok/s**(此前 MTP ~42);**并发上限是 `max_num_seqs=6`**(2026-07-04
-> 验证稳定);**`max_num_seqs=16` 会导致启动失败**
-> (KV 显存不够,详见下方"并发上限实测"一节),已回滚。
+> **状态:已上线**。本文记录**为什么这么做、怎么做最快、以及所有踩过的坑**,
+> 供任何机器/会话复现。基础栈背景见 `docs/deepseek-v4-flash-cn.md`。
 >
-> **📌 2026-07-31 更新(当前生产状态)**:checkpoint 换成**官方正式版
-> `DeepSeek-V4-Flash-0731`**(166.9GB,ModelScope,DSpark 模块内置,结构/config.json 与
-> preview 组合逐字节一致 → 纯换权重,引擎/recipe 只改 model 路径);同日扫描把
-> `num_speculative_tokens` 从 3 调到 **5**(n=3 ≈ 53.9、n=5 ≈ 56.6、n=7 ≈ 52.4 tok/s——
-> `dspark_block_size=5`,draft 位置 4 之后接受率骤降到 4.7%/0.3%,官方建议的 n=7 白费两次
-> draft;6 路并发在 n=5 复验干净),另按官方模型卡对齐 `top_p=0.95`。
-> 下文步骤/数值是 07-03 升级当时的记录,按史料读。
+> **当前生产配置**(截至 2026-08-13):
+> checkpoint `DeepSeek-V4-Flash-0731`(166.9GB)· jasl fork ·
+> `num_speculative_tokens=5` · `max_num_seqs=6` · `top_p=0.95` · 跑在 **k3s** 上。
 >
-> **📌 2026-08-05 全轴重测(取代本文所有 tok/s 数字)**:单流 **peak 84.3 / mean 67.2**
-> (按内容 31–84)、聚合 c1/c2/c4/c6 = 67/113/143/**186** tok/s、prefill 8K/32K/100K =
-> 1760/2203/2084 tok/s(3 次中位数)、DSpark 接受率 **75.8% / 4.79 tok/step**。本文早先的
-> "单流 ~56"是单个短 prompt 的形状产物;"6 路聚合 ~50"则低报了约 3.7 倍,最可能的原因是
-> 按 streaming chunk 计数(spec decode 下一个 SSE chunk = 一个 decode step,按接受长度
-> 低报)。基线与方法见 `benchmarks/bench-full-2026-08-05/`。
-> 本文记录**为什么这么做、怎么做最快、以及所有踩过的坑**,供任何机器/会话复现。
+> ⚠️ **读本文前必知的三件事:**
 >
-> **📌 2026-08-13 起服务跑在 k3s 上**,下文的 `systemctl stop/start deepseek-v4-flash`
-> 一律换成 `make v4flash-stop` / `make v4flash-run`。**镜像重编后多一步必做**:
-> 在两台各自 `docker save vllm-node-dsv4:latest | sudo k3s ctr -n k8s.io images import -`
-> 并重新 pin,否则 k8s 仍跑旧镜像(`imagePullPolicy: Never`),表现为"重编了却毫无变化"。
-> 详见 `k8s/README.md`。
-> 基础栈背景见 `docs/deepseek-v4-flash-cn.md`。
+> 1. **本文正文里的所有 tok/s 数字都已作废。** 它们是 2026-07-03 升级当时的记录,
+>    且测法有误(按 streaming chunk 计数 = 只测到 steps/s,低报约 3.7 倍)。
+>    **当前基线以 `docs/benchmarking-cn.md` 为准**(单流 31–84,均值 67.2;
+>    接受率 75.8% / 4.79 tok/step)。正文数字按史料读。
+> 2. **正文里的 `systemctl stop/start deepseek-v4-flash` 一律换成
+>    `make v4flash-stop` / `make v4flash-run`**(2026-08-13 起跑在 k3s 上)。
+>    **镜像重编后多一步必做**:两台各自
+>    `docker save vllm-node-dsv4:latest | sudo k3s ctr -n k8s.io images import -`
+>    并重新 pin,否则 k8s 仍跑旧镜像(`imagePullPolicy: Never`),
+>    表现为"重编了却毫无变化"。详见 `k8s/README.md`。
+> 3. **jasl fork 唯一不可替代的价值是 DSpark 本身**,不是 GB10 基础支持
+>    ——这一点在 2026-07-04 被实测推翻过一次,见
+>    [下方"官方 vLLM 能否替代 jasl fork"](#官方-vllm-能否替代-jasl-fork2026-07-04-实测推翻此前判断)。
 >
-> **⚠️ 2026-07-04 重大更正**:此前认为"官方 vLLM 在 GB10(sm121)上稀疏 MLA 完全跑不起来"
-> 是错的——直接实测官方 vLLM(eugr 预编译 wheel,`ec0ffaacc`)在双机 TP=2 上**成功跑通**
-> DeepSeek-V4-Flash(非 DSpark,普通 dense decode ~24 tok/s,和 jasl fork 不开 MTP 的基线
-> 几乎一致)。关键是要带上 `DG_JIT_USE_NVRTC=0` + `DG_JIT_NVCC_COMPILER=...` 这两个环境变量,
-> 否则 DeepGEMM JIT 会报一个看起来像"架构不支持"、实际只是 NVRTC 头文件找不到的报错。
-> **也就是说 jasl fork 现在唯一不可替代的价值就是 DSpark 本身**,不是 GB10 基础支持。
-> 详见下方"官方 vLLM 能否替代 jasl fork"一节。
+> 完整时间线见文末[变更历史](#变更历史)。
 
 ## DSpark 是什么(先纠正两个常见误解)
 
@@ -276,6 +265,65 @@ make v4flash-run
 (2639 vs 我们 2084 tok/s,+27%),而且**没有免费杠杆能拿到**——`--async-scheduling`
 在本 build 里默认就是开的(`dspark` 在自动启用白名单里,见 `config/vllm.py:981-1060`,
 journal 每次启动都打 `Asynchronous scheduling is enabled`),加了是 no-op。
+
+## 变更历史
+
+按时间倒序。**每条都是对正文的修订**——正文本身是 2026-07-03 升级当时的快照。
+
+### 2026-08-13 — 迁入 k3s
+
+服务从 docker + systemd 迁到双节点 k3s。正文里所有
+`systemctl stop/start deepseek-v4-flash` 换成 `make v4flash-stop` / `make v4flash-run`。
+**新增一步必做**:镜像重编后要在两台各自
+`docker save vllm-node-dsv4:latest | sudo k3s ctr -n k8s.io images import -` 并重新 pin
+(`imagePullPolicy: Never`,不导入就还是旧镜像)。详见 `k8s/README.md`、
+`docs/k3s-migration-design-cn.md`。
+
+### 2026-08-05 — 全轴重测,作废本文所有 tok/s
+
+单流 **peak 84.3 / mean 67.2**(按内容 31–84)、聚合 c1/c2/c4/c6 =
+67/113/143/**186** tok/s、prefill 8K/32K/100K = 1760/2203/2084 tok/s(3 次中位数)、
+DSpark 接受率 **75.8% / 4.79 tok/step**。
+
+本文早先的"单流 ~56"是**单个短 prompt 的形状产物**;"6 路聚合 ~50"则**低报了约 3.7 倍**,
+原因是按 streaming chunk 计数——spec decode 下一个 SSE chunk = 一个 decode step,
+所以数出来的是 steps/s 而不是 tok/s。
+
+方法学和基线:`docs/benchmarking-cn.md`、`benchmarks/bench-full-2026-08-05/`。
+
+### 2026-07-31 — 换官方正式版 checkpoint + n_spec 3→5
+
+- checkpoint 换成**官方正式版 `DeepSeek-V4-Flash-0731`**(166.9GB,ModelScope)。
+  DSpark 模块内置,结构/`config.json` 与 preview 组合**逐字节一致**
+  → **纯换权重**,引擎/recipe 只改 model 路径。
+- 同日扫描把 `num_speculative_tokens` 从 3 调到 **5**:
+  n=3 ≈ 53.9、**n=5 ≈ 56.6**、n=7 ≈ 52.4 tok/s。原因是 `dspark_block_size=5`,
+  **draft 位置 4 之后接受率骤降到 4.7%/0.3%**,官方建议的 n=7 白白浪费两次 draft。
+  6 路并发在 n=5 下复验干净。
+- 按官方模型卡对齐 `top_p=0.95`。
+
+### 2026-07-04 — 重大更正:官方 vLLM 在 GB10 上**能**跑 V4-Flash
+
+此前"官方 vLLM 在 GB10(sm121)上稀疏 MLA 完全跑不起来"的判断**是错的**。
+直接实测官方 vLLM(eugr 预编译 wheel,`ec0ffaacc`)在双机 TP=2 上**成功跑通**
+DeepSeek-V4-Flash(非 DSpark,普通 dense decode ~24 tok/s,和 jasl fork 不开 MTP
+的基线几乎一致)。
+
+关键是要带上 `DG_JIT_USE_NVRTC=0` + `DG_JIT_NVCC_COMPILER=...` 两个环境变量,
+否则 DeepGEMM JIT 会报一个**看起来像"架构不支持"、实际只是 NVRTC 头文件找不到**的错。
+
+**结论:jasl fork 现在唯一不可替代的价值就是 DSpark 本身。**
+详见上方"官方 vLLM 能否替代 jasl fork"一节。
+
+同日还确定了并发上限:**`max_num_seqs=6` 稳定**,**`max_num_seqs=16` 启动即失败**
+(KV 显存不够),见"并发上限实测"一节。
+
+### 2026-07-03 — DSpark 上线
+
+jasl fork tip `444fe3ac` + DSpark checkpoint。当时实测单流 warm ~51–53 tok/s
+(此前 MTP ~42)。**这些数字已被 2026-08-05 重测取代。**
+
+---
 
 ## 参考
 
