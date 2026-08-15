@@ -205,12 +205,33 @@ flag 留着无害但没作用。
 - V4-Flash:`chat_template_kwargs: {"thinking": false}`
 - **Qwen3.8:`chat_template_kwargs: {"enable_thinking": false}`**(模板里还有 `preserve_thinking`)
 
-照抄 V4-Flash 的写法会**静默失效**。验证方法:thinking 关掉时 `reasoning_content` 应为空。
+照抄 V4-Flash 的写法会**静默失效**。
 
-> ⚠️ **未解决**:`enable_thinking: true` 时 `reasoning_content` **也是空的**,
-> 而且会一路生成到 token 上限(`finish=length`)。推测 `--reasoning-parser qwen3`
-> 不匹配 Qwen3.8 的思考格式,思考内容混进了 `content`。
-> **日常用 thinking off 无影响**;要开思考需要另找 parser。
+### ⚠️ 思考内容的字段名两栈也不同(2026-08-15 查清)
+
+**同一个 `/v1/chat/completions` 响应里,两套栈把 CoT 放在不同字段:**
+
+| 栈 | reasoning parser | CoT 字段 |
+|---|---|---|
+| V4-Flash | `deepseek_v4` | `.choices[0].message.reasoning_content` |
+| **Qwen3.8-27B** | `qwen3` | **`.choices[0].message.reasoning`** |
+
+读错字段会看到 `None`,**看起来完全像"thinking 开了但没输出"**——本文早先就据此
+误判为"parser 不匹配、未解决"。实际上解析器一直工作正常。
+
+判据很好认:**thinking 开启时 `content` 会短得反常**(只剩最终答案),
+因为 CoT 已经被正确分离出去了。实测同一个问题:
+
+| 配置 | `content` 长度 | `reasoning` |
+|---|---|---|
+| `enable_thinking: true` | **19 字符**(只有 `17 × 23 = **391**`) | 有内容 |
+| `enable_thinking: false` | 569 字符(完整推导写在正文里) | 无 |
+
+> 这条其实早就记在本 repo 里了 —— `docs/retired-stack-cn.md` 的
+> "Qwen3 系列"gotcha 写着 *reasoning parser `qwen3`(CoT 在
+> `.choices[0].message.reasoning`,答案在 `.content`)*。**Qwen3.8 沿用同一套。**
+
+`/v1/responses` 路径不受影响:CoT 走 `type:"reasoning"` 的输出项(codex 用的是这条)。
 
 ### 5.3 `docker run` 会注入代理
 

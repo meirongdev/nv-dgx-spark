@@ -32,7 +32,12 @@ def run(name, prompt, think, max_tok=1400):
     pt=u.get("prompt_tokens") or 0
     msg=r["choices"][0]["message"]
     return {"name":name,"tok_s":ct/dt if dt else 0,"ct":ct,"pt":pt,"dt":dt,
-            "content":(msg.get("content") or ""), "reasoning":(msg.get("reasoning_content") or ""),
+            # Qwen3-family (reasoning parser `qwen3`) puts CoT in `.message.reasoning`;
+            # DeepSeek puts it in `.reasoning_content`. Read both — reading only the
+            # DeepSeek field is what made an earlier run report "0 reasoning chars"
+            # and misdiagnose a working parser as broken.
+            "content":(msg.get("content") or ""),
+            "reasoning":(msg.get("reasoning") or msg.get("reasoning_content") or ""),
             "finish":r["choices"][0].get("finish_reason")}
 
 print("=== WARM-UP (discarding: first request pays JIT + cold-start) ===")

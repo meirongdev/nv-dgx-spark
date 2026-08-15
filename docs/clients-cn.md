@@ -143,10 +143,17 @@ CLI 会按模型名匹配并**预留输出 token**:`contextLimit = max(0, contex
 ⚠️ codex/qwen 内置的 `reasoning:false` **只对 `api.deepseek.com` 生效**,
 对自建 vLLM 无效——必须通过客户端的 extra-body 注入上面的 `chat_template_kwargs`。
 
-> Qwen3.8 走 `/v1/chat/completions` 时,即使 `enable_thinking:true` 也拿不到
-> `reasoning_content`(疑似 `--reasoning-parser qwen3` 不匹配 3.8 的格式)。
-> 走 **`/v1/responses`** 则正常分离到 `type:"reasoning"` 输出项——codex 用的是后者,
-> **不受影响**。
+**CoT 落在哪个字段,两栈也不同**(`/v1/chat/completions` 响应):
+
+| 栈 | reasoning parser | CoT 字段 |
+|---|---|---|
+| V4-Flash | `deepseek_v4` | `.choices[0].message.reasoning_content` |
+| Qwen3.8-27B | `qwen3` | **`.choices[0].message.reasoning`** |
+
+读错字段会拿到 `None`,**看起来像"thinking 开了却没输出"**。判据:thinking 开启时
+`content` 会短得反常(只剩最终答案),说明 CoT 已被正确分离走了。
+
+`/v1/responses` 两栈一致——CoT 走 `type:"reasoning"` 输出项,codex 用的是这条路径。
 
 ---
 

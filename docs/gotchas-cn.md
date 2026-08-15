@@ -17,6 +17,7 @@
 | [6](#6-modelscope--hf-cache-的符号链接必须是相对路径) | 容器内 `HFValidationError` | 下载模型 |
 | [7](#7-ansible-220--docker---format-table-names) | `Syntax error in template` | 退役栈(Ansible) |
 | [8](#8-从中国大陆拉镜像和模型) | 外网 registry 被墙/极慢 | 所有下载 |
+| [9](#9-两套栈的-cot-字段名不同读错会以为-thinking-坏了) | thinking 开着却"没有输出" —— 其实是 CoT 字段名两栈不同 | 调 API |
 
 ---
 
@@ -160,3 +161,35 @@ DGX 服务器在中国大陆,多数国外 registry 要么被墙要么极慢。
   (DERP 中继约 0.15 MB/s)。**节点间拷贝走 200G 链路**(`192.168.200.x`),
   先 `ssh-keyscan -H <ip> >> ~/.ssh/known_hosts`。
 - 完整 runbook:`docs/china-network-mirrors-cn.md`。
+
+---
+
+## 9. 两套栈的 CoT 字段名不同,读错会以为 thinking 坏了
+
+`/v1/chat/completions` 的响应里,思考内容(CoT)落在**哪个字段取决于 reasoning parser**:
+
+| 栈 | reasoning parser | CoT 字段 |
+|---|---|---|
+| V4-Flash | `deepseek_v4` | `.choices[0].message.reasoning_content` |
+| **Qwen3.8-27B**(以及所有 Qwen3 系列) | `qwen3` | **`.choices[0].message.reasoning`** |
+
+**读错字段拿到 `None`,现象和"thinking 没生效"一模一样**——2026-08-15 就据此
+误判过一次,写进文档说是"parser 不匹配、未解决",实际上解析器一直正常。
+
+**判据**:thinking 开启时 `content` 会**短得反常**(只剩最终答案),
+说明 CoT 已被正确分离走了。实测同一个算术题:
+
+| 配置 | `content` | `reasoning` |
+|---|---|---|
+| thinking on | **19 字符**(仅 `17 × 23 = **391**`) | 有内容 |
+| thinking off | 569 字符(推导写在正文里) | 无 |
+
+**稳妥写法**:两个字段都读。
+`msg.get("reasoning") or msg.get("reasoning_content") or ""`
+(`scripts/qwen38-test.sh` 已改成这样)。
+
+`/v1/responses` 路径两栈一致,CoT 走 `type:"reasoning"` 输出项,不受此坑影响。
+
+顺带:**开关 thinking 的 kwarg 名两栈也不同** —— V4-Flash 是
+`chat_template_kwargs:{"thinking":false}`,Qwen3.8 是
+`{"enable_thinking":false}`。照抄会静默失效。详见 `docs/clients-cn.md`。
