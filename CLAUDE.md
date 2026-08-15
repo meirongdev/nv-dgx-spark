@@ -23,8 +23,7 @@ Always `make qwen38-stop` before `make v4flash-run`, and vice versa.
 - **V4-Flash** (primary): 284B/13B-active, official FP8, 1M ctx, **DSpark**
   speculative decoding. Warm single-stream **31–84 tok/s depending on content**
   (mean 67 — see `docs/benchmarking-cn.md` before quoting any number).
-  Runs as two pinned Pods since 2026-08-13; the eugr `spark-vllm-docker` +
-  systemd path stays installed-but-disabled as the rollback.
+  Runs as two pinned Pods since 2026-08-13.
 - **Qwen3.8-27B** (fallback): exists because V4-Flash is TP=2 and indivisible —
   when one node dies the whole service dies (2026-08-15 S2 hardware death).
   Serves **native 262144** ctx. **Slower and weaker, not an upgrade**:
@@ -209,8 +208,6 @@ Design + execution record: `docs/k3s-migration-design-cn.md`. Manifests + ops:
   "I rebuilt and nothing changed".
 - **`kubectl apply` converges replicas to the manifest value (1)** — don't apply
   while you mean to stay stopped.
-- **Rollback** to docker/systemd: `make v4flash-stop`, then
-  `ssh <head> sudo systemctl enable --now deepseek-v4-flash`.
 
 ## Known gotchas — index
 
@@ -277,8 +274,6 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
 - `scripts/v2rayn-launch.sh` — revives the S1 v2rayN proxy (needed for github
   clones during a V4-Flash build).
 - `scripts/modelscope-download.sh` — model download via `make modelscope-download`.
-- `scripts/v4flash-boot.sh` + `config/deepseek-v4-flash.service` — the retired
-  docker/systemd launch path, **kept as the rollback** (installed but disabled).
 
 **Docs** (see `README.md` for the full map)
 - `docs/gotchas-cn.md`, `docs/benchmarking-cn.md`, `docs/clients-cn.md` —
