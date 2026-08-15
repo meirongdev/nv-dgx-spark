@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean unify-system unify-status tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download remove-thunderbird llmfit-install llmfit-cmd v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
+.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart v4flash-autostart v4flash-autostart-start v4flash-autostart-status v4flash-autostart-remove qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -68,49 +68,6 @@ all: venv inventory test
 # Clean up
 clean:
 	rm -rf .venv $(INVENTORY)
-
-# ========================================
-# System Unification Commands
-# ========================================
-
-# Unify kernel and NVIDIA driver versions across all hosts
-unify-system:
-	@echo "========================================"
-	@echo "Unifying system versions across hosts..."
-	@echo "Target: NVIDIA Driver 580.142, Latest HWE Kernel"
-	@echo "========================================"
-	uv run ansible-playbook -i $(INVENTORY) playbooks/unify-system.yml \
-		--ssh-extra-args="-i $(SSH_KEY)"
-
-# Check system versions on all hosts
-unify-status:
-	@echo "========================================"
-	@echo "System Version Status"
-	@echo "========================================"
-	uv run ansible all -i $(INVENTORY) -m shell \
-		-a "bash -c 'echo \"Host: \$$(hostname)\"; echo \"OS: \$$(cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d \\\")\"; echo \"Kernel: \$$(uname -r)\"; echo \"Driver: \$$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || echo N/A)\"; echo \"\"'" \
-		--ssh-extra-args="-i $(SSH_KEY)"
-
-# Remove Thunderbird from all hosts
-remove-thunderbird:
-	@echo "========================================"
-	@echo "Removing Thunderbird from all hosts..."
-	@echo "========================================"
-	uv run ansible-playbook -i $(INVENTORY) playbooks/remove-thunderbird.yml \
-		--ssh-extra-args="-i $(SSH_KEY)"
-
-# ========================================
-# llmfit CLI Installation
-# ========================================
-llmfit-install:
-	@echo "========================================"
-	@echo "Installing llmfit CLI on all hosts..."
-	@echo "========================================"
-	uv run ansible-playbook -i $(INVENTORY) playbooks/llmfit-install.yml \
-		--ssh-extra-args="-i $(SSH_KEY)"
-
-llmfit-cmd:
-	uv run ansible all -i $(INVENTORY) -a "$(COMMAND)" --ssh-extra-args="-i $(SSH_KEY)"
 
 # ========================================
 # tmux Integration for SSH Resilience
