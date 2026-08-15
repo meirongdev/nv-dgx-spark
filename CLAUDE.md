@@ -10,14 +10,12 @@ follow the pointers rather than guessing.
 ## Project Overview
 
 Deployment tooling for vLLM inference across two NVIDIA DGX Spark (GB10
-Blackwell) servers. Three stacks live here — one primary, one fallback, one
-retired:
+Blackwell) servers. Two stacks live here — one primary, one fallback:
 
 | Stack | Nodes | Endpoint | Runtime | Status |
 |---|---|---|---|---|
 | **DeepSeek-V4-Flash-0731** | **2** (TP=2) | `:8000` `deepseek-v4-flash` | k3s | primary |
 | **Qwen3.8-27B-NVFP4** | **1** (S1) | `:8888` `qwen38-27b` | plain docker | fallback |
-| Qwen/Gemma + Bifrost | 2 | `:8080`/`:30000` | Ansible | retired, revivable |
 
 ⚠️ **The primary and fallback are mutually exclusive** — same GPU memory.
 Always `make qwen38-stop` before `make v4flash-run`, and vice versa.
@@ -31,8 +29,6 @@ Always `make qwen38-stop` before `make v4flash-run`, and vice versa.
   when one node dies the whole service dies (2026-08-15 S2 hardware death).
   Serves **native 262144** ctx. **Slower and weaker, not an upgrade**:
   24.9 vs 67.2 tok/s mean, ~10–12 pts below on agentic coding.
-- **Retired stack**: torn down to free both GPUs. Playbooks still work; weights
-  are gone from both nodes and must be re-downloaded. See `docs/retired-stack-cn.md`.
 
 **Target hosts** (edit `HOSTS` in Makefile to change):
 - `100.97.87.120` — server 1 / `spark-ccf3` (V4-Flash head + the fallback stack)
@@ -227,7 +223,7 @@ Full detail with reproductions and dates: **`docs/gotchas-cn.md`**.
 | 4 | Domestic mirror "is slow" — actually `docker build`/`run` forced through the xray proxy (90×) | building images |
 | 5 | ModelScope/github unreachable while Tailscale is fine → DHCP hands out no DNS | networking |
 | 6 | `HFValidationError` in-container → absolute HF-cache symlinks | downloading models |
-| 7 | `Syntax error in template` → Ansible eats `--format 'table {{.Names}}'` | retired stack |
+| 7 | `Syntax error in template` → Ansible eats `--format 'table {{.Names}}'` | any ansible + docker `--format` |
 | 8 | Foreign registries blocked/slow → daocloud + ModelScope + Tsinghua | all downloads |
 
 ## Measuring throughput
@@ -290,7 +286,6 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
 - `docs/qwen38-27b-fallback-cn.md` — fallback stack + the S2 post-mortem.
 - `docs/k3s-migration-design-cn.md` — cluster design (⚠️ §6 superseded).
 - `docs/china-network-mirrors-cn.md` — mirror runbook.
-- `docs/retired-stack-cn.md`, `docs/bifrost-deployment-guide-cn.md` — retired stack.
 - `benchmarks/bench-full-2026-08-05/` — the current performance baseline.
 
 **Monitoring**
@@ -304,6 +299,6 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
   driver 580.142 / CUDA 13.0); the fallback uses upstream
   `vllm/vllm-openai:nightly-aarch64`.
 - SSH strict host key checking is disabled (automation).
-- Retired (Ansible) stack: always `uv run ansible` / `uv run ansible-playbook`;
+- Ansible (the two monitoring exporter playbooks): always `uv run ansible` / `uv run ansible-playbook`;
   to add/remove hosts edit `HOSTS` in the Makefile then `make inventory`.
 - Commits follow Conventional Commits (`feat:`, `fix:`, `docs:`, `perf:`).

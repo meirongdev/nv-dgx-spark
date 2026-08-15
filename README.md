@@ -15,7 +15,6 @@ Everything is driven through the `Makefile`. Detailed runbooks live in `docs/`
 |---|---|---|---|---|
 | **DeepSeek-V4-Flash-0731** | 2 (TP=2) | `:8000` `deepseek-v4-flash` | k3s | **primary** |
 | **Qwen3.8-27B-NVFP4** | 1 (S1) | `:8888` `qwen38-27b` | plain docker | **fallback** |
-| Qwen/Gemma + Bifrost | 2 | `:8080` / `:30000` | Ansible | retired, revivable |
 
 > ⚠️ **The primary and the fallback cannot run at the same time** — they want the
 > same GPU memory. `make qwen38-stop` before `make v4flash-run`, and vice versa.
@@ -89,24 +88,15 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 | [`docs/k3s-migration-design-cn.md`](docs/k3s-migration-design-cn.md) | Why k3s + Cilium, and the migration record. ⚠️ §6 (ClusterMesh) is **superseded — rejected 2026-08-13** |
 | [`benchmarks/bench-full-2026-08-05/README.md`](benchmarks/bench-full-2026-08-05/README.md) | Performance baseline, and why the forum "NVFP4 KV" recipe was **rejected** |
 
-### Retired
-
-| Doc | What's in it |
-|---|---|
-| [`docs/retired-stack-cn.md`](docs/retired-stack-cn.md) | Qwen/Gemma + Bifrost: commands, routing, legacy model gotchas |
-| [`docs/bifrost-deployment-guide-cn.md`](docs/bifrost-deployment-guide-cn.md) | Bifrost gateway deployment detail |
-
----
-
 ## Repository layout
 
 ```
 Makefile              single user-facing interface for every stack
 CLAUDE.md             operational index (AGENTS.md, QWEN.md → symlinks)
 k8s/                  live cluster: Cilium values, GPU plugin, v4flash manifests
-config/               stack recipes, systemd units, Bifrost config
+config/               stack recipes + V4-Flash systemd rollback unit
 scripts/              launch / test / switch / repair helpers
-playbooks/            Ansible: retired stack + the two metrics exporters
+playbooks/            Ansible: the two metrics exporters
 docs/                 runbooks, reference, decisions
 benchmarks/           measurement harnesses and dated reports
 ```

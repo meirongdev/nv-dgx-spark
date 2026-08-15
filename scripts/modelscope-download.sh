@@ -3,7 +3,7 @@
 # Usage: modelscope-download.sh [model_id] [cache_dir]
 set -euo pipefail
 
-MODEL="${1:-Qwen/Qwen3.6-35B-A3B-FP8}"
+MODEL="${1:-unsloth/Qwen3.8-27B-NVFP4}"
 CACHE_DIR="${2:-/home/admin/.cache/modelscope}"
 VENV="/home/admin/modelscope-venv"
 
