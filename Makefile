@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
+.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -293,6 +293,35 @@ v4flash-stop:
 v4flash-restart:
 	$(K8S) -n $(DSV4_NS) delete pod --all
 	@echo "both ranks recreated; loads ~5min, poll: make v4flash-status"
+
+# Liveness-probe regression test. Extracts liveness.py / worker_liveness.py
+# straight out of k8s/v4flash/configmap-launch.yaml and replays the scenarios
+# that got a HEALTHY leader killed twice on 2026-08-16 (plus a real hang, so the
+# probe still bites). Pure stdlib, runs locally — no cluster, no venv.
+# ⚠️ Run this before touching either probe script.
+probe-test:
+	python3 scripts/test-liveness-probe.py
+
+# Push the probe scripts to the live cluster. ConfigMap is a plain volume mount
+# (NOT subPath), so kubelet syncs the new files into the RUNNING containers —
+# no pod restart, no inference downtime. Probe *fields* in leader.yaml/worker.yaml
+# are a different story: those need a pod rebuild to take effect.
+probe-apply: probe-test
+	$(K8S) apply -f k8s/v4flash/configmap-launch.yaml
+	@echo "ConfigMap updated; kubelet syncs /scripts into both pods within ~60s."
+	@echo "verify: make probe-verify"
+
+# Run the live probe scripts by hand inside both running pods (isolated state
+# file, so the real probe's own state is untouched). rc=0 on a healthy stack.
+probe-verify:
+	@echo "--- leader ---"
+	$(K8S) -n $(DSV4_NS) exec deploy/v4flash-leader -- \
+		env V4FLASH_STATE=/tmp/.probe_check python3 /scripts/liveness.py \
+		&& echo "leader rc=0 (healthy)"
+	@echo "--- worker ---"
+	$(K8S) -n $(DSV4_NS) exec deploy/v4flash-worker -- \
+		env V4FLASH_WORKER_STATE=/tmp/.wprobe_check python3 /scripts/worker_liveness.py \
+		&& echo "worker rc=0 (healthy)"
 
 # ---- Host-level memory watchdog (防整机 OOM). See scripts/mem-watch.sh ----
 # On GB10 unified memory, vLLM's ~100GB pre-allocation bypasses the container

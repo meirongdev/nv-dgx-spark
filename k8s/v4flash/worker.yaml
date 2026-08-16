@@ -1,5 +1,11 @@
 # v4flash-worker — rank1 --headless, S2 (spark-2435), 无 API 端点
 # 健康语义 = 进程存活 (vllm 是容器 PID 1,退出即重启);无 HTTP 探针。
+#
+# ⚠️ 改本文件的**探针字段**要重建 Pod 才生效,而单独 `kubectl apply -f worker.yaml`
+# 会只重建 worker → leader 独活 = 僵尸 TP 组(gotcha #1)。正确做法是成对来:
+#   make v4flash-stop && kubectl apply -f k8s/v4flash/   # apply 把 replicas 收敛回 1
+# 2026-08-16 就是这么落地探针改动的,两侧同时加载,4m20s 恢复。
+# (脚本本体不受此限——ConfigMap 热更,见 configmap-launch.yaml。)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -70,22 +76,23 @@ spec:
               mountPath: /root/.triton
             - name: scripts
               mountPath: /scripts
-          # 共同命运:worker 是 --headless,没有自己的端点可探。改为盯 leader ——
-          # leader 一旦重启/消失,worker 也自杀,两侧一起重来重新 rendezvous。
+          # 共同命运:worker 是 --headless,没有自己的端点可探。判据 = 「leader 还是不是
+          # 我当初 rendezvous 的那个进程」——不是就自杀,两侧一起重来重新 rendezvous。
           # (2026-08-13 演练教训:单侧重建 = 僵尸 TP 组,必须成组重启。)
-          # initialDelay 覆盖 leader 的 167GB 加载窗口,否则启动期就会自杀。
+          # 脚本在 configmap-launch.yaml 的 worker_liveness.py,那里有完整推理和
+          # 2026-08-16「两边串行各加载一次 = ~11 分钟中断」的实测。
+          # ⚠️ 下面这些探针字段改了要重建 Pod 才生效;脚本本身改完 kubelet 会自动同步。
           livenessProbe:
             exec:
-              command:
-                - python3
-                - -c
-                - |
-                  import urllib.request
-                  urllib.request.urlopen("http://192.168.200.101:8000/health", timeout=10)
-            initialDelaySeconds: 900
-            periodSeconds: 60
+              command: ["python3", "/scripts/worker_liveness.py"]
+            # 脚本自己 fail-open 到「首次见到 leader」为止,不再靠这个值去猜
+            # leader 的 167GB 加载要多久(原来是 900s)。
+            initialDelaySeconds: 120
+            periodSeconds: 30
             timeoutSeconds: 15
-            failureThreshold: 5
+            # 脚本内已有连续 miss 计数(MISS_LIMIT=2),这里只留一次探针超时的余量。
+            # 合计:leader 消失后 ~90s 自杀,与 leader 并行重装,而不是等它装完再排队。
+            failureThreshold: 2
       volumes:
         - name: hf-cache
           hostPath:

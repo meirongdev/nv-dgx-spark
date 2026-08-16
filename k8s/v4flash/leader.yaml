@@ -83,9 +83,11 @@ spec:
             periodSeconds: 10
           # ⚠️ /health 和 /v1/models 都是静态端点,TP 组挂死时它们照常 200,
           # 所以 readiness 探到的只是「API server 进程活着」。真正的存活判据在
-          # /scripts/liveness.py:「有活但零进展」= 卡死(注释里有完整推理和
-          # 2026-08-13 那次探针误杀事故)。3×60s 后重启;因为健康的引擎必然在
-          # 推进 steps,满载不会误判,所以阈值可以收紧。
+          # /scripts/liveness.py:「有活但**持续**零进展」= 卡死(注释里有完整推理
+          # 和 2026-08-13 / 2026-08-16 两代探针的三次误杀事故)。
+          # ⚠️ 判死时长由脚本里的 STALL_S 决定(默认 600s),不是下面的
+          # failureThreshold —— 这样调阈值改 ConfigMap 即可,不用重建两个 rank。
+          # 下面三个字段只是额外余量(再给 3×60s),别再收紧。
           livenessProbe:
             exec:
               command: ["python3", "/scripts/liveness.py"]

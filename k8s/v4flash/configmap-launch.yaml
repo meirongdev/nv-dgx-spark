@@ -7,57 +7,183 @@ metadata:
   name: v4flash-launch
   namespace: v4flash
 data:
-  # leader liveness:判据是「有活但零进展」,不是「探针请求能否返回」。
+  # leader liveness:判据是「有活但**持续**零进展」,不是「探针请求能否返回」,
+  # 也不是「相邻两次探测有没有推进」。两次误杀换来的这两条限定词,别去掉。
   #
   # 2026-08-13 事故:第一版探针发一个 max_tokens:1 的真实生成请求。引擎被真实流量
   # 打满(Running 6 / Waiting 2)时,探针请求排在队尾 → 连续 5 次超时 → kubelet
   # SIGKILL 掉一个完全健康的 leader,worker 5 分钟后跟着重启 = ~10 分钟无谓中断。
   # 教训:任何进入请求队列的探针都无法区分「卡死」和「忙」。
   #
-  # 现判据用 /metrics(由 API server 直接应答,不排队,满载和卡死时都能秒回):
-  #   demand == 0                 → 健康(空闲,本来就没活干)
-  #   steps 比上次增加            → 健康(引擎在推进,不管多忙)
-  #   demand > 0 且 steps 没动    → 卡死(有活却零进展)——唯一判失败的情形
+  # 2026-08-16 事故:第二版改读 /metrics 不排队了,但只比较**相邻两次**的 steps,
+  # 于是「有活」的那一瞬间只要 steps 还没 +1 就记一次失败。当天误报两次:
+  #   16:32  `steps stuck at 76166` → 连续 3 次 → 杀掉健康 leader(日志显示它在被杀
+  #          前 6 秒还在正常出 token),worker 6 分钟后跟着重启,总中断 ~11 分钟
+  #   17:08  `steps stuck at 0`     → 重启后从未迭代过的冷引擎 + 首个请求在飞
+  # 教训:「有活但这一分钟没推进」是常态而非卡死 —— 空闲后的第一个请求、超长
+  # prefill、DG_JIT 首次编译新 shape 都会这样。判据必须是**连续停滞时长**。
+  #
+  # 现判据(/metrics 由 API server 直接应答,不进请求队列,满载和卡死时都秒回):
+  #   demand == 0                  → 健康(空闲,不动是应该的),停滞秒表归零
+  #   steps 比上次增加             → 健康(引擎在推进,不管多忙、多慢),秒表归零
+  #   demand > 0 且 steps 连续不动 → 累计超过 STALL_S(默认 600s)才判失败
   # steps = vllm:iteration_tokens_total_count,每个 engine iteration +1;
   # 分块 prefill(max_num_batched_tokens=8192)保证超长提示也会持续推进。
+  #
+  # 阈值为什么给得这么松:误杀的代价是把一个**正在工作**的引擎变成 ~11 分钟中断;
+  # 真卡死时晚 10 分钟发现,只是让一个**已经死了**的服务多死一会儿。不对称 → 宁松勿紧。
+  #
+  # 时间基准放在脚本里而不是 failureThreshold:ConfigMap 是普通卷挂载(非 subPath),
+  # 改脚本 kubelet 会自动同步进运行中的容器、**不用重启 Pod**;改 Deployment 的探针
+  # 字段则要重建两个 rank。调阈值同理,优先用 env 覆盖 STALL_S。
+  # 回归测试:`make probe-test`(直接从本文件抽脚本跑,含上面两次误报的复现场景)。
   liveness.py: |
-    import sys, urllib.request
+    import json, os, sys, time, urllib.request
 
-    STATE = "/tmp/.v4flash_liveness_steps"
+    STALL_S    = float(os.environ.get("V4FLASH_STALL_S", "600"))
+    MISS_LIMIT = int(os.environ.get("V4FLASH_MISS_LIMIT", "5"))
+    STATE      = os.environ.get("V4FLASH_STATE", "/tmp/.v4flash_liveness")
+    URL        = os.environ.get("V4FLASH_METRICS", "http://localhost:8000/metrics")
+
+    now = time.monotonic()   # CLOCK_MONOTONIC = 开机时长,跨探针进程可比,且不受 NTP 跳变影响
+
+    def load():
+        try:
+            with open(STATE) as f:
+                return json.load(f)
+        except Exception:
+            return {}            # 状态缺失/损坏 = 重记基线,本轮放行
+
+    def save(st):
+        tmp = STATE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.replace(tmp, STATE)   # 原子写:探针可能被 timeoutSeconds 杀在写一半
+
+    st = load()
+
     try:
-        body = urllib.request.urlopen("http://localhost:8000/metrics", timeout=10).read().decode()
+        body = urllib.request.urlopen(URL, timeout=10).read().decode()
     except Exception as e:
-        sys.exit(f"metrics unreachable: {e}")          # API server 没了 → 真失败
+        # 抓不到通常是 API server 真没了,但也可能是一次瞬时抖动 ——
+        # 单次超时不足以杀掉一个 TP 组,连续 MISS_LIMIT 次才算数。
+        st["miss"] = miss = int(st.get("miss", 0)) + 1
+        save(st)
+        if miss >= MISS_LIMIT:
+            sys.exit(f"metrics unreachable x{miss}: {e}")
+        sys.exit(0)
 
     def metric(prefix):
-        """返回 None 表示该指标此刻不存在——与 0 严格区分(见下方 fail-open)。"""
+        """返回 None 表示该指标此刻不存在 —— 与 0 严格区分。"""
         for line in body.splitlines():
             if line.startswith(prefix):
                 return float(line.split()[-1])
         return None
 
-    steps = metric("vllm:iteration_tokens_total_count{")
+    steps   = metric("vllm:iteration_tokens_total_count{")
     running = metric("vllm:num_requests_running{") or 0.0
     waiting = metric("vllm:num_requests_waiting{") or 0.0
-    demand = running + waiting
+    demand  = running + waiting
 
-    # fail-open:指标缺失时不判死。vLLM 的直方图在第一次 engine iteration 完成前
-    # 根本不出现,早期版本把「缺失」当 0,导致「刚就绪 + 首个请求在飞行中」被误判为
-    # 卡死(2026-08-13 实际触发过一次)。探针只在有正面证据时才杀。
-    if steps is None:
+    prev  = st.get("steps")
+    since = st.get("since")
+
+    # 秒表归零 = 此刻没有「停滞」的证据。⚠️ `demand == 0` 这条是 2026-08-16 误杀的
+    # 正解:停滞秒表只在**有活**期间累积,引擎空闲一整夜也不会攒下账,于是空闲后的
+    # 第一个请求不会一进来就被判死。
+    if steps is None or since is None or steps != prev or demand == 0:
+        since = now
+
+    save({"steps": steps, "since": since, "miss": 0})
+
+    if steps is None or demand == 0 or steps != prev:
         sys.exit(0)
+
+    stalled = now - since
+    if stalled < STALL_S:
+        sys.exit(0)              # 有活但零进展,还没到判死时长 —— 继续观察
+
+    # 判死前最后一道保险:DG_JIT 走 nvcc 子进程编译(rank0.sh 里 DG_JIT_USE_NVRTC=0)、
+    # Triton 走 ptxas,首次遇到新 shape 时引擎确实会很久不出新 iteration —— 那是在干活。
+    # 容器有独立 PID namespace(没开 hostPID),这里只看得到 vLLM 自己的进程树。
+    def compiler_running():
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                with open(f"/proc/{pid}/comm") as f:
+                    if f.read().strip() in ("nvcc", "ptxas", "cicc", "cudafe++"):
+                        return True
+            except OSError:
+                continue         # 进程刚退出
+        return False
 
     try:
-        with open(STATE) as f:
-            prev = float(f.read().strip())
-    except Exception:
-        prev = -1.0                                    # 首次探测:记下基线即通过
-    with open(STATE, "w") as f:
-        f.write(str(steps))
+        if compiler_running():
+            sys.exit(0)
+    except OSError:
+        pass                     # 读不了 /proc 就当没在编译,继续判死
 
-    if demand == 0 or steps > prev or prev < 0:
+    sys.exit(f"TP group appears hung: demand={demand:.0f}, steps stuck at {steps:.0f} for {stalled:.0f}s")
+  # worker liveness:worker 是 --headless,没有自己的端点可探,它唯一该回答的问题是
+  # 「leader 还是不是我当初 rendezvous 的那个进程」——不是就得自杀重来(单侧存活 =
+  # 僵尸 TP 组,gotcha #1)。老版本只探 leader 的 /health 通不通,有两个毛病:
+  #   1. leader 重启后 /health 会恢复 200,但那是**新进程**,worker 还挂在旧 TP 组上;
+  #      只能靠「不通够 5 次」间接察觉,慢且不精确。
+  #   2. 5×60s 才自杀,而 leader 重装权重也要 ~5min,于是两边**串行**重来。
+  #      2026-08-16 实测:leader 16:32 被杀 → worker 16:38 才跟上 → 总中断 ~11 分钟。
+  # 现在直接读 leader 的 process_start_time_seconds:变了 = leader 换过进程 → 立刻自杀,
+  # 两边并行重来,中断收敛到一次加载(~5-6min)。
+  worker_liveness.py: |
+    import json, os, sys, urllib.request
+
+    LEADER     = os.environ.get("V4FLASH_LEADER_METRICS", "http://192.168.200.101:8000/metrics")
+    STATE      = os.environ.get("V4FLASH_WORKER_STATE", "/tmp/.v4flash_worker_liveness")
+    MISS_LIMIT = int(os.environ.get("V4FLASH_WORKER_MISS", "2"))
+
+    def load():
+        try:
+            with open(STATE) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def save(st):
+        tmp = STATE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.replace(tmp, STATE)
+
+    st = load()
+
+    try:
+        body = urllib.request.urlopen(LEADER, timeout=10).read().decode()
+    except Exception as e:
+        # 还没见过 leader = 冷启动窗口(leader 要 ~5min 装 167GB 权重),一律放行。
+        # 这条取代了原来的 initialDelaySeconds: 900 —— 不再靠猜加载时长,
+        # leader 装多久都不会误杀 worker。
+        if not st.get("seen"):
+            sys.exit(0)
+        st["miss"] = miss = int(st.get("miss", 0)) + 1
+        save(st)
+        if miss >= MISS_LIMIT:
+            sys.exit(f"leader gone x{miss}: {e}")
         sys.exit(0)
-    sys.exit(f"TP group appears hung: demand={demand:.0f} but steps stuck at {steps:.0f}")
+
+    start = None
+    for line in body.splitlines():
+        if line.startswith("process_start_time_seconds"):
+            start = float(line.split()[-1])
+            break
+
+    prev = st.get("start")
+    if prev is None:
+        prev = start                      # 首次见到 leader:记下它的身份
+    save({"seen": True, "start": prev, "miss": 0})
+
+    if start is not None and prev is not None and start != prev:
+        sys.exit(f"leader restarted (process_start_time {prev} -> {start})")
+    sys.exit(0)
   rank0.sh: |
     #!/bin/bash
     # Generated from recipe: DeepSeek-V4-Flash
