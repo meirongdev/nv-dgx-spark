@@ -70,6 +70,7 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 | [`docs/deepseek-v4-flash-cn.md`](docs/deepseek-v4-flash-cn.md) | Primary stack: engine build/prep, one-time setup |
 | [`docs/dspark-upgrade-cn.md`](docs/dspark-upgrade-cn.md) | DSpark speculative decoding: version landscape, tuning, gotchas |
 | [`docs/qwen38-27b-fallback-cn.md`](docs/qwen38-27b-fallback-cn.md) | Fallback stack: S2 post-mortem, deploy from scratch, recovery procedure |
+| [`docs/host-maintenance-cn.md`](docs/host-maintenance-cn.md) | Host OS: apt / NVIDIA driver / kernel / DKMS — **read before any `apt upgrade`** |
 | [`docs/china-network-mirrors-cn.md`](docs/china-network-mirrors-cn.md) | daocloud / ModelScope / Tsinghua mirrors from mainland China |
 | [`k8s/README.md`](k8s/README.md) | Live cluster manifests, versions, ops |
 
@@ -95,7 +96,7 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 Makefile              single user-facing interface for every stack
 CLAUDE.md             operational index (AGENTS.md, QWEN.md → symlinks)
 k8s/                  live cluster: Cilium values, GPU plugin, v4flash manifests
-config/               stack recipes + V4-Flash systemd rollback unit
+config/               stack recipes (vLLM flags; rendered into k8s/v4flash/)
 scripts/              launch / test / switch / repair helpers
 playbooks/            Ansible: the two metrics exporters
 docs/                 runbooks, reference, decisions

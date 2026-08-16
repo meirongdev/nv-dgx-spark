@@ -231,9 +231,10 @@ flag 留着无害但没作用。
 | `enable_thinking: true` | **19 字符**(只有 `17 × 23 = **391**`) | 有内容 |
 | `enable_thinking: false` | 569 字符(完整推导写在正文里) | 无 |
 
-> 这条其实早就记在本 repo 里了 —— `docs/retired-stack-cn.md` 的
-> "Qwen3 系列"gotcha 写着 *reasoning parser `qwen3`(CoT 在
-> `.choices[0].message.reasoning`,答案在 `.content`)*。**Qwen3.8 沿用同一套。**
+> 这条其实早就记在本 repo 里了 —— 退役栈文档的"Qwen3 系列"gotcha 就写着
+> *reasoning parser `qwen3`(CoT 在 `.choices[0].message.reasoning`,答案在
+> `.content`)*。**Qwen3.8 沿用同一套。** 那份文档已随退役栈删除,结论现收在
+> [gotchas-cn.md](gotchas-cn.md#9-两套栈的-cot-字段名不同读错会以为-thinking-坏了) #9。
 
 `/v1/responses` 路径不受影响:CoT 走 `type:"reasoning"` 的输出项(codex 用的是这条)。
 

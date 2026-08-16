@@ -65,6 +65,10 @@ make v4flash-load       # who is using the engine now (running/waiting, KV%, cli
 make v4flash-logs       # leader (rank0);  v4flash-logs-worker for rank1
 make v4flash-restart    # recreate BOTH ranks (never restart one alone)
 make v4flash-stop       # scale both to 0
+
+make probe-test         # unit-test the liveness probes locally
+make probe-apply        # push probe scripts via ConfigMap — no pod restart
+make probe-verify       # run the live probes by hand inside both pods
 ```
 
 ⚠️ **Never restart a single rank** — it leaves the survivor hung in collectives
@@ -114,6 +118,16 @@ make tmux-attach HOST=100.97.87.120 SESSION=vllm-deploy
 make tmux-kill   HOST=100.97.87.120 SESSION=vllm-deploy
 ```
 
+## Host OS maintenance (apt / driver / kernel / DKMS)
+
+⚠️ **Read `docs/host-maintenance-cn.md` before any `apt upgrade` on these hosts.**
+Four rules, each already paid for: stop the stack first (`network-manager`
+restarts NM → blips the 200G NCCL link, but SSH survives, so it misreads as "vLLM
+crashed"); upgrade inside tmux with `--force-confold`; `apt-get -s upgrade` first
+and read every `Inst` line (the CUDA repo sits at Ubuntu's priority and can win a
+driver decision); `dkms` always with `-a arm64` (bare `dkms` silently no-ops —
+this nearly bricked a node on 2026-08-08).
+
 ## Architecture (V4-Flash)
 
 ```
@@ -152,6 +166,11 @@ The fallback stack is a single plain-docker container on S1 `:8888`, outside k3s
 - **Never build on S1 without stopping the running stack first** — even the
   "lightweight" prebuilt-wheel path compiles native deps from source and OOM'd
   the head node on 2026-07-04, taking the whole tmux server down with it.
+- **Host memory watchdog** (`make memwatch`, run it in tmux) scales BOTH ranks to
+  0 before a node OOMs — vLLM's ~100 GB pre-allocation bypasses the container
+  cgroup on GB10, so node-level available memory is the only signal that sees it.
+  No auto-restore; bring it back with `make v4flash-run`. A k8s cgroup memory
+  limit was tried and **rejected** — `docs/auto-mitigation-cn.md`.
 
 ## V4-Flash engine notes
 
@@ -270,6 +289,9 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
   (`make qwen38-run` / `qwen38-test` rsync these to S1).
 - `scripts/qwen-model-switch.sh` — flips the Qwen Code **boot default** between
   stacks (four fields across three files must agree — see `docs/clients-cn.md`).
+- `scripts/mem-watch.sh` — host memory watchdog (`make memwatch*`).
+- `scripts/test-liveness-probe.py` — probe unit tests (`make probe-test`); the
+  live probes themselves ship in `k8s/v4flash/configmap-launch.yaml`.
 - `scripts/vllm-fix-torch.sh` — fixes the torch-CPU build trap.
 - `scripts/v2rayn-launch.sh` — revives the S1 v2rayN proxy (needed for github
   clones during a V4-Flash build).
@@ -281,6 +303,8 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
 - `docs/deepseek-v4-flash-cn.md`, `docs/dspark-upgrade-cn.md` — primary stack.
 - `docs/qwen38-27b-fallback-cn.md` — fallback stack + the S2 post-mortem.
 - `docs/k3s-migration-design-cn.md` — cluster design (⚠️ §6 superseded).
+- `docs/host-maintenance-cn.md` — apt / driver / kernel / DKMS runbook.
+- `docs/auto-mitigation-cn.md` — memory watchdog + alerting spec.
 - `docs/china-network-mirrors-cn.md` — mirror runbook.
 - `benchmarks/bench-full-2026-08-05/` — the current performance baseline.
 
