@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
+.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -339,6 +339,31 @@ memwatch:                  # 常驻循环(防 OOM,建议放 tmux)
 
 memwatch-reset:            # 清除已触发状态,解除保持
 	$(MEMWATCH) --reset
+
+# ---- GB10 GPU clock cap (能效). See scripts/gb10-clock-cap.sh + docs/gb10-tuning-cn.md ----
+# 2026-08-25 双机 A/B 实测:上限 2200 MHz 下 decode 无显著变化(配对差 +0.9%,
+# 95%CI [-1.9%,+3.7%], n=11 交错)、prefill -3.7%、双机 GPU rail 功耗 -36%。
+# ⚠️ 两台必须对称(TP=2 锁步);⚠️ -lgc 重启即失效(用 clock-cap-install 持久化);
+# ⚠️ nvidia-smi 无任何字段能报告锁是否生效 —— 只能用 clock-cap-verify(带负载采样)。
+CLOCKCAP ?= scripts/gb10-clock-cap.sh
+
+clock-cap-apply:           # 两节点加锁(CAP_MHZ 可覆盖,默认 2200);运行时,重启失效
+	$(CLOCKCAP) apply
+
+clock-cap-reset:           # 两节点解锁(-rgc)
+	$(CLOCKCAP) reset
+
+clock-cap-status:          # systemd 单元状态 + 空载频率(⚠️ 测不出锁是否生效)
+	$(CLOCKCAP) status
+
+clock-cap-verify:          # ← 唯一可靠判据:发真实生成,采样两节点负载期频率
+	$(CLOCKCAP) verify
+
+clock-cap-install:         # 装 systemd 单元,重启后仍生效
+	$(CLOCKCAP) install
+
+clock-cap-uninstall:       # 移除单元并解锁
+	$(CLOCKCAP) uninstall
 
 # ----------------------------------------
 # Qwen3.8-27B-NVFP4 — single-node FALLBACK stack (S1 only, plain docker)
