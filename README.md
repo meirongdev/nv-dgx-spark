@@ -71,6 +71,7 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 | [`docs/dspark-upgrade-cn.md`](docs/dspark-upgrade-cn.md) | DSpark speculative decoding: version landscape, tuning, gotchas |
 | [`docs/qwen38-27b-fallback-cn.md`](docs/qwen38-27b-fallback-cn.md) | Fallback stack: S2 post-mortem, deploy from scratch, recovery procedure |
 | [`docs/host-maintenance-cn.md`](docs/host-maintenance-cn.md) | Host OS: apt / NVIDIA driver / kernel / DKMS — **read before any `apt upgrade`** |
+| [`docs/gb10-tuning-cn.md`](docs/gb10-tuning-cn.md) | GB10 host-level tuning: the GPU clock cap A/B (adopted), the knobs that don't exist, and what not to touch |
 | [`docs/china-network-mirrors-cn.md`](docs/china-network-mirrors-cn.md) | daocloud / ModelScope / Tsinghua mirrors from mainland China |
 | [`k8s/README.md`](k8s/README.md) | Live cluster manifests, versions, ops |
 

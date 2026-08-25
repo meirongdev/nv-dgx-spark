@@ -172,6 +172,32 @@ The fallback stack is a single plain-docker container on S1 `:8888`, outside k3s
   No auto-restore; bring it back with `make v4flash-run`. A k8s cgroup memory
   limit was tried and **rejected** — `docs/auto-mitigation-cn.md`.
 
+## GB10 host tuning (clock cap adopted 2026-08-25)
+
+Full A/B data + the do-not-touch list: `docs/gb10-tuning-cn.md`.
+
+- **GPU clock cap 2200 MHz is live on both nodes** via `gb10-clock-cap.service`
+  (installed + enabled 2026-08-25; the unlock → `systemctl restart` → re-locked
+  path is verified). Decode paired diff +0.9%, 95% CI [-1.9%, +3.7%] (n=11
+  interleaved, `min_tokens` fixed) → indistinguishable from zero; prefill -3.7%;
+  dual-node GPU-rail power 86.2 W → 55.2 W (wall-socket saving is much smaller:
+  `nvidia-smi` sees only 12-27% of real draw). Drive it with
+  `make clock-cap-{apply,verify,status,install,reset,uninstall}`.
+- ⚠️ **Both nodes must match** (TP=2 is lockstep), **`-lgc` dies on reboot**
+  (hence `clock-cap-install`), and **no nvidia-smi field reports an active lock**
+  (`Applications Clocks Setting` stays `Not Active`, `clocks.max.sm` stays 3003) —
+  the only check is `clocks.current.sm` *under load* = `make clock-cap-verify`.
+- **What GB10 does not expose at all:** power limits (`-pl`/`-ac` → all N/A),
+  ECC toggle, FB memory usage, fan control, Jetson-style `nvpmodel`. Don't hunt.
+- ❌ **Second QSFP cable: tested and dismissed 2026-08-25.** Both ports are cabled;
+  the community reports unplugging one takes NCCL 10.25 → 22.1 GB/s. It does **not**
+  reproduce here: prefill 1731 → 1734 tok/s (**+0.17%**) with the second port down on
+  both nodes. Consistent with `lspci` — the two ports sit on *separate* x4 Gen5 links
+  in separate PCIe domains, so the "two cables split one x4" mechanism doesn't apply.
+  **Leave both cables in.** `docs/gb10-tuning-cn.md` §6 — that section was corrected
+  three times, and the standing lesson is: someone else's GB10 perf result is a
+  hypothesis until it reproduces on these boxes.
+
 ## V4-Flash engine notes
 
 Full build/prep runbook: `docs/deepseek-v4-flash-cn.md`. DSpark specifics:
@@ -304,6 +330,7 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
 - `docs/qwen38-27b-fallback-cn.md` — fallback stack + the S2 post-mortem.
 - `docs/k3s-migration-design-cn.md` — cluster design (⚠️ §6 superseded).
 - `docs/host-maintenance-cn.md` — apt / driver / kernel / DKMS runbook.
+- `docs/gb10-tuning-cn.md` — GB10 host tuning: GPU clock cap (adopted 2026-08-25), non-existent knobs, do-not-touch list.
 - `docs/auto-mitigation-cn.md` — memory watchdog + alerting spec.
 - `docs/china-network-mirrors-cn.md` — mirror runbook.
 - `benchmarks/bench-full-2026-08-05/` — the current performance baseline.
