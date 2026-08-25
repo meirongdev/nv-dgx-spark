@@ -157,6 +157,27 @@ vLLM 侧真正有用的三个指标：`vllm:kv_cache_usage_perc`、`vllm:num_req
 | A6 | `DgxSparkSmartsFail` | 磁盘 SMART 健康指标（smartctl_exporter） | 任一盘非 OK | critical | 磁盘老化预警，先行换盘 |
 | A7 | `DgxSparkLoadSpike` | `node_load1` | `> 8` 持续 10m | info | 负载尖峰，供调查（GB10 load 探针噪音注意过滤） |
 
+> **落地对账（2026-08-25）**：上表保留为规格原文；实际规则与逐条理由见 homelab 仓库
+> `k8s/helm/manifests/monitoring/alerts/prometheus-rules.yaml`（各规则头上的注释即回校记录）。
+> - **A1/A2：按实测否决，未落地**（2026-08-09）。GB10 统一内存下模型常驻把 `MemAvailable`
+>   长期压低（7 天里 <4GiB 的采样占比即达 32–48%），而同期 OOM=0、PSI 内存停顿 ≈0 ——
+>   `MemAvailable` 在这台机器上对「会否 OOM」没有预测力。已由两条有预测力的规则替代：
+>   `DgxSparkMemoryPressure`（PSI stall >10%）+ `DgxSparkOOMKill`（0 容忍）。
+> - **A3：2026-08-15 落地，2026-08-25 按实测删除**。7 天 >0.90 占比 8.1%（p99 .975 /
+>   max 1.0），批处理打满 KV 是 `max_num_seqs=6` 下的正常饱和、自愈；它预警的排队危害
+>   由 A4 独立覆盖且同期 0 触发。一周烧了 ≈14 条 Telegram，危害 0 发生。KV 占用改看
+>   dashboard（dgx-vllm），不再告警。
+> - **A4：✅ 已落地**（`DgxSparkRequestsQueued`，waiting>4 / 2m），7 天 0 误报。
+> - **A5：✅ 已落地**（`DgxSparkNodeDown`），但 `for` 取 **3m** 而非 1m —— 抓取经
+>   Tailscale DERP 中继，1m 会被一次中继抖动误报 critical。
+> - **A6：✅ 由 homelab `storage-alerts.yaml` 的 SMART 规则覆盖**（SmartHealthFailed /
+>   SmartMediaErrors / NVMe 磨损；无 job 过滤，天然匹配 `smartctl-dgx-spark`）。
+> - **A7：省略** —— homelab 的 Alertmanager 路由只收 critical|warning，info 写了也是
+>   死规则，且 GB10 的 load 探针有噪音。
+> - 规格之外另加了事故驱动的定向规则（08-13 V4-Flash 3h10m 中断尸检产物）：
+>   `DgxSparkVllmDown` / `DgxSparkVllmStuck` / `DgxSparkVllmRestarted`，
+>   以及把两台 DGX 纳入 `NodeRebooted` / `NodeRebootLoop` 覆盖。
+
 ### 3.3 说明与注意事项
 
 - **A5 最重要**：S2 的判死当时是靠四条路径**人工**拼出来的。一条 `up==0` 的告警，
@@ -177,7 +198,7 @@ vLLM 侧真正有用的三个指标：`vllm:kv_cache_usage_perc`、`vllm:num_req
 |---|---|---|
 | 宿主机看门狗 + 自动 scale 0（§2） | ✅ **已实现** | `scripts/mem-watch.sh` + `make memwatch*` |
 | ~~k8s cgroup 内存上限~~ | ❌ 已废弃 | 实测统一内存绕过 cgroup，兜不住（§2.3） |
-| Prometheus 告警（§3） | 仅规格 | homelab 落地，需补 vLLM scrape + 规则 |
+| Prometheus 告警（§3） | ✅ **已落地**（2026-08-15） | homelab prometheus-rules.yaml；A1–A3 已按实测否决/删除，见 §3.2 落地对账 |
 | 节点自保版看门狗（§2.6 展望） | 后续 | 在 S2（k3s server）放本地 kubectl 的等价守护，脱离操作机也能自保 |
 | 智能 PDU（电源侧） | 后续（硬件） | S2 那次真正适用的手段，见 fallback §1.1 |
 
@@ -188,4 +209,6 @@ vLLM 侧真正有用的三个指标：`vllm:kv_cache_usage_perc`、`vllm:num_req
 > - ✅ 动作 = `kubectl scale deploy v4flash-worker v4flash-leader --replicas=0`（两 rank
 >   一起，无 zombie TP 组）；触发后写 state 保持，`make memwatch-reset` 解除；
 > - ⏳ 常驻守护尚未在后台运行（会在你 `make memwatch`（tmux）时启动）；
-> - ⏳ §3 homelab 里 vLLM `/metrics` 抓到 + A1–A7 至少 A1/A5 挂上并出过一条测试告警。
+> - ✅ §3 已落地（2026-08-25 对账）：vLLM `/metrics` 已抓（job `vllm-dgx-spark`），
+>   规则已挂并在真实事故中触发过（08-13 V4-Flash 中断）；A1–A3 按实测否决/删除，
+>   现行清单以 §3.2 落地对账为准。
