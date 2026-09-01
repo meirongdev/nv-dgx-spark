@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall
+.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify v4flash-hotfix-status v4flash-hotfix-test qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -322,6 +322,20 @@ probe-verify:
 	$(K8S) -n $(DSV4_NS) exec deploy/v4flash-worker -- \
 		env V4FLASH_WORKER_STATE=/tmp/.wprobe_check python3 /scripts/worker_liveness.py \
 		&& echo "worker rc=0 (healthy)"
+
+# ---- issue #55 热修:流式 tool call 截断谎报 finish_reason ----
+# 补丁本体在 k8s/v4flash/configmap-launch.yaml 的 hotfix-issue55.py(含完整推理),
+# rank0.sh 每次启动跑一次(幂等)。改 ConfigMap 后必须 `make v4flash-restart` —— 补丁
+# 改的是已经 import 进 API server 进程的模块,光同步文件不生效。
+# ⚠️ 只有 rank0 有 OpenAI entrypoint,rank1 是 --headless,不需要也不检查。
+v4flash-hotfix-status:
+	$(K8S) -n $(DSV4_NS) exec deploy/v4flash-leader -- \
+		python3 /scripts/hotfix-issue55.py --status
+
+# 端到端验收(打之前应当 FAIL,打之后应当全 PASS)。含回归用例:自然结束的
+# tool call 必须仍报 finish_reason="tool_calls"。
+v4flash-hotfix-test:
+	python3 scripts/repro-issue55.py
 
 # ---- Host-level memory watchdog (防整机 OOM). See scripts/mem-watch.sh ----
 # On GB10 unified memory, vLLM's ~100GB pre-allocation bypasses the container
