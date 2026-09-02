@@ -1,0 +1,509 @@
+# rank0.sh / rank1.sh = config/qwen38-flash-next.yaml 的渲染产物。
+# 改 vLLM 参数 → **两处成对改**,然后 kubectl apply + make qwen38fn-restart。
+#
+# liveness.py / worker_liveness.py 与 k8s/v4flash/configmap-launch.yaml 里的
+# **逐字相同**(含三次误杀事故换来的全部注释)。故意复制而不是抽公共文件:
+#   - 观察期内两个栈并存,一份脚本两处引用会让"改哪个"变成新的坑;
+#   - scripts/test-liveness-probe.py 从 v4flash 那份抽脚本做回归,两份相同时
+#     那套回归对本栈同样成立。
+# ⚠️ 观察期结束、删掉 k8s/v4flash/ 时,记得把 make probe-test 的抽取路径指到这里。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen38fn-launch
+  namespace: qwen38fn
+data:
+  # leader liveness:判据是「有活但**持续**零进展」,不是「探针请求能否返回」,
+  # 也不是「相邻两次探测有没有推进」。两次误杀换来的这两条限定词,别去掉。
+  #
+  # 2026-08-13 事故:第一版探针发一个 max_tokens:1 的真实生成请求。引擎被真实流量
+  # 打满(Running 6 / Waiting 2)时,探针请求排在队尾 → 连续 5 次超时 → kubelet
+  # SIGKILL 掉一个完全健康的 leader,worker 5 分钟后跟着重启 = ~10 分钟无谓中断。
+  # 教训:任何进入请求队列的探针都无法区分「卡死」和「忙」。
+  #
+  # 2026-08-16 事故:第二版改读 /metrics 不排队了,但只比较**相邻两次**的 steps,
+  # 于是「有活」的那一瞬间只要 steps 还没 +1 就记一次失败。当天误报两次:
+  #   16:32  `steps stuck at 76166` → 连续 3 次 → 杀掉健康 leader(日志显示它在被杀
+  #          前 6 秒还在正常出 token),worker 6 分钟后跟着重启,总中断 ~11 分钟
+  #   17:08  `steps stuck at 0`     → 重启后从未迭代过的冷引擎 + 首个请求在飞
+  # 教训:「有活但这一分钟没推进」是常态而非卡死 —— 空闲后的第一个请求、超长
+  # prefill、DG_JIT 首次编译新 shape 都会这样。判据必须是**连续停滞时长**。
+  #
+  # 现判据(/metrics 由 API server 直接应答,不进请求队列,满载和卡死时都秒回):
+  #   demand == 0                  → 健康(空闲,不动是应该的),停滞秒表归零
+  #   steps 比上次增加             → 健康(引擎在推进,不管多忙、多慢),秒表归零
+  #   demand > 0 且 steps 连续不动 → 累计超过 STALL_S(默认 600s)才判失败
+  # steps = vllm:iteration_tokens_total_count,每个 engine iteration +1;
+  # 分块 prefill(max_num_batched_tokens=8192)保证超长提示也会持续推进。
+  #
+  # 阈值为什么给得这么松:误杀的代价是把一个**正在工作**的引擎变成 ~11 分钟中断;
+  # 真卡死时晚 10 分钟发现,只是让一个**已经死了**的服务多死一会儿。不对称 → 宁松勿紧。
+  #
+  # 时间基准放在脚本里而不是 failureThreshold:ConfigMap 是普通卷挂载(非 subPath),
+  # 改脚本 kubelet 会自动同步进运行中的容器、**不用重启 Pod**;改 Deployment 的探针
+  # 字段则要重建两个 rank。调阈值同理,优先用 env 覆盖 STALL_S。
+  # 回归测试:`make probe-test`(直接从本文件抽脚本跑,含上面两次误报的复现场景)。
+  liveness.py: |
+    import json, os, sys, time, urllib.request
+
+    STALL_S    = float(os.environ.get("V4FLASH_STALL_S", "600"))
+    MISS_LIMIT = int(os.environ.get("V4FLASH_MISS_LIMIT", "5"))
+    STATE      = os.environ.get("V4FLASH_STATE", "/tmp/.v4flash_liveness")
+    URL        = os.environ.get("V4FLASH_METRICS", "http://localhost:8000/metrics")
+
+    now = time.monotonic()   # CLOCK_MONOTONIC = 开机时长,跨探针进程可比,且不受 NTP 跳变影响
+
+    def load():
+        try:
+            with open(STATE) as f:
+                return json.load(f)
+        except Exception:
+            return {}            # 状态缺失/损坏 = 重记基线,本轮放行
+
+    def save(st):
+        tmp = STATE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.replace(tmp, STATE)   # 原子写:探针可能被 timeoutSeconds 杀在写一半
+
+    st = load()
+
+    try:
+        body = urllib.request.urlopen(URL, timeout=10).read().decode()
+    except Exception as e:
+        # 抓不到通常是 API server 真没了,但也可能是一次瞬时抖动 ——
+        # 单次超时不足以杀掉一个 TP 组,连续 MISS_LIMIT 次才算数。
+        st["miss"] = miss = int(st.get("miss", 0)) + 1
+        save(st)
+        if miss >= MISS_LIMIT:
+            sys.exit(f"metrics unreachable x{miss}: {e}")
+        sys.exit(0)
+
+    def metric(prefix):
+        """返回 None 表示该指标此刻不存在 —— 与 0 严格区分。"""
+        for line in body.splitlines():
+            if line.startswith(prefix):
+                return float(line.split()[-1])
+        return None
+
+    steps   = metric("vllm:iteration_tokens_total_count{")
+    running = metric("vllm:num_requests_running{") or 0.0
+    waiting = metric("vllm:num_requests_waiting{") or 0.0
+    demand  = running + waiting
+
+    prev  = st.get("steps")
+    since = st.get("since")
+
+    # 秒表归零 = 此刻没有「停滞」的证据。⚠️ `demand == 0` 这条是 2026-08-16 误杀的
+    # 正解:停滞秒表只在**有活**期间累积,引擎空闲一整夜也不会攒下账,于是空闲后的
+    # 第一个请求不会一进来就被判死。
+    if steps is None or since is None or steps != prev or demand == 0:
+        since = now
+
+    save({"steps": steps, "since": since, "miss": 0})
+
+    if steps is None or demand == 0 or steps != prev:
+        sys.exit(0)
+
+    stalled = now - since
+    if stalled < STALL_S:
+        sys.exit(0)              # 有活但零进展,还没到判死时长 —— 继续观察
+
+    # 判死前最后一道保险:DG_JIT 走 nvcc 子进程编译(rank0.sh 里 DG_JIT_USE_NVRTC=0)、
+    # Triton 走 ptxas,首次遇到新 shape 时引擎确实会很久不出新 iteration —— 那是在干活。
+    # 容器有独立 PID namespace(没开 hostPID),这里只看得到 vLLM 自己的进程树。
+    def compiler_running():
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                with open(f"/proc/{pid}/comm") as f:
+                    if f.read().strip() in ("nvcc", "ptxas", "cicc", "cudafe++"):
+                        return True
+            except OSError:
+                continue         # 进程刚退出
+        return False
+
+    try:
+        if compiler_running():
+            sys.exit(0)
+    except OSError:
+        pass                     # 读不了 /proc 就当没在编译,继续判死
+
+    sys.exit(f"TP group appears hung: demand={demand:.0f}, steps stuck at {steps:.0f} for {stalled:.0f}s")
+  # worker liveness:worker 是 --headless,没有自己的端点可探,它唯一该回答的问题是
+  # 「leader 还是不是我当初 rendezvous 的那个进程」——不是就得自杀重来(单侧存活 =
+  # 僵尸 TP 组,gotcha #1)。老版本只探 leader 的 /health 通不通,有两个毛病:
+  #   1. leader 重启后 /health 会恢复 200,但那是**新进程**,worker 还挂在旧 TP 组上;
+  #      只能靠「不通够 5 次」间接察觉,慢且不精确。
+  #   2. 5×60s 才自杀,而 leader 重装权重也要 ~5min,于是两边**串行**重来。
+  #      2026-08-16 实测:leader 16:32 被杀 → worker 16:38 才跟上 → 总中断 ~11 分钟。
+  # 现在直接读 leader 的 process_start_time_seconds:变了 = leader 换过进程 → 立刻自杀,
+  # 两边并行重来,中断收敛到一次加载(~5-6min)。
+  worker_liveness.py: |
+    import json, os, sys, urllib.request
+
+    LEADER     = os.environ.get("V4FLASH_LEADER_METRICS", "http://192.168.200.101:8000/metrics")
+    STATE      = os.environ.get("V4FLASH_WORKER_STATE", "/tmp/.v4flash_worker_liveness")
+    MISS_LIMIT = int(os.environ.get("V4FLASH_WORKER_MISS", "2"))
+
+    def load():
+        try:
+            with open(STATE) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def save(st):
+        tmp = STATE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.replace(tmp, STATE)
+
+    st = load()
+
+    try:
+        body = urllib.request.urlopen(LEADER, timeout=10).read().decode()
+    except Exception as e:
+        # 还没见过 leader = 冷启动窗口(leader 要 ~5min 装 167GB 权重),一律放行。
+        # 这条取代了原来的 initialDelaySeconds: 900 —— 不再靠猜加载时长,
+        # leader 装多久都不会误杀 worker。
+        if not st.get("seen"):
+            sys.exit(0)
+        st["miss"] = miss = int(st.get("miss", 0)) + 1
+        save(st)
+        if miss >= MISS_LIMIT:
+            sys.exit(f"leader gone x{miss}: {e}")
+        sys.exit(0)
+
+    start = None
+    for line in body.splitlines():
+        if line.startswith("process_start_time_seconds"):
+            start = float(line.split()[-1])
+            break
+
+    prev = st.get("start")
+    if prev is None:
+        prev = start                      # 首次见到 leader:记下它的身份
+    save({"seen": True, "start": prev, "miss": 0})
+
+    if start is not None and prev is not None and start != prev:
+        sys.exit(f"leader restarted (process_start_time {prev} -> {start})")
+  patch-ple-fp8.py: |
+    """PLE FP8 静默降级修复(Qwen3.8-Flash-Next NVFP4 on GB10)。
+
+    2026-09-02 在 vllm 0.1.dev20073+g8e685d198 的镜像里逐行读证据确认:
+
+      1. checkpoint(RadixArk NVFP4)的 config.json 写着
+            text_config.ple_embedding_dtype = 'float8_e4m3fn'
+         —— 那张 51 GiB 的 PLE n-gram 表是 **FP8**(model-plefp8-*.safetensors,10 片)。
+      2. 同一份 config 里 quantization_config.quant_algo = 'NVFP4',而
+         hf_quant_config.json 的 exclude_modules 明确含 "*.ple.*"
+         —— ModelOpt 根本没量化 PLE,它保留的是 FP8 发布版的值。
+      3. 但 vllm/models/qwen3_8_flash_next/nvidia/ple_layer.py 里的
+            _get_ple_embedding_quant_method()
+         第一件事就是 `if not isinstance(quant_config, Fp8Config): return None`。
+         我们用 --quantization modelopt_fp4,外层 quant_config 是 ModelOpt 的,
+         **不是** Fp8Config → 直接 return None。
+
+      后果链条(全部在同一个文件里可读到):
+         没有 FP8 method → 不创建 weight_scale 参数
+           → _get_embedding_weight_scale() 返回 None
+           → _dequantize_embeddings() 里 is_fp8(embeddings) 为假(已被读成 bf16)
+           → **原样返回,不施加 scale**
+
+      即:模型能加载、能出词、不报任何错,只是 embedding 全程少乘一个全局 scale。
+      **这是静默失败** —— 比崩溃难发现得多,所以 rank 脚本里对它是 fail-closed 的。
+
+    修法与上游两份双 Spark 配方一致:checkpoint 自称 FP8 时就走 FP8 路径,
+    不管外层 quant 配置是什么。这里额外要求显式设 PLE_QUANT_OVERRIDE=fp8,
+    免得在别的 checkpoint 上意外改变行为。
+
+    ⚠️ 上游还改了第二处(把 weight_scale 从 parameter 改成 buffer,避免 KeyError
+       冲突)。**本补丁刻意不做那一处** —— 那修的是一个会当场崩的报错,而我们
+       在这套镜像上还没观察到它。崩溃是响的,静默降级是哑的:哑的现在修,
+       响的等它真响了再按证据修。
+
+    用法(与 hotfix-issue55.py 同约定):
+        python3 patch-ple-fp8.py [vllm_root]      # 打补丁,幂等
+        python3 patch-ple-fp8.py --status [root]  # 只报告状态
+    """
+
+    from __future__ import annotations
+
+    import sys
+    from pathlib import Path
+
+    DEFAULT_VLLM = Path("/usr/local/lib/python3.12/dist-packages/vllm")
+    TARGET = Path("models/qwen3_8_flash_next/nvidia/ple_layer.py")
+    MARK = "PLE-FP8-OVERRIDE"
+
+    # --- 补丁 1:插入判定辅助函数 ------------------------------------------------
+    HELPER_ANCHOR = "def _get_ple_embedding_quant_method(\n"
+
+    HELPER_NEW = '''def _ple_checkpoint_is_fp8() -> bool:
+        """PLE-FP8-OVERRIDE: checkpoint 自称 FP8 且显式开启 override 时为 True。
+
+        刻意要求两个条件同时成立,任一不满足都保持上游原行为(fail-safe)。
+        """
+        import os
+
+        if os.environ.get("PLE_QUANT_OVERRIDE", "").strip().lower() != "fp8":
+            return False
+        try:
+            hf_config = get_current_vllm_config().model_config.hf_config
+        except Exception:
+            return False
+        for obj in (getattr(hf_config, "text_config", None), hf_config):
+            if obj is None:
+                continue
+            if getattr(obj, "ple_embedding_dtype", None) == "float8_e4m3fn":
+                return True
+        return False
+
+
+    def _get_ple_embedding_quant_method(
+    '''
+
+    # --- 补丁 2:在原闸门之前插入 override ---------------------------------------
+    GATE_OLD = '''    """Select global-scale FP8 only for quantized PLE checkpoint shards."""
+
+        if not isinstance(quant_config, Fp8Config):
+            return None
+    '''
+
+    GATE_NEW = '''    """Select global-scale FP8 only for quantized PLE checkpoint shards."""
+
+        # --- PLE-FP8-OVERRIDE (dgx-spark) ---------------------------------------
+        # 混合量化 checkpoint:routed experts 是 NVFP4,PLE n-gram 表仍是 FP8。
+        # 外层 quant_config 是 ModelOpt 的,下面那行会直接 return None,导致 PLE
+        # 被静默读成 bf16 且不施加 weight_scale。详见 patch-ple-fp8.py 顶部推理。
+        if _ple_checkpoint_is_fp8():
+            return Qwen3_8FlashNextPLEFp8EmbeddingMethod()
+        # ------------------------------------------------------------------------
+
+        if not isinstance(quant_config, Fp8Config):
+            return None
+    '''
+
+
+    def _patch_file(path: Path, old: str, new: str, what: str) -> str:
+        """Apply `new` over `old` once; idempotent. Returns applied|skipped|missing."""
+        source = path.read_text(encoding="utf-8")
+        if new in source:
+            return "skipped"
+        if old not in source:
+            return "missing"
+        path.write_text(source.replace(old, new, 1), encoding="utf-8")
+        return "applied"
+
+
+    def main() -> int:
+        if len(sys.argv) > 1 and sys.argv[1] == "--status":
+            root = Path(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_VLLM
+            p = root / TARGET
+            applied = p.is_file() and MARK in p.read_text(encoding="utf-8")
+            print("PLE FP8 silent-downgrade fix    :", "APPLIED" if applied else "NOT APPLIED")
+            return 0
+
+        vllm_root = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_VLLM
+        path = vllm_root / TARGET
+        if not path.is_file():
+            print(f"[FAIL] ple_layer.py not found: {path}", file=sys.stderr)
+            return 1
+
+        print(f"[ple-fp8-patch] patching {path}")
+        for name, old, new in [
+            ("quant-method helper", HELPER_ANCHOR, HELPER_NEW),
+            ("fp8 gate override", GATE_OLD, GATE_NEW),
+        ]:
+            status = _patch_file(path, old, new, name)
+            if status == "missing":
+                print(f"[FAIL] {name}: anchor not found in {path.name}")
+                print("       镜像版本可能变了 —— 重新对着源码确认锚点,别盲目放行。")
+                return 1
+            print(f"[ple-fp8-patch] {name}: {status}")
+        print(f"[ple-fp8-patch] done (mark: {MARK})")
+        return 0
+
+
+    if __name__ == "__main__":
+        raise SystemExit(main())
+  # ---- PLE FP8 预检 ----------------------------------------------------------
+  # 本 checkpoint(RadixArk NVFP4)是**混合量化**:48 层 MoE 的 routed experts 是
+  # ModelOpt NVFP4,而那张 51 GiB 的 PLE n-gram 表是 **FP8 分片**
+  # (model-plefp8-*.safetensors,带一个全局 weight_scale)。
+  #
+  # 外层 quant 配置是 modelopt_fp4,识别不到 PLE 那条 FP8 路径。两份社区配方都要打
+  # 同一个 ple_layer.py 补丁,做两件事:
+  #   1. 只要 ple_embedding_dtype == "float8_e4m3fn" 就走 FP8 反量化路径,
+  #      不管外层 quant 配置是什么;
+  #   2. 把 weight_scale 注册成 buffer 而非 parameter(否则 KeyError 冲突)。
+  # 不打的后果是**静默错误**:embedding 被升到 bf16 且不施加 scale —— 模型照跑、
+  # 照出词,质量悄悄变差。这是本栈最危险的失败模式,比不启动难发现得多。
+  #
+  # ✅ 补丁本体已落地(2026-09-02):见本 ConfigMap 的 patch-ple-fp8.py,那里有
+  #    从镜像源码里读出来的完整证据链(不是照抄社区说法)。rank 脚本里先打补丁、
+  #    再跑本预检,两条都 fail-closed。
+  #
+  # 本预检只做**检测**,不打补丁:
+  # 默认 fail-closed(挡住启动),因为 CrashLoop 是响的、质量下滑是哑的。
+  # 若预检本身误报(它是在没见过真实 ple_layer.py 的情况下写的),用
+  #   PLE_PREFLIGHT_ENFORCE=0
+  # 降级成只告警 —— 脚本会把检查到的每一项都打出来,5 秒内可人工判断。
+  ple-preflight.py: |
+    """检测 PLE FP8 路径是否真的生效。只检测,不打补丁(补丁在 patch-ple-fp8.py)。"""
+    import glob, json, os, sys
+
+    MODEL   = os.environ.get("QWEN38FN_MODEL",
+                             "/root/.cache/huggingface/hub/Qwen3.8-Flash-Next-NVFP4")
+    MARK    = "PLE-FP8-OVERRIDE"
+    ENFORCE = os.environ.get("PLE_PREFLIGHT_ENFORCE", "1") not in ("0", "false", "no")
+
+    findings = []
+    def note(ok, msg):
+        findings.append(("  ok  " if ok else "  !!  ") + msg)
+        return ok
+
+    # 1) checkpoint 里到底有没有 FP8 的 PLE 分片(实测应为 10 片)
+    ple_shards = sorted(glob.glob(os.path.join(MODEL, "*plefp8*.safetensors")))
+    has_fp8_shards = note(len(ple_shards) == 10,
+                          f"checkpoint 的 *plefp8*.safetensors 分片数 = {len(ple_shards)} (期望 10)")
+
+    # 2) config.json 是否自称 FP8(实测 text_config.ple_embedding_dtype)
+    cfg_says_fp8 = False
+    try:
+        with open(os.path.join(MODEL, "config.json")) as f:
+            cfg = json.load(f)
+        dt = (cfg.get("text_config") or {}).get("ple_embedding_dtype") \
+             or cfg.get("ple_embedding_dtype")
+        cfg_says_fp8 = (dt == "float8_e4m3fn")
+        note(cfg_says_fp8, f"config.json ple_embedding_dtype = {dt!r}")
+    except Exception as e:
+        note(False, f"读不到 config.json: {e}")
+
+    # 3) 运行时的 nvidia/ple_layer.py 是否已带补丁标记。
+    #    ⚠️ 判据必须钉在 **nvidia** 那个文件的 MARK 上,不能宽泛地搜 "float8":
+    #    同目录还有 amd/ple_layer.py,它本来就可能含 float8 字样 → 会假 PASS。
+    module_ok = False
+    try:
+        import vllm
+        root = os.path.dirname(vllm.__file__)
+        target = os.path.join(root, "models", "qwen3_8_flash_next", "nvidia", "ple_layer.py")
+        if not os.path.isfile(target):
+            note(False, f"找不到 {target}(镜像结构变了,人工确认)")
+        else:
+            src = open(target, encoding="utf-8", errors="replace").read()
+            module_ok = MARK in src
+            note(module_ok, f"{target}: {'已打补丁' if module_ok else '未打补丁'} (mark={MARK})")
+    except Exception as e:
+        note(False, f"定位 ple_layer.py 失败: {e}")
+
+    env_ok = note(os.environ.get("PLE_QUANT_OVERRIDE", "").strip().lower() == "fp8",
+                  f"PLE_QUANT_OVERRIDE={os.environ.get('PLE_QUANT_OVERRIDE', '(未设置)')!r} (需为 'fp8')")
+
+    for line in findings:
+        print("[ple-preflight]" + line)
+
+    # 判据:checkpoint 是 FP8 的,但补丁没打或 env 没设 → 会静默降级
+    degraded = (has_fp8_shards or cfg_says_fp8) and not (module_ok and env_ok)
+    if not degraded:
+        print("[ple-preflight] PASS")
+        sys.exit(0)
+
+    msg = ("PLE 会被静默升到 bf16 且不施加 scale —— 模型能跑但质量悄悄变差。"
+           "确认属误报可设 PLE_PREFLIGHT_ENFORCE=0 放行。")
+    if ENFORCE:
+        sys.exit("[ple-preflight] FAIL(已挡住启动): " + msg)
+    print("[ple-preflight] !!! WARN(已放行): " + msg)
+    sys.exit(0)
+  rank0.sh: |
+    #!/bin/bash
+    # Generated from recipe: Qwen3.8-Flash-Next  (config/qwen38-flash-next.yaml)
+    set -o pipefail
+
+    # Environment variables
+    export PLE_QUANT_OVERRIDE="fp8"
+    export NCCL_IB_DISABLE="0"
+    export NCCL_DEBUG="WARN"
+
+    # 126 GiB 加载期间,上一次加载留下的热页缓存会饿死 GPU allocator(x00byte 实测)。
+    # Makefile 的 qwen38fn-run 会在两台宿主机上先 drop 一次;这里再兜一次,覆盖
+    # kubelet 自己重建 Pod(探针判死)的路径。privileged 容器里 /proc/sys 可写,
+    # 但不同 runtime 不保证 —— 失败只告警,不挡启动。
+    sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null \
+      || echo "[rank0] note: drop_caches 不可写(非致命),必要时在宿主机上手动执行"
+
+    # ⚠️ 静默失败防线。补丁本体 + 完整证据链见 /scripts/patch-ple-fp8.py 顶部注释。
+    # 两条都是 **fail-closed**(与 issue55 热修不同):质量下滑不会自己喊,CrashLoop 会。
+    # 锚点对不上(镜像换版本)时宁可不起来,也不要静默跑一个 embedding 少乘 scale 的模型。
+    python3 /scripts/patch-ple-fp8.py || exit 1
+    python3 /scripts/ple-preflight.py  || exit 1
+
+    # Run the model
+    vllm serve /root/.cache/huggingface/hub/Qwen3.8-Flash-Next-NVFP4 \
+        --served-model-name qwen38-flash-next \
+        --host 0.0.0.0 \
+        --port 8000 \
+        --trust-remote-code \
+        --quantization modelopt_fp4 \
+        --tensor-parallel-size 2 \
+        --pipeline-parallel-size 1 \
+        --enable-expert-parallel \
+        --enforce-eager \
+        --enable-chunked-prefill \
+        --enable-prefix-caching \
+        --max-model-len 262144 \
+        --max-num-seqs 8 \
+        --max-num-batched-tokens 8192 \
+        --gpu-memory-utilization 0.75 \
+        --distributed-executor-backend mp \
+        --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
+        --tool-call-parser qwen3_xml \
+        --enable-auto-tool-choice \
+        --reasoning-parser qwen3 \
+        --default-chat-template-kwargs '{"enable_thinking":true}' \
+        --override-generation-config '{"top_p":0.95,"top_k":20}' \
+        --load-format safetensors --nnodes 2 --node-rank 0 --master-addr 192.168.200.101 --master-port 29501
+  rank1.sh: |
+    #!/bin/bash
+    # Generated from recipe: Qwen3.8-Flash-Next  (config/qwen38-flash-next.yaml)
+    set -o pipefail
+
+    # Environment variables
+    export PLE_QUANT_OVERRIDE="fp8"
+    export NCCL_IB_DISABLE="0"
+    export NCCL_DEBUG="WARN"
+
+    sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null \
+      || echo "[rank1] note: drop_caches 不可写(非致命),必要时在宿主机上手动执行"
+
+    # 同 rank0:先打补丁再预检,两条都 fail-closed。
+    python3 /scripts/patch-ple-fp8.py || exit 1
+    python3 /scripts/ple-preflight.py  || exit 1
+
+    # Run the model
+    vllm serve /root/.cache/huggingface/hub/Qwen3.8-Flash-Next-NVFP4 \
+        --served-model-name qwen38-flash-next \
+        --host 0.0.0.0 \
+        --port 8000 \
+        --trust-remote-code \
+        --quantization modelopt_fp4 \
+        --tensor-parallel-size 2 \
+        --pipeline-parallel-size 1 \
+        --enable-expert-parallel \
+        --enforce-eager \
+        --enable-chunked-prefill \
+        --enable-prefix-caching \
+        --max-model-len 262144 \
+        --max-num-seqs 8 \
+        --max-num-batched-tokens 8192 \
+        --gpu-memory-utilization 0.75 \
+        --distributed-executor-backend mp \
+        --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
+        --tool-call-parser qwen3_xml \
+        --enable-auto-tool-choice \
+        --reasoning-parser qwen3 \
+        --default-chat-template-kwargs '{"enable_thinking":true}' \
+        --override-generation-config '{"top_p":0.95,"top_k":20}' \
+        --load-format safetensors --nnodes 2 --node-rank 1 --master-addr 192.168.200.101 --master-port 29501 --headless

@@ -1,0 +1,127 @@
+recipe_version: "1"
+name: Qwen3.8-Flash-Next
+description: Qwen3.8-Flash-Next NVFP4 on dual DGX Spark TP=2 (official vLLM flash-next image) + MTP
+model: /root/.cache/huggingface/hub/Qwen3.8-Flash-Next-NVFP4
+container: vllm-qwen38fn
+cluster_only: true
+
+# ⚠️ 本文件是 **vLLM flags 的唯一真相源**,但线上跑的是
+# k8s/qwen38fn/configmap-launch.yaml 里的 rank0.sh / rank1.sh(由本文件渲染)。
+# **两者必须成对修改** —— 与 config/deepseek-v4-flash.yaml 同约定。
+
+# 与 V4-Flash 不同:引擎不再是自建 fork,直接用官方镜像(sm_121a / aarch64 / CUDA 13),
+# 所以没有 build_args。镜像按 digest 锁,理由见 docs 里的「PLE 补丁钉在镜像版本上」。
+image: vllm/vllm-openai:qwen38-flash-next   # 本地导入后为 vllm-qwen38fn:latest
+image_digest: sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8
+image_id:     sha256:d464f3b466fa9c45ddb
+# ↑ 2026-09-02 两节点实拉后核对,ImageID 与 RepoDigest 完全一致,Arch=linux/arm64
+#   (社区说的 sm_121a/aarch64 在本机得到验证)。源:docker.m.daocloud.io
+#   —— docker.io 直连不通(gotcha #8)。
+# 按 digest 锁的理由:PLE 补丁是钉在具体镜像版本上的,tag 漂移会让补丁静默失配。
+# ⚠️ 这里记的是 **RepoDigest**(docker inspect '{{index .RepoDigests 0}}')。
+#   别用 `docker manifest inspect -v` 的 Descriptor.digest —— 那是 manifest list
+#   的摘要,与实际拉到的 arm64 镜像不是一个值(第一次就记错了成 3b0e188f…)。
+# ⚠️ 还有第三个值:`docker save | k3s ctr images import` 会重新打包,所以
+#   `k3s ctr -n k8s.io images ls` 显示的摘要(2026-09-02 两台均为 a9c41666…)
+#   既不等于 RepoDigest 也不等于 manifest list 摘要。**跨节点比对用它,
+#   和本文件的 image_digest 比对没有意义。**
+
+mods: []
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  pipeline_parallel: 1        # ⚠️ 该模型不支持 PP,此值只能是 1
+  gpu_memory_utilization: 0.75
+  max_model_len: 262144
+  max_num_batched_tokens: 8192
+  max_num_seqs: 8
+  served_model_name: qwen38-flash-next
+
+env:
+  # PLE(51 GiB n-gram 表)在本 checkpoint 里是 FP8 分片,外层 modelopt_fp4 配置
+  # 识别不到它 → 不加这个 + 不打补丁的话,embedding 会被**静默**升到 bf16 且不施加
+  # scale:模型照跑、照出词,质量悄悄变差。这是本栈最危险的静默失败。
+  PLE_QUANT_OVERRIDE: fp8
+  NCCL_IB_DISABLE: 0
+  NCCL_DEBUG: WARN
+  HF_HUB_OFFLINE: 1
+  TRANSFORMERS_OFFLINE: 1
+
+# ---------------------------------------------------------------------------
+# 相对社区两份双 Spark 配方(MiaAI-Lab / x00byte)做的四处收紧,每条都有本仓库
+# 自己的账:
+#
+# 1. gpu_memory_utilization 0.75(社区 0.835 / 0.85;本栈 09-02 从 0.80 再降)
+#    0.85 在 2026-06-29 把 head node 整机 OOM 过(CLAUDE.md「统一内存约束」);
+#    blazux 也独立报告 0.85 会在长时间服务后 OOM drift。
+#
+#    ⚠️ **0.80 实测不够** —— 2026-09-02 在本集群压测(scripts/mem-floor.sh):
+#      空载/单条长 prompt        → S1 avail 7Gi
+#      8 路并发 × 8K prompt      → S1 avail **5Gi = 4.1%**,低于 memwatch CRIT(5%)
+#      128K 单条(97302 token)    → 仍 5Gi,功能全部正常、无 OOM
+#      压测后**不回弹**,且 `drop_caches` 只拿回 52 MiB → 是真占用不是页缓存
+#    即:0.80 跑得动,但把安全边际吃光了,而换来的 KV(27 GiB)在 max_num_seqs=8
+#    下根本用不满。GB10 上 OOM 会冻住 sshd,且这两台**没有 BMC** —— 不对称的
+#    代价决定了宁可少要 KV。
+#
+#    0.75:引擎预算 91.3 GiB,权重+激活 70.4 → KV ~20.9 GiB(262144 下 5.4× 并发,
+#    仍远超 max_num_seqs=8 所需),主机地板回到 ~11Gi,与 V4-Flash 同水位。
+#    **往上调之前先重跑 mem-floor 压测,并确认双机对称。**
+#
+# 2. --enforce-eager 起步
+#    x00byte:GB10 上不加会触发 ~20min torch.compile 挂死 + 整机失去响应;
+#    blazux:sm_121 上 Inductor 断言失败。但 MiaAI 的内存账里有 0.39 GiB CUDA
+#    graphs(说明他们没用 eager)且 decode 高约 4%。→ 先安全起步,把它当**独立
+#    A/B 项**,一次只动这一个变量。
+#
+# 3. max_model_len 262144(原生),不开 YaRN
+#    YaRN factor 4.0 牺牲短上下文质量,而 262144 在 fallback 栈上一直够用。
+#    同时开会给基准闸门多一个混杂变量。真要 1M 时再单独加:
+#      --hf-overrides '{"rope_parameters":{"rope_type":"yarn","factor":4.0,
+#                       "original_max_position_embeddings":262144}}'
+#      + VLLM_ALLOW_LONG_MAX_MODEL_LEN=1,并单独复测。
+#
+# 4. 不设 --block-size(V4 用的是 256)
+#    blazux 提到该模型的 prefix caching 有 block-size 相关修复,用默认值。
+#
+# 另外三条与 V4 的差异,不是"收紧"而是硬性:
+#   - **删掉 --kv-cache-dtype fp8** —— 本 checkpoint 不支持,auto → bf16。
+#   - 官方 recipe 的 --max-num-seqs 256 是给每卡 190 GiB 的 GB300 写的;两份
+#     Spark 配方都用 8(V4 现在是 6)。GB10 按 8 起步。
+#   - DeepSeek 专属 env(VLLM_TRITON_MLA_SPARSE / DG_JIT_* / TORCH_CUDA_ARCH_LIST)
+#     全部不适用,已删除。
+#
+# ⚠️ tool-call-parser 未定:官方 recipe 写 qwen3_xml,x00byte 用 qwen3_coder。
+#    取决于 checkpoint 里的 chat template。先用官方的 qwen3_xml,阶段 3 发一个
+#    真实 tool call 验证;若工具调用以纯文本回来,改 qwen3_coder。
+#
+# 采样参数:模型卡 thinking 模式建议 temperature=1.0 / top_p=0.95 / top_k=20
+# (temperature 1.0 已是 generation_config.json 默认值,故只 override 后两项)。
+# ---------------------------------------------------------------------------
+command: |
+  vllm serve /root/.cache/huggingface/hub/Qwen3.8-Flash-Next-NVFP4 \
+      --served-model-name {served_model_name} \
+      --host {host} \
+      --port {port} \
+      --trust-remote-code \
+      --quantization modelopt_fp4 \
+      --tensor-parallel-size {tensor_parallel} \
+      --pipeline-parallel-size {pipeline_parallel} \
+      --enable-expert-parallel \
+      --enforce-eager \
+      --enable-chunked-prefill \
+      --enable-prefix-caching \
+      --max-model-len {max_model_len} \
+      --max-num-seqs {max_num_seqs} \
+      --max-num-batched-tokens {max_num_batched_tokens} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      --distributed-executor-backend mp \
+      --speculative-config '{{"method":"mtp","num_speculative_tokens":3}}' \
+      --tool-call-parser qwen3_xml \
+      --enable-auto-tool-choice \
+      --reasoning-parser qwen3 \
+      --default-chat-template-kwargs '{{"enable_thinking":true}}' \
+      --override-generation-config '{{"top_p":0.95,"top_k":20}}' \
+      --load-format safetensors

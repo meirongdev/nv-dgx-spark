@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify v4flash-hotfix-status v4flash-hotfix-test qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall
+.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-warmer-logs v4flash-drift v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify v4flash-hotfix-status v4flash-hotfix-test qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop qwen38fn-preflight qwen38fn-run qwen38fn-status qwen38fn-logs qwen38fn-logs-worker qwen38fn-test qwen38fn-load qwen38fn-stop qwen38fn-restart qwen38fn-rollback ple-test memwatch-check memwatch memwatch-reset memwatch-test node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -267,6 +267,20 @@ v4flash-logs:
 v4flash-logs-worker:
 	$(K8S) -n $(DSV4_NS) logs --tail=60 deploy/v4flash-worker
 
+# warmer sidecar 的日志(重启后预热曲线 + 空闲衰减探测)。warmer.py 的头注释
+# 引用了这个目标,但在 2026-09-02 收编分叉之前它并不存在。
+# 结构化记录在宿主机 /home/admin/.cache/vllm/warmer.jsonl(跨 Pod 重启保留)。
+v4flash-warmer-logs:
+	$(K8S) -n $(DSV4_NS) logs --tail=40 deploy/v4flash-leader -c warmer
+
+# 仓库 manifests 与线上的真实差异(服务端 dry-run)。
+# ⚠️ apply 之前先跑这个 —— 2026-09-02 就是它挖出 warmer sidecar 和三个 JIT
+# 缓存挂载只存在于线上,而 `kubectl apply -f k8s/v4flash/` 会把它们悄悄删掉。
+v4flash-drift:
+	@$(K8S) diff -f k8s/v4flash/ 2>/dev/null | grep -E '^[+-]' | grep -vE '^[+-]{3}|generation:' \
+		|| echo "no drift: 仓库与线上一致"
+
+
 v4flash-test:
 	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) "BASE=http://localhost:$(DSV4_PORT) bash /home/admin/v4-test.sh"
 
@@ -337,6 +351,112 @@ v4flash-hotfix-status:
 v4flash-hotfix-test:
 	python3 scripts/repro-issue55.py
 
+# ========================================
+# Qwen3.8-Flash-Next (换装中的主力候选, k3s, TP=2)
+# ========================================
+# NVFP4 checkpoint (RadixArk, ~126 GiB) + 官方 vllm/vllm-openai:qwen38-flash-next
+# 镜像。方案与分阶段执行见 docs/;flags 真相源是 config/qwen38-flash-next.yaml,
+# 线上跑的是 k8s/qwen38fn/configmap-launch.yaml —— **两者成对改**。
+#
+# ⚠️ 与 v4flash 栈和 qwen38-27b fallback 栈**三者互斥**(同一份 GPU 内存,
+#    gotcha #2)。qwen38fn-run 会先自检,不再只靠文档提醒。
+Q38FN_NS   ?= qwen38fn
+Q38FN_HEAD ?= 100.97.87.120
+Q38FN_PORT ?= 8000
+Q38FN_TEST_SRC ?= scripts/qwen38fn-test.sh
+Q38FN_IMAGE ?= docker.m.daocloud.io/vllm/vllm-openai:qwen38-flash-next
+
+# 起栈前的互斥自检 + 掉页缓存。单独跑也行(只读部分),run 会自动带上。
+qwen38fn-preflight:
+	@v4=$$($(K8S) -n $(DSV4_NS) get deploy -o jsonpath='{.items[*].spec.replicas}' 2>/dev/null \
+		| tr ' ' '\n' | awk '{s+=$$1} END{print s+0}'); \
+	if [ "$$v4" -gt 0 ]; then \
+		echo "ABORT: v4flash 还有 $$v4 个副本在跑 —— 两个栈会抢同一份 GPU 内存(gotcha #2)。"; \
+		echo "       先执行: make v4flash-stop"; exit 1; \
+	fi
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) \
+		"docker ps --filter name=$(Q38_CONTAINER) --format '{{.Names}}' | grep -q . \
+		 && { echo 'ABORT: fallback 栈 $(Q38_CONTAINER) 在跑,先 make qwen38-stop'; exit 1; } || true"
+	@for h in $(HOSTS); do \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
+			"test -d /home/$(SSH_USER)/.cache/huggingface/hub/Qwen3.8-Flash-Next-NVFP4 \
+			 || { echo \"ABORT: $$h 上没有权重目录(阶段 1 未完成)\"; exit 1; }; \
+			 sudo k3s ctr -n k8s.io images ls -q | grep -q vllm-qwen38fn \
+			 || { echo \"ABORT: $$h 的 containerd 里没有 vllm-qwen38fn 镜像(阶段 1 未完成)\"; exit 1; }" \
+		|| exit 1; \
+	done
+	@echo "preflight OK: 互斥已确认,两节点的镜像与权重就位"
+
+# 126 GiB 加载期间热页缓存会饿死 GPU allocator(x00byte 实测),先在两台宿主机
+# 上 drop 一次。rank 脚本里还有一次 best-effort 兜底,覆盖 kubelet 自行重建的路径。
+qwen38fn-run: qwen38fn-preflight
+	@for h in $(HOSTS); do \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$h "sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'" \
+			&& echo "$$h: page cache dropped"; \
+	done
+	$(K8S) -n $(Q38FN_NS) scale deploy qwen38fn-worker qwen38fn-leader --replicas=1
+	@echo "loads 8-11min (126GiB weights) — 比 V4 的 5min 长,别急着判死"
+	@echo "poll: make qwen38fn-status"
+
+qwen38fn-status:
+	@$(K8S) -n $(Q38FN_NS) get pods -o wide
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) \
+		"curl -s http://localhost:$(Q38FN_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'"
+
+qwen38fn-logs:
+	$(K8S) -n $(Q38FN_NS) logs --tail=60 deploy/qwen38fn-leader
+
+qwen38fn-logs-worker:
+	$(K8S) -n $(Q38FN_NS) logs --tail=60 deploy/qwen38fn-worker
+
+# 冒烟测试 + tool-call parser 验证(qwen3_xml vs qwen3_coder,见脚本注释)。
+# ⚠️ 这是冒烟不是 benchmark —— 引用 tok/s 前先读 docs/benchmarking-cn.md。
+qwen38fn-test:
+	scp -i $(SSH_KEY) -o StrictHostKeyChecking=no $(Q38FN_TEST_SRC) $(SSH_USER)@$(Q38FN_HEAD):/home/$(SSH_USER)/qwen38fn-test.sh
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) \
+		"BASE=http://localhost:$(Q38FN_PORT) bash /home/$(SSH_USER)/qwen38fn-test.sh"
+
+qwen38fn-load:
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) \
+		"curl -s http://localhost:$(Q38FN_PORT)/metrics | grep -E 'num_requests_(running|waiting)\{|kv_cache_usage' | grep -v '^#'; \
+		echo '--- client IPs on :$(Q38FN_PORT) ---'; \
+		ss -tn | grep ':$(Q38FN_PORT)' | awk '{print \$$5}' | cut -d: -f1 | sort | uniq -c | sort -rn"
+	@echo '--- engine last minute ---'
+	@$(K8S) -n $(Q38FN_NS) logs --since=1m deploy/qwen38fn-leader 2>/dev/null | grep 'loggers.py' | tail -3 || true
+
+# PLE FP8 补丁 + 预检的端到端回归。抽 ConfigMap 里**线上那份**脚本,送到 S1,
+# 在真实镜像 + 真实 checkpoint 的容器里跑(不占 GPU,不动运行中的栈)。
+# ⚠️ 改 patch-ple-fp8.py 或 ple-preflight.py 之前必跑 —— 它们守的是静默降级。
+ple-test:
+	@python3 -c "import pathlib,re,sys,tempfile,os; \
+	s=pathlib.Path('k8s/qwen38fn/configmap-launch.yaml').read_text(); \
+	d=tempfile.mkdtemp(); \
+	[pathlib.Path(d,k).write_text('\n'.join(l[4:] for l in re.search(r'\n  '+re.escape(k)+r': \|\n(.*?)(?=\n  [a-z0-9_.-]+\.(?:py|sh): \||\n  # ----)',s,re.S).group(1).split('\n'))) for k in ('patch-ple-fp8.py','ple-preflight.py')]; \
+	print(d)" > /tmp/.ple_dir
+	@d=$$(cat /tmp/.ple_dir); \
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) "rm -rf /tmp/scr && mkdir -p /tmp/scr" && \
+	scp -q -i $(SSH_KEY) $$d/patch-ple-fp8.py $$d/ple-preflight.py $(SSH_USER)@$(Q38FN_HEAD):/tmp/scr/ && \
+	scp -q -i $(SSH_KEY) scripts/test-ple-patch.sh $(SSH_USER)@$(Q38FN_HEAD):/tmp/e2e.sh && \
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) "docker run --rm \
+	  -v /tmp/scr:/scripts:ro -v /tmp/e2e.sh:/tmp/e2e.sh:ro \
+	  -v /home/$(SSH_USER)/.cache/huggingface/hub/Qwen3.8-Flash-Next-NVFP4:/model:ro \
+	  --entrypoint bash $(Q38FN_IMAGE) /tmp/e2e.sh 2>&1 | grep -vE 'INFO |WARNING |W0902'"
+
+qwen38fn-stop:
+	$(K8S) -n $(Q38FN_NS) scale deploy qwen38fn-leader qwen38fn-worker --replicas=0
+
+# 成对重启。⚠️ 绝不单独重建一个 rank —— 幸存方会永久卡在集合通信里,
+# /health 和 /v1/models 照常 200(gotcha #1,与引擎无关,是 TP=2 的固有性质)。
+qwen38fn-restart:
+	$(K8S) -n $(Q38FN_NS) delete pod --all
+	@echo "both ranks recreated; loads 8-11min, poll: make qwen38fn-status"
+
+# 回滚到 V4-Flash(约 5 分钟)。观察期内 V4 的权重和镜像必须保留。
+qwen38fn-rollback:
+	$(K8S) -n $(Q38FN_NS) scale deploy --all --replicas=0
+	@echo "qwen38fn stopped; 等 free -h 回落后执行: make v4flash-run"
+	@echo "⚠️ 别忘了把 MEMWATCH_STACK 改回 v4flash,以及回滚客户端配置"
+
 # ---- Host-level memory watchdog (防整机 OOM). See scripts/mem-watch.sh ----
 # On GB10 unified memory, vLLM's ~100GB pre-allocation bypasses the container
 # cgroup (verified 2026-08-15), so node-level available memory is the only
@@ -345,14 +465,29 @@ v4flash-hotfix-test:
 # auto-restore — bring the engine back with `make v4flash-run`.
 MEMWATCH ?= scripts/mem-watch.sh
 
+# ⚠️ 换主力栈时**改这一个变量**(v4flash → qwen38fn)。看门狗认的是具体的
+# namespace + deploy 名;指错了它会照常巡检、照常记日志,却在真要动手时 scale
+# 一组不存在的对象 —— 一道静默失效的防线。脚本启动时会自检并拒绝启动。
+# 2026-09-02 主力栈切到 qwen38fn;回滚 V4 时改回 v4flash。
+# ⚠️ 注释另起一行 —— 写成行尾注释会让变量带上尾随空格,
+#    WATCH_DEPLOYS 会变成 "qwen38fn   -worker" 这种拼不出来的名字。
+MEMWATCH_STACK ?= qwen38fn
+MEMWATCH_ENV = WATCH_STACK=$(MEMWATCH_STACK) WATCH_NS=$(MEMWATCH_STACK) \
+               WATCH_DEPLOYS="$(MEMWATCH_STACK)-worker $(MEMWATCH_STACK)-leader"
+
 memwatch-check:            # 单次打印两节点 available%(只读)
-	$(MEMWATCH) --once
+	$(MEMWATCH_ENV) $(MEMWATCH) --once
 
 memwatch:                  # 常驻循环(防 OOM,建议放 tmux)
-	$(MEMWATCH)
+	$(MEMWATCH_ENV) $(MEMWATCH)
 
 memwatch-reset:            # 清除已触发状态,解除保持
-	$(MEMWATCH) --reset
+	$(MEMWATCH_ENV) $(MEMWATCH) --reset
+
+# 去抖逻辑回归(纯本地,不碰集群)。直接 source 线上那份 mem-watch.sh,
+# 复现 2026-09-02 修掉的那个「看门狗永不触发」的 bug。改 tick() 前必跑。
+memwatch-test:
+	bash scripts/test-mem-watch.sh
 
 # ---- GB10 GPU clock cap (能效). See scripts/gb10-clock-cap.sh + docs/gb10-tuning-cn.md ----
 # 2026-08-25 双机 A/B 实测:上限 2200 MHz 下 decode 无显著变化(配对差 +0.9%,

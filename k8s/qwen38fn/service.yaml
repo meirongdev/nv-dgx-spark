@@ -1,0 +1,15 @@
+# 集群内入口。外部客户端仍直连 100.97.87.120:8000 (hostNetwork),不经过此 Service。
+# ⚠️ 与 v4flash 的 Service 端口相同 —— 这没关系,两个栈**互斥**,不会同时有 Pod。
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen38-flash-next
+  namespace: qwen38fn
+spec:
+  type: ClusterIP
+  selector:
+    app: qwen38fn-leader
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

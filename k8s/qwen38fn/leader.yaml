@@ -1,0 +1,116 @@
+# qwen38fn-leader — rank0, S1 (spark-ccf3), 对外 :8000 (hostNetwork)
+# 形态逐字沿用 v4flash/leader.yaml —— 拓扑完全相同(rank0 出 API,rank1 --headless,
+# 同一条 200G 线上 rendezvous),只换引擎、镜像和权重。
+#
+# ⚠️ 与 v4flash 栈**互斥**(同一份 GPU 内存,gotcha #2)。切换前必须
+# `make v4flash-stop`,且 fallback 栈也必须是停的(`make qwen38-stop`)。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen38fn-leader
+  namespace: qwen38fn
+spec:
+  replicas: 1            # 稳态 1;停机用 make qwen38fn-stop
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: qwen38fn-leader
+  template:
+    metadata:
+      labels:
+        app: qwen38fn-leader
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: spark-ccf3
+      hostNetwork: true
+      hostIPC: true
+      runtimeClassName: nvidia
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: vllm
+          image: docker.io/library/vllm-qwen38fn:latest
+          imagePullPolicy: Never
+          command: ["/bin/bash", "/scripts/rank0.sh"]
+          workingDir: /workspace
+          securityContext:
+            privileged: true          # RoCE 设备访问 + /proc/sys 可写(drop_caches)
+          resources:
+            limits:
+              nvidia.com/gpu: 1       # 统一内存上仅做调度记账,无内存隔离
+          env:
+            - name: VLLM_HOST_IP
+              value: "192.168.200.101"
+            # ⚠️ 下面这组网卡/HCA 名是**在这两台上验证过**的值(v4flash 沿用至今)。
+            # 社区配方里的 enp1s0f1np1 / rocep1s0f1 是他们的口,不要照抄。
+            - name: NCCL_SOCKET_IFNAME
+              value: "enp1s0f0np0"
+            - name: GLOO_SOCKET_IFNAME
+              value: "enp1s0f0np0"
+            - name: TP_SOCKET_IFNAME
+              value: "enp1s0f0np0"
+            - name: UCX_NET_DEVICES
+              value: "enp1s0f0np0"
+            - name: OMPI_MCA_btl_tcp_if_include
+              value: "enp1s0f0np0"
+            - name: MN_IF_NAME
+              value: "enp1s0f0np0"
+            - name: NCCL_IB_HCA
+              value: "rocep1s0f0,roceP2p1s0f0"
+            - name: NCCL_IB_DISABLE
+              value: "0"
+            - name: NCCL_IGNORE_CPU_AFFINITY
+              value: "1"
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+            - name: vllm-cache
+              mountPath: /root/.cache/vllm
+            - name: flashinfer-cache
+              mountPath: /root/.cache/flashinfer
+            - name: triton-cache
+              mountPath: /root/.triton
+            - name: scripts
+              mountPath: /scripts
+          startupProbe:               # 126GiB 权重加载,冷启动实测 8–11min(V4 是 ~5min)
+            httpGet:                  # 15s × 120 = 30min 上限,仍有充足余量
+              path: /health
+              port: 8000
+            periodSeconds: 15
+            failureThreshold: 120
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+          # ⚠️ /health 和 /v1/models 都是静态端点,TP 组挂死时它们照常 200。
+          # 真正的存活判据在 /scripts/liveness.py,脚本与 v4flash 的**逐字相同**
+          # (含三次误杀事故换来的注释)—— 改之前先读那段注释,并跑 make probe-test。
+          # 判死时长在脚本的 STALL_S(默认 600s),不是下面的 failureThreshold。
+          livenessProbe:
+            exec:
+              command: ["python3", "/scripts/liveness.py"]
+            periodSeconds: 60
+            timeoutSeconds: 20
+            failureThreshold: 3
+      volumes:
+        - name: hf-cache
+          hostPath:
+            path: /home/admin/.cache/huggingface
+        - name: vllm-cache
+          hostPath:
+            path: /home/admin/.cache/vllm
+        - name: flashinfer-cache
+          hostPath:
+            path: /home/admin/.cache/flashinfer
+        - name: triton-cache
+          hostPath:
+            path: /home/admin/.triton
+        - name: scripts
+          configMap:
+            name: qwen38fn-launch
+            defaultMode: 0755
