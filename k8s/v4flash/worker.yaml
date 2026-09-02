@@ -65,6 +65,10 @@ spec:
               value: "1"
             - name: TRANSFORMERS_OFFLINE
               value: "1"
+            # JIT 缓存三兄弟 —— 2026-09-02 从线上收编。丢了它们每次 Pod 重启都要
+            # 重编译 kernel(正是 warmer sidecar 在替它遮掩的那部分开销)。
+            - name: TORCHINDUCTOR_CACHE_DIR
+              value: /root/.cache/torchinductor
           volumeMounts:
             - name: hf-cache
               mountPath: /root/.cache/huggingface
@@ -74,6 +78,12 @@ spec:
               mountPath: /root/.cache/flashinfer
             - name: triton-cache
               mountPath: /root/.triton
+            - name: tilelang-cache
+              mountPath: /root/.tilelang
+            - name: cuda-cache
+              mountPath: /root/.nv
+            - name: inductor-cache
+              mountPath: /root/.cache/torchinductor
             - name: scripts
               mountPath: /scripts
           # 共同命运:worker 是 --headless,没有自己的端点可探。判据 = 「leader 还是不是
@@ -106,6 +116,18 @@ spec:
         - name: triton-cache
           hostPath:
             path: /home/admin/.triton
+        - name: tilelang-cache
+          hostPath:
+            path: /home/admin/.tilelang
+            type: DirectoryOrCreate
+        - name: cuda-cache
+          hostPath:
+            path: /home/admin/.nv
+            type: DirectoryOrCreate
+        - name: inductor-cache
+          hostPath:
+            path: /home/admin/.cache/torchinductor
+            type: DirectoryOrCreate
         - name: scripts
           configMap:
             name: v4flash-launch

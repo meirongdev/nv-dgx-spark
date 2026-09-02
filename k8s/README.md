@@ -97,6 +97,40 @@ kubectl -n v4flash delete pod --all                # 重启(必须两侧一起)
 日志里 `NCCL WARN ... GID table changed` 是**既有噪声**,与 k3s 无关
 (老 systemd 日志里出现过 19 万次,最早可追到 2026-06-05),忽略即可。
 
+## ⚠️ 仓库与线上会分叉 —— apply 前先 `make v4flash-drift`
+
+2026-09-02 例行核对时发现线上 leader 是 **2/2** 而不是 1/1,顺藤摸出仓库和集群
+已经**双向分叉**,而且两个方向都会咬人:
+
+| | 仓库 | 线上 |
+|---|---|---|
+| `warmer.py` + warmer sidecar | ❌ 无 | ✅ 有 |
+| 三个 JIT 缓存挂载(tilelang / `.nv` / torchinductor)+ `TORCHINDUCTOR_CACHE_DIR` | ❌ 无 | ✅ 有(**两个 rank 都有**) |
+| `kubectl.kubernetes.io/default-container: vllm` 注解 | ❌ 无 | ✅ 有 |
+| `hotfix-issue55.py` + rank0.sh 里的调用 | ✅ 有(已提交 `407b556`) | ❌ **无** |
+
+危险在于本 README 一直把 `make v4flash-stop && kubectl apply -f k8s/v4flash/`
+写成落地探针改动的标准做法 —— 在收编之前跑这条会**一次性删掉** warmer 和三个
+JIT 缓存挂载(重启即重编译 kernel,正是 warmer 在遮掩的开销),同时把 issue55
+热修加回去。两个方向的意外都不会有人提醒你。
+
+**教训:`kubectl apply` 是覆盖,不是合并。** 线上任何没回流到仓库的手改,
+下一次 apply 都会被无声抹掉。所以:
+
+```bash
+make v4flash-drift    # 服务端 dry-run,列出仓库与线上的真实差异
+```
+
+⚠️ 它必须是 **apply 之前的固定动作**,不是想起来才跑的。`kubectl diff` 比
+肉眼比对 YAML 可靠得多 —— 上面那三个缓存挂载就是肉眼读 manifest 时漏掉、
+被 `kubectl diff` 揪出来的。
+
+收编于 2026-09-02:warmer sidecar、三个 JIT 缓存挂载、default-container 注解
+均已进入仓库,两个 Deployment 的服务端 dry-run 已归零。**仍未落地**的是
+`hotfix-issue55.py`(仓库有、线上无)—— apply 会新增它,并让 rank0.sh 在
+**下次容器启动时**打上热修(ConfigMap 是普通卷挂载,改文件不重启;但 rank0.sh
+只在启动时跑一次)。
+
 ## 回滚到 systemd 路径(观察期内保留)
 
 ```bash

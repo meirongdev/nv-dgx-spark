@@ -184,6 +184,171 @@ data:
     if start is not None and prev is not None and start != prev:
         sys.exit(f"leader restarted (process_start_time {prev} -> {start})")
     sys.exit(0)
+  # warmer:leader Pod 的 sidecar(每 30s 由 bash 循环调用一次)。
+  # 2026-09-02 从线上 ConfigMap 收编进仓库 —— 在此之前它**只存在于集群里**,
+  # 仓库的 leader.yaml 只有一个容器,于是 `kubectl apply -f k8s/v4flash/`
+  # (k8s/README.md 推荐的落地方式)会把它悄悄删掉。分叉记录见该 README。
+  # 旋钮走 env(WARMER_COLD_N / WARMER_IDLE_MIN / WARMER_PROBE_K),脚本本体
+  # 是普通卷挂载 → 改完 kubelet 自动同步,不用重启 Pod。
+  warmer.py: |
+    # warmer.py — leader Pod 里的 sidecar,每 30s 被 bash 循环调用一次(脚本本体在 ConfigMap 里,
+    # kubelet 会自动同步进运行中的容器,所以改下面的旋钮不用重启 Pod)。两件事:
+    #
+    #  1. 重启后自动预热:发现 process_start_time_seconds 变了(= 新的引擎进程),就依次发
+    #     COLD_N 次 count300(顺便记下每次 tok/s = 冷启动曲线)、一次 thinking 生成、一次
+    #     JSON-schema 约束生成、一次 ~10K token 长 prompt(分块 prefill 路径)、一次 3 路并发
+    #     (DSpark 采样器 batch=2/3 的 shape)。它们覆盖 2026-09-02 日志里重启后首个真实请求
+    #     要承担的那 ~20 个 Triton JIT 事件,让第一个真人请求不再当小白鼠。
+    #  2. 空闲探测(兼保温):真实流量停了 IDLE_MIN 分钟后,连发 PROBE_K 次 count300 并记 tok/s。
+    #     benchmarking-cn.md 说空闲 ~30min 后 decode 掉 ~30%,机制一直没查明;这里的记录
+    #     (warmer.jsonl 的 event=probe,第 1 次 vs 第 K 次)就是持续在测它。要改成纯保温,
+    #     把 IDLE_MIN 调到 10-15 即可;IDLE_MIN=0 关闭。
+    #
+    #  记录:stdout(kubectl logs -c warmer / make v4flash-warmer-logs)+ 追加 JSON 行到 LOG
+    #  (hostPath /home/admin/.cache/vllm/warmer.jsonl,跨 Pod 重启保留)。
+    #  ⚠️ 这些请求会计入 /metrics 的 request_success_total / spec_decode 接受率统计
+    #  (count300 接受率极高),看"真实流量接受率"时要剔除。
+    import json, os, sys, time, uuid, threading, urllib.request, urllib.error
+
+    URL      = os.environ.get("WARMER_URL", "http://localhost:8000")
+    COLD_N   = int(os.environ.get("WARMER_COLD_N", "5"))        # 重启后连发几次 count300
+    IDLE_MIN = float(os.environ.get("WARMER_IDLE_MIN", "30"))   # 空闲多少分钟后探测;0 = 关
+    PROBE_K  = int(os.environ.get("WARMER_PROBE_K", "3"))       # 每次空闲探测连发几次
+    LOG      = os.environ.get("WARMER_LOG", "/root/.cache/vllm/warmer.jsonl")
+    STATE    = os.environ.get("WARMER_STATE", "/tmp/.v4flash_warmer.json")
+    MODEL    = "deepseek-v4-flash"
+    WARM_AGE = 1800   # 状态文件丢了(sidecar 自己重启)而引擎已跑 >30min → 视为已热,不重复预热
+
+    def now_iso():
+        return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    def log(event, **kw):
+        rec = {"ts": now_iso(), "event": event, **kw}
+        print(f"{rec['ts']} [warmer] {event} " + " ".join(f"{k}={v}" for k, v in kw.items()), flush=True)
+        try:
+            os.makedirs(os.path.dirname(LOG), exist_ok=True)
+            with open(LOG, "a") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def load_state():
+        try:
+            with open(STATE) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def save_state(st):
+        tmp = STATE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.replace(tmp, STATE)
+
+    def metrics():
+        try:
+            body = urllib.request.urlopen(URL + "/metrics", timeout=10).read().decode()
+        except Exception:
+            return None
+        m = {"start": None, "running": 0.0, "waiting": 0.0, "success": 0.0}
+        for line in body.splitlines():
+            if line.startswith("process_start_time_seconds"):
+                m["start"] = float(line.split()[-1])
+            elif line.startswith("vllm:num_requests_running{"):
+                m["running"] = float(line.split()[-1])
+            elif line.startswith("vllm:num_requests_waiting{"):
+                m["waiting"] = float(line.split()[-1])
+            elif line.startswith("vllm:request_success_total{"):
+                m["success"] += float(line.split()[-1])
+        return m if m["start"] is not None else None
+
+    def chat(tag, content, max_tokens, thinking, extra=None, event="warmup"):
+        m = metrics() or {}
+        payload = {"model": MODEL, "messages": [{"role": "user", "content": content}],
+                   "max_tokens": max_tokens, "temperature": 0, "stream": False,
+                   "chat_template_kwargs": {"thinking": thinking}}
+        if extra:
+            payload.update(extra)
+        req = urllib.request.Request(URL + "/v1/chat/completions", data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json"})
+        t0 = time.time()
+        try:
+            r = json.load(urllib.request.urlopen(req, timeout=900))
+            wall = time.time() - t0
+            u = r.get("usage", {}); ct = u.get("completion_tokens") or 0
+            res = {"tag": tag, "ok": True, "tokens": ct, "prompt_tokens": u.get("prompt_tokens"),
+                   "wall": round(wall, 2), "tps": round(ct / wall, 1) if wall else None,
+                   "finish": r["choices"][0].get("finish_reason"), "running_before": m.get("running")}
+        except urllib.error.HTTPError as e:
+            res = {"tag": tag, "ok": False, "wall": round(time.time() - t0, 2),
+                   "err": f"HTTP {e.code}: {e.read()[:160].decode(errors='replace')}"}
+        except Exception as e:
+            res = {"tag": tag, "ok": False, "wall": round(time.time() - t0, 2), "err": repr(e)[:200]}
+        log(event, **res)
+        return res
+
+    def count300(tag, event="warmup"):
+        return chat(tag, "Count from 1 to 300, one number per line, no other text.", 1200, False, event=event)
+
+    def warmup():
+        curve = []
+        for i in range(1, COLD_N + 1):
+            r = count300(f"count300#{i}")
+            curve.append(r.get("tps"))
+        chat("thinking", "Explain, step by step, why tensor parallelism across two nodes needs an "
+                         "all-reduce per layer, and what limits its speed on a 200G link.", 600, True)
+        schema = {"type": "object", "properties": {"city": {"type": "string"}, "population": {"type": "integer"}},
+                  "required": ["city", "population"]}
+        chat("json_schema", "Give the city Beijing and its approximate population as JSON.", 120, False,
+             extra={"response_format": {"type": "json_schema", "json_schema": {"name": "city", "schema": schema}}})
+        filler = ("The quick brown fox jumps over the lazy dog while both tensor-parallel ranks exchange "
+                  "their partial sums over the RoCE fabric between the two DGX Spark nodes. ")
+        chat("long_prompt", f"run-{uuid.uuid4()}\n" + filler * 400 + "\nReply with exactly: OK", 16, False)
+        threads = [threading.Thread(target=chat, args=(f"burst#{i}", f"Count from {i*50+1} to {i*50+40}, one per line.", 200, False))
+                   for i in range(3)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        ok = [c for c in curve if c]
+        log("warmup_done", cold_curve=curve,
+            first_over_last=round(ok[0] / ok[-1], 2) if len(ok) >= 2 and ok[-1] else None)
+
+    def probe(idle_min):
+        tps = [count300(f"probe#{i}", event="probe").get("tps") for i in range(1, PROBE_K + 1)]
+        ok = [t for t in tps if t]
+        log("probe_done", idle_min=round(idle_min, 1), tps=tps,
+            first_over_last=round(ok[0] / ok[-1], 2) if len(ok) >= 2 and ok[-1] else None)
+
+    def main():
+        now = time.time()
+        st = load_state()
+        m = metrics()
+        if m is None:
+            return 0                                   # 引擎没起来 / 正在加载:下轮再看
+        if st.get("start") != m["start"]:
+            if not st and now - m["start"] > WARM_AGE:
+                log("engine_seen_warm", up_min=round((now - m["start"]) / 60))
+            else:
+                log("engine_new", start=m["start"], up_s=round(now - m["start"]))
+                warmup()
+            m2 = metrics() or m
+            save_state({"start": m["start"], "success": m2["success"], "last_change": time.time(), "last_probe": time.time()})
+            return 0
+        if IDLE_MIN <= 0:
+            return 0
+        if m["success"] != st.get("success") or (m["running"] + m["waiting"]) > 0:
+            st.update(success=m["success"], last_change=now)
+            save_state(st)
+            return 0
+        idle = now - st.get("last_change", now)
+        if idle >= IDLE_MIN * 60 and now - st.get("last_probe", 0) >= IDLE_MIN * 60:
+            probe(idle / 60)
+            m2 = metrics() or m
+            st.update(success=m2["success"], last_change=time.time(), last_probe=time.time())
+            save_state(st)
+        return 0
+
+    if __name__ == "__main__":
+        sys.exit(main())
   # issue #55 热修:流式 tool call 被 max_tokens 截断时,服务端谎报
   # finish_reason="tool_calls",并把**没写完的** arguments 冲给客户端;harness 把它
   # 当成功调用写进历史 → 下一轮整段 transcript 被自己 400 掉。

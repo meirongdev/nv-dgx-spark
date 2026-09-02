@@ -14,6 +14,10 @@ spec:
       app: v4flash-leader
   template:
     metadata:
+      annotations:
+        # 有了 warmer sidecar 之后,kubectl logs / exec 默认走哪个容器由它决定。
+        # 少了这条,make v4flash-logs 和 probe-verify 都会要求显式 -c。
+        kubectl.kubernetes.io/default-container: vllm
       labels:
         app: v4flash-leader
     spec:
@@ -59,6 +63,10 @@ spec:
               value: "1"
             - name: TRANSFORMERS_OFFLINE
               value: "1"
+            # JIT 缓存三兄弟 —— 2026-09-02 从线上收编。丢了它们每次 Pod 重启都要
+            # 重编译 kernel(正是 warmer sidecar 在替它遮掩的那部分开销)。
+            - name: TORCHINDUCTOR_CACHE_DIR
+              value: /root/.cache/torchinductor
           volumeMounts:
             - name: hf-cache
               mountPath: /root/.cache/huggingface
@@ -68,6 +76,12 @@ spec:
               mountPath: /root/.cache/flashinfer
             - name: triton-cache
               mountPath: /root/.triton
+            - name: tilelang-cache
+              mountPath: /root/.tilelang
+            - name: cuda-cache
+              mountPath: /root/.nv
+            - name: inductor-cache
+              mountPath: /root/.cache/torchinductor
             - name: scripts
               mountPath: /scripts
           startupProbe:               # 167GB 权重加载 + 初始化,给足 30min
@@ -94,6 +108,20 @@ spec:
             periodSeconds: 60
             timeoutSeconds: 20
             failureThreshold: 3
+        # warmer sidecar —— 2026-09-02 从线上收编。重启后自动预热(覆盖首个真实请求
+        # 本该承担的 ~20 个 Triton JIT 事件),并在空闲后探测 benchmarking-cn.md 里
+        # 那条「~30min 后 decode 掉 ~30%」的衰减(记录进 warmer.jsonl)。
+        # ⚠️ 它发的是**真实请求**,会计入 /metrics 的 request_success_total 与
+        #    spec_decode 接受率 —— 看"真实流量接受率"时要把 count300 剔除。
+        - name: warmer
+          image: docker.io/library/vllm-node-dsv4:latest
+          imagePullPolicy: Never
+          command: ["/bin/bash", "-c", "while true; do python3 /scripts/warmer.py || true; sleep 30; done"]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: vllm-cache          # warmer.jsonl 落在这里,跨 Pod 重启保留
+              mountPath: /root/.cache/vllm
       volumes:
         - name: hf-cache
           hostPath:
@@ -107,6 +135,18 @@ spec:
         - name: triton-cache
           hostPath:
             path: /home/admin/.triton
+        - name: tilelang-cache
+          hostPath:
+            path: /home/admin/.tilelang
+            type: DirectoryOrCreate
+        - name: cuda-cache
+          hostPath:
+            path: /home/admin/.nv
+            type: DirectoryOrCreate
+        - name: inductor-cache
+          hostPath:
+            path: /home/admin/.cache/torchinductor
+            type: DirectoryOrCreate
         - name: scripts
           configMap:
             name: v4flash-launch
