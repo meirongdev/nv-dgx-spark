@@ -1,0 +1,28 @@
+=== qwen38fn-2026-09-02 @ http://localhost:8000/v1 ===
+
+--- [qwen38fn-2026-09-02] DECODE by content (temp 0, warm) ---
+prompt       tok    sec    tok/s
+count300    1092  16.62     65.7
+mult12       900  13.91     64.7
+json60       800  12.23     65.4
+bst          600   9.67     62.1
+story        320   9.08     35.3
+  PEAK 65.7 (count300)   MEAN 58.6
+
+--- [qwen38fn-2026-09-02] CONCURRENCY (same prompt, 400 tok each) ---
+ conc   ok   agg tok/s  per-stream    wall
+    1    1        59.7        59.7    6.70
+    2    2       110.5        55.5    7.24
+    4    4       178.5        45.4    8.96
+    6    6       239.7        40.4   10.01
+
+--- [qwen38fn-2026-09-02] PREFILL (TTFT method, 1 output token) ---
+  target  prompt tok     sec     tok/s
+    8000        6466     2.0      3198
+   32000       25799     8.1      3192
+  100000       80577    19.4      4161
+
+===== SUMMARY [qwen38fn-2026-09-02] =====
+decode peak 65.7 | mean 58.6
+concurrency agg: c1=60  c2=111  c4=179  c6=240
+prefill: 8K=3198t/s  32K=3192t/s  100K=4161t/s
