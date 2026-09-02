@@ -8,8 +8,15 @@
 
 | 栈 | 端点 | served name | 状态 |
 |---|---|---|---|
-| V4-Flash(主) | `100.97.87.120:8000` | `deepseek-v4-flash` | 双节点,需两台都在 |
+| **Flash-Next(主)** | `100.97.87.120:8000` | `qwen38-flash-next` | 双节点 TP=2,需两台都在 |
+| V4-Flash(已停) | `100.97.87.120:8000` | `deepseek-v4-flash` | 2026-09-02 换下,权重/镜像保留可回滚 |
 | Qwen3.8-27B(降级) | `100.97.87.120:8888` | `qwen38-27b` | S1 单机 |
+| **Mac 本地 omlx** | `127.0.0.1:8000` | `mlx-community__*` 等 | 与 DGX **同端口号**,靠主机名区分 |
+
+> ⚠️ **端口 8000 在两处都用**:`100.97.87.120:8000` 是 DGX,`127.0.0.1:8000` 是 Mac
+> 本地的 omlx。2026-09-02 发现全局 qwen 配置曾处于
+> `security.auth.baseUrl=127.0.0.1:8000`(omlx)+ `model.name=deepseek-v4-flash`(DGX 模型)
+> 的自相矛盾状态 —— omlx 不提供那个模型,启动即 404。**改端点时先看主机名。**
 
 两者都提供 `/v1/chat/completions` **和** `/v1/responses`。
 
@@ -18,11 +25,28 @@
 ## codex CLI
 
 ```bash
-codex --profile dgx          # → :8000  deepseek-v4-flash
+codex --profile dgx          # → :8000  qwen38-flash-next(2026-09-02 起)
 codex --profile qwen38       # → :8888  qwen38-27b(降级栈)
-codex --profile dgx-direct   # 同 :8000(Bifrost 已退役,保留是习惯问题)
 codex                        # 默认不变:ChatGPT 免费额度 gpt-5.5
 ```
+
+> **2026-09-02 实测的 reasoning effort 枚举(本栈)** —— 与 V4-Flash、也与下面
+> qwen38-27b 那张表**都不同**,别跨栈照抄:
+>
+> | 值 | 结果 |
+> |---|---|
+> | `none` `low` `medium` `xhigh` | ✅ 200 |
+> | `minimal` `high` `max` | ❌ 400 |
+>
+> ⚠️ `high` 在本栈是**被拒**的(qwen38-27b 上却是 200)。同一道编码题的实测
+> (n=1,内容驱动方差大):`none` 5.3s/正文1101字符、`low` 14.5s/2081、
+> `medium` 18.6s/2574、`xhigh` 15.8s/**仅782**(72% 的 token 花在思考上)。
+> 故 `dgx.config.toml` 默认 `medium`。
+>
+> ⚠️ 窗口靠 `~/.codex/models.json` 的 catalog 条目(`context_window`),
+> **不是** `model_context_window`。新增 `qwen38-flash-next` 条目时写的是 262144
+> = 服务端 `--max-model-len`。(顺带发现旧的 `deepseek-v4-flash` catalog 写的是
+> 65536,而 config 写 1000000 —— 一直按 64K 在跑。)
 
 ⚠️ **codex 的 `/model` 不能跨 provider 切换**(只能在当前 provider 内换模型和档位),
 换后端必须**重启**并带 `--profile`。这点和 Qwen Code 不同。
@@ -93,11 +117,18 @@ base_instructions),生成方法见 `docs/qwen38-27b-fallback-cn.md` §6.3。
 ## Qwen Code CLI
 
 ```bash
-qwen                                        # 用当前启动默认
-./scripts/qwen-model-switch.sh qwen38       # 切启动默认 → :8888
-./scripts/qwen-model-switch.sh v4flash      # 切启动默认 → :8000
-./scripts/qwen-model-switch.sh status       # 看各文件现在指向哪
+qwen                                          # 用当前启动默认
+./scripts/qwen-model-switch.sh flashnext      # → DGX :8000 qwen38-flash-next  [主力]
+./scripts/qwen-model-switch.sh v4flash        # → DGX :8000 deepseek-v4-flash  [仅回滚]
+./scripts/qwen-model-switch.sh qwen38         # → DGX :8888 qwen38-27b         [降级]
+./scripts/qwen-model-switch.sh omlx           # → Mac 本地 Qwen3.6-35B-A3B
+./scripts/qwen-model-switch.sh gemma          # → Mac 本地 Gemma-4 26B
+./scripts/qwen-model-switch.sh status         # 看各文件现在指向哪
 ```
+
+`modelProviders` 里现在有 **qwen38-flash-next(DGX)/ Qwen3.6-35B(本地)/ Gemma-4(本地)**
+三个,所以**会话内 `/model` 可以在 DGX 和本地之间实时跳**,不用脚本、不用重启。
+脚本只管**启动默认**(那条路径不读 modelProviders)。
 
 **会话内切换不用脚本** —— 两个模型都在 `modelProviders` 里,`/model` 可实时跳
 provider(这点比 codex 强)。
@@ -137,8 +168,11 @@ CLI 会按模型名匹配并**预留输出 token**:`contextLimit = max(0, contex
 
 | 栈 | 关闭 thinking |
 |---|---|
+| **Flash-Next** | `chat_template_kwargs: {"enable_thinking": false}` |
 | V4-Flash | `chat_template_kwargs: {"thinking": false}` |
 | Qwen3.8-27B | `chat_template_kwargs: {"enable_thinking": false}` |
+
+⚠️ Flash-Next 实测 **88% 的输出 token 是 thinking**(483/548),关掉能显著提速。
 
 ⚠️ codex/qwen 内置的 `reasoning:false` **只对 `api.deepseek.com` 生效**,
 对自建 vLLM 无效——必须通过客户端的 extra-body 注入上面的 `chat_template_kwargs`。
@@ -147,6 +181,7 @@ CLI 会按模型名匹配并**预留输出 token**:`contextLimit = max(0, contex
 
 | 栈 | reasoning parser | CoT 字段 |
 |---|---|---|
+| **Flash-Next** | `qwen3` | **`.choices[0].message.reasoning`** |
 | V4-Flash | `deepseek_v4` | `.choices[0].message.reasoning_content` |
 | Qwen3.8-27B | `qwen3` | **`.choices[0].message.reasoning`** |
 

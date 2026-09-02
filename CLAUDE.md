@@ -343,8 +343,16 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
 - Docs in `docs/` are Chinese (`-cn.md`) with all commands, error strings and
   identifiers verbatim in English. This file stays English.
 - The V4-Flash image on both servers is `vllm-node-dsv4:latest` (jasl fork build,
-  driver 580.142 / CUDA 13.0); the fallback uses upstream
-  `vllm/vllm-openai:nightly-aarch64`.
+  driver 580.173.02 / CUDA 13.0 — verified on both nodes 2026-09-02); the fallback
+  uses upstream `vllm/vllm-openai:nightly-aarch64`.
+- Host baseline (both nodes, verified 2026-09-02): kernel `6.17.0-1031-nvidia`
+  (`1029` + `1014` kept as fallback), driver `580.173.02`, swap 0, clock cap
+  active. S2 was brought from `1029` to `1031` on 2026-09-02 — the narrow path
+  (`apt-get install linux-nvidia-hwe-24.04 linux-modules-nvidia-580-open-nvidia-hwe-24.04`,
+  14 `linux-*` packages, 0 removals) rather than a full `apt upgrade`, which would
+  have pulled **NCCL 2.30.7 → 2.31.2** from the CUDA repo onto one node only.
+  ⚠️ The nvidia branch-guard pin does **not** cover `libnccl*` or
+  `nvidia-container-toolkit` — always read every `Inst` line.
 - SSH strict host key checking is disabled (automation).
 - Ansible (the two monitoring exporter playbooks): always `uv run ansible` / `uv run ansible-playbook`;
   to add/remove hosts edit `HOSTS` in the Makefile then `make inventory`.

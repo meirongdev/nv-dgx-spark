@@ -16,6 +16,22 @@
 (保留 `6.17.0-1014-nvidia` 作回退)、driver `580.173.02`、`dkms status` 每内核
 一条且全 `arm64`、待升级/autoremove 均为 0、`dpkg --audit` 干净、swap 0。
 
+> **2026-09-02 更新 —— 「全 `arm64`」这条已不再成立,别照它报警。**
+> `6.17.0-1031-nvidia` 的 DKMS 记录在**两台上都注册成 `aarch64`**:
+> ```
+> nvidia/580.173.02, 6.17.0-1029-nvidia, arm64:   installed (Original modules exist)
+> nvidia/580.173.02, 6.17.0-1031-nvidia, aarch64: installed (Original modules exist)
+> ```
+> 这**不是**第 3 节那颗雷。那颗雷的特征是**同一个内核有两条记录**(`arm64` 和
+> `aarch64` 各一条)别名同一个模块路径;这里 1031 只有一条,
+> `/var/lib/dkms/nvidia/580.173.02/6.17.0-1031-nvidia/` 下也只有 `aarch64/` 一个目录,
+> 5 个模块齐全且都报 `580.173.02`。S1 自 09-02 起就跑在这个内核上,`modinfo -n nvidia`
+> 正常指向 `updates/dkms/`。
+>
+> **判据要改成「每内核恰好一条」,而不是「全部是 arm64」。**
+> 但第 3 节那条铁律不变:**你自己手敲 `dkms` 命令时仍然一律显式 `-a arm64`**
+> ——那条是为了避免手工操作静默空转,与包管理器自己注册成什么 arch 是两回事。
+
 ---
 
 ## 1. 栈在跑的时候绝不能 `apt upgrade`

@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# Switch the Qwen Code CLI boot default between the two DGX Spark stacks.
+# Switch the Qwen Code CLI boot default between the DGX stacks and the Mac-local
+# omlx server.
 #
-#   qwen-model-switch.sh v4flash   -> DeepSeek-V4-Flash, dual-node k3s, :8000
-#   qwen-model-switch.sh qwen38    -> Qwen3.8-27B-NVFP4, single-node S1, :8888
+#   qwen-model-switch.sh flashnext -> Qwen3.8-Flash-Next, dual-node k3s, :8000  [主力]
+#   qwen-model-switch.sh v4flash   -> DeepSeek-V4-Flash, dual-node k3s, :8000   [仅回滚用]
+#   qwen-model-switch.sh qwen38    -> Qwen3.8-27B-NVFP4, single-node S1, :8888  [降级栈]
+#   qwen-model-switch.sh omlx      -> Qwen3.6-35B-A3B, Mac 本地 omlx, :8000     [本地]
+#   qwen-model-switch.sh gemma     -> Gemma-4 26B QAT, Mac 本地 omlx, :8000     [本地]
 #   qwen-model-switch.sh status    -> show what each config file currently says
+#
+# ⚠️ 端口 8000 在两个地方都用:100.97.87.120:8000 是 DGX,127.0.0.1:8000 是 Mac
+#    本地的 omlx。**主机名才是区分点** —— 2026-09-02 发现全局配置曾处于
+#    `security.auth.baseUrl=127.0.0.1:8000`(omlx)+ `model.name=deepseek-v4-flash`
+#    (DGX 的模型)的自相矛盾状态,omlx 不提供那个模型,启动即 404。
 #
 # Why a script rather than "just edit settings.json": the CLI's boot path NEVER
 # consults `modelProviders` (those are reachable only from interactive /model),
@@ -30,9 +39,15 @@ REPO_ENV="$REPO/.qwen/.env"
 #   - Qwen3.8-27B: serves native 262144 (the YaRN-extended 1M was dropped
 #     2026-08-15 to avoid its short-context quality penalty). Advertising 1M
 #     here would let the CLI send prompts the server then rejects.
+#   - Qwen3.8-Flash-Next: 服务端 --max-model-len 262144(未开 YaRN)。名字以
+#     `qwen38` 开头,实测不命中 384k 预留,所以 262144 是安全的。
+#   - Mac 本地 omlx 的两个模型:omlx 自报 max_model_len 262144。
 case "${1:-}" in
+  flashnext) MODEL=qwen38-flash-next; URL=http://100.97.87.120:8000/v1; CTXWIN=262144 ;;
   v4flash) MODEL=deepseek-v4-flash; URL=http://100.97.87.120:8000/v1; CTXWIN=1000000 ;;
   qwen38)  MODEL=qwen38-27b;        URL=http://100.97.87.120:8888/v1; CTXWIN=262144  ;;
+  omlx)    MODEL=mlx-community__Qwen3.6-35B-A3B-nvfp4;        URL=http://127.0.0.1:8000/v1; CTXWIN=262144 ;;
+  gemma)   MODEL=mlx-community__gemma-4-26B-A4B-it-qat-nvfp4; URL=http://127.0.0.1:8000/v1; CTXWIN=262144 ;;
   status)
     for f in "$GLOBAL" "$REPO_SETTINGS"; do
       [ -f "$f" ] && python3 -c "
@@ -44,7 +59,7 @@ print('%-46s model=%-20s ctx=%-9s auth.baseUrl=%s' % ('$f'.replace('$HOME','~'),
     done
     [ -f "$REPO_ENV" ] && grep -E '^OPENAI_(MODEL|BASE_URL)=' "$REPO_ENV" | sed 's/^/  .env  /'
     exit 0 ;;
-  *) echo "usage: $(basename "$0") {v4flash|qwen38|status}" >&2; exit 1 ;;
+  *) echo "usage: $(basename "$0") {flashnext|v4flash|qwen38|omlx|gemma|status}" >&2; exit 1 ;;
 esac
 
 # Global settings: boot default. All four fields must agree.
@@ -86,4 +101,5 @@ fi
 
 echo
 echo "Boot default is now '$MODEL'. Restart any running qwen session to pick it up."
-echo "(In-session switching between the two needs no restart: use /model.)"
+echo "(In-session switching needs no restart: use /model — modelProviders 里有"
+echo " qwen38-flash-next / Qwen3.6-35B / Gemma-4 三个,DGX 和本地都能实时跳。)"
