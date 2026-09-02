@@ -27,6 +27,7 @@
 #   scripts/gb10-clock-cap.sh install [MHZ] # 装并启用 systemd 单元(重启后仍生效)
 #   scripts/gb10-clock-cap.sh uninstall     # 停用并删除单元 + 解锁
 # 环境变量:CAP_HOSTS / CAP_MHZ / CAP_SSH_USER / CAP_SSH_KEY / CAP_HEAD / CAP_PORT
+#           / CAP_MODEL(仅 verify;留空则从 head 的 /v1/models 自动取)
 # ============================================================
 set -uo pipefail
 
@@ -76,16 +77,24 @@ cmd_verify(){
 #!/bin/bash
 set +e
 PEER="${PEER:-192.168.200.102}"; PORT="${PORT:-8000}"
+# 负载用哪个模型**向 head 现问**,不写死。主力栈 2026-09-03 从 deepseek-v4-flash
+# 换成 qwen38-flash-next 时,写死的名字让 verify 变成"永远报引擎没在跑"——
+# 一道只会在换栈当天悄悄失效的判据。CAP_MODEL 可覆盖。
+MODEL="${CAP_MODEL:-$(curl -s -m 5 "http://localhost:$PORT/v1/models" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"][0]["id"])' 2>/dev/null)}"
+if [ -z "$MODEL" ]; then
+  echo "  !! head 的 :$PORT 上没有 /v1/models —— 引擎没在跑(或 CAP_PORT 不对)"; exit 1
+fi
+echo "  负载模型:$MODEL"
 nvidia-smi --query-gpu=clocks.current.sm --format=csv,noheader,nounits -lms 400 > /tmp/.cap_v1 2>/dev/null &
 P=$!
 ssh -o BatchMode=yes -o StrictHostKeyChecking=no "admin@$PEER" \
   'nohup nvidia-smi --query-gpu=clocks.current.sm --format=csv,noheader,nounits -lms 400 > /tmp/.cap_v2 2>/dev/null & echo $! > /tmp/.cap_v2.pid'
 python3 -c "
 import json
-print(json.dumps({'model':'deepseek-v4-flash','messages':[{'role':'user','content':'Explain tensor parallelism in distributed inference.'}],'max_tokens':300,'min_tokens':300,'temperature':0}))" > /tmp/.cap_pl.json
-curl -s -m 120 "http://localhost:$PORT/v1/chat/completions" -H 'Content-Type: application/json' -d @/tmp/.cap_pl.json \
-  | python3 -c 'import sys,json;print("  负载:生成",json.load(sys.stdin)["usage"]["completion_tokens"],"token")' 2>/dev/null \
-  || echo "  !! 生成失败(引擎没在跑?)"
+print(json.dumps({'model':'$MODEL','messages':[{'role':'user','content':'Explain tensor parallelism in distributed inference.'}],'max_tokens':300,'min_tokens':300,'temperature':0}))" > /tmp/.cap_pl.json
+resp=$(curl -s -m 120 "http://localhost:$PORT/v1/chat/completions" -H 'Content-Type: application/json' -d @/tmp/.cap_pl.json)
+echo "$resp" | python3 -c 'import sys,json;print("  负载:生成",json.load(sys.stdin)["usage"]["completion_tokens"],"token")' 2>/dev/null \
+  || { echo "  !! 生成失败(model=$MODEL):"; echo "$resp" | head -c 240; echo; }
 kill $P 2>/dev/null
 ssh -o BatchMode=yes -o StrictHostKeyChecking=no "admin@$PEER" 'kill $(cat /tmp/.cap_v2.pid) 2>/dev/null'
 scp -q -o BatchMode=yes -o StrictHostKeyChecking=no "admin@$PEER:/tmp/.cap_v2" /tmp/.cap_v2 2>/dev/null
