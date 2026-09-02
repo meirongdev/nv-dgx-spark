@@ -18,12 +18,18 @@ URL = os.environ.get("URL", "http://192.168.192.2:8889")
 MODEL = os.environ.get("MODEL", "deepseek-v4-flash-dspark")
 TAG = os.environ.get("TAG", "current")
 THINKING = os.environ.get("THINKING", "0") == "1"
+# ⚠️ 关闭 thinking 的 kwarg 名**逐栈不同**,照抄会静默失效(整段 CoT 照常生成,
+# 于是测到的是"带思考"的 tok/s,和基线不可比):
+#     DeepSeek-V4-Flash → "thinking"          (默认,保持 2026-08-05 基线不变)
+#     Qwen3.8-*         → "enable_thinking"
+# 2026-09-02 加此开关,以便用同一份 harness 跨栈做 content-matched 对照。
+THINK_KEY = os.environ.get("THINK_KEY", "thinking")
 
 
 def post(prompt, max_tokens, temp=0.0, timeout=600):
     body = {"model": MODEL, "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens, "temperature": temp,
-            "chat_template_kwargs": {"thinking": THINKING}}
+            "chat_template_kwargs": {THINK_KEY: THINKING}}
     req = urllib.request.Request(URL + "/chat/completions",
                                  data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
