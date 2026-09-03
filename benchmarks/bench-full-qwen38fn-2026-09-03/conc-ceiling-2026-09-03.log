@@ -1,0 +1,26 @@
+=== 并发补测:c6 → 闸门以上 (2026-09-03) ===
+栈: Qwen3.8-Flash-Next NVFP4, max_num_seqs=8, gmu 0.75, 时钟上限 2200MHz 生效
+方法: 同 bench_full.py 的 CONC_PROMPT / 400 tok / temp 0 / enable_thinking=false
+      warm-up 3 次 × 1092 tok,best-of-2,在 S1 上打 localhost:8000
+
+warm 1: 1092 tok in 17.0s = 64.2 tok/s
+warm 2: 1092 tok in 17.1s = 64.0 tok/s
+warm 3: 1092 tok in 17.1s = 63.8 tok/s
+
+ conc  ok  agg tok/s  per-stream   wall  slowest
+    1   1       60.7        60.7   6.59     6.59
+    6   6      252.4        42.3   9.51     9.51
+    8   8      304.2        38.6  10.52    10.52
+   10  10      220.7        33.7  18.12    18.12
+   12  12      251.0        32.6  19.13    19.12
+   16  16      294.9        28.4  21.70    21.70
+
+agg: c1=61  c6=252  c8=304  c10=221  c12=251  c16=295
+
+引擎日志(c16 期间,证实 max_num_seqs=8 是闸门而非显存):
+  Running: 8 reqs, Waiting: 8 reqs, GPU KV cache usage: 14.6%
+  Running: 8 reqs, Waiting: 0 reqs, GPU KV cache usage: 14.6%
+
+时钟上限复验(修好 clock-cap-verify 之后,带 300 token 真实负载):
+  head/rank0: max=2171 mean=2171 n=20
+  peer/rank1: max=2190 mean=2190 n=20
