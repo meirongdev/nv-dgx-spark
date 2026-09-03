@@ -234,7 +234,7 @@ flag 留着无害但没作用。
 > 这条其实早就记在本 repo 里了 —— 退役栈文档的"Qwen3 系列"gotcha 就写着
 > *reasoning parser `qwen3`(CoT 在 `.choices[0].message.reasoning`,答案在
 > `.content`)*。**Qwen3.8 沿用同一套。** 那份文档已随退役栈删除,结论现收在
-> [gotchas-cn.md](gotchas-cn.md#9-两套栈的-cot-字段名不同读错会以为-thinking-坏了) #9。
+> [gotchas-cn.md](gotchas-cn.md#9-跨栈标识写死后会静默失效cot-字段kwarg-名model-名) #9.1。
 
 `/v1/responses` 路径不受影响:CoT 走 `type:"reasoning"` 的输出项(codex 用的是这条)。
 

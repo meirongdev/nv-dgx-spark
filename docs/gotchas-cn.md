@@ -10,14 +10,14 @@
 | # | 症状/主题 | 影响面 |
 |---|---|---|
 | [1](#1-单-rank-重启会制造僵尸-tp-组) | 单 rank 重启 → 僵尸 TP 组,`/health` 骗人 | V4-Flash 运维 ⚠️ 最贵 |
-| [2](#2-两套栈互斥抢显存) | V4-Flash 和 qwen38 抢显存 → OOM 整机 | 切换模型 ⚠️ |
+| [2](#2-三套栈互斥抢显存) | 三套栈两两抢显存 → OOM 整机 | 切换模型 ⚠️ |
 | [3](#3-nccl-warn--gid-table-changed-是既有噪声) | `NCCL WARN ... GID table changed` 刷屏 | 读日志(无害) |
 | [4](#4-s1-上的-docker-build-被静默强制走-xray-代理) | 国内镜像源"很慢"(实为代理绕道,90 倍差距) | 构建镜像 |
 | [5](#5-上联-dhcp-不发-dns静态-dns-是承重的) | ModelScope/github 不通但 Tailscale 正常 | 网络 |
 | [6](#6-modelscope--hf-cache-的符号链接必须是相对路径) | 容器内 `HFValidationError` | 下载模型 |
 | [7](#7-ansible-220--docker---format-table-names) | `Syntax error in template` | 退役栈(Ansible) |
 | [8](#8-从中国大陆拉镜像和模型) | 外网 registry 被墙/极慢 | 所有下载 |
-| [9](#9-两套栈的-cot-字段名不同读错会以为-thinking-坏了) | thinking 开着却"没有输出" —— 其实是 CoT 字段名两栈不同 | 调 API |
+| [9](#9-跨栈标识写死后会静默失效cot-字段kwarg-名model-名) | 跨栈的标识写死 → 不报错,只是安静地测错/验错 **已发生 3 次** | 换主力栈 ⚠️ |
 
 ---
 
@@ -51,18 +51,30 @@
 
 ---
 
-## 2. 两套栈互斥(抢显存)
+## 2. 三套栈互斥(抢显存)
 
-V4-Flash 需要**两台各约 83GB**,Qwen3.8-27B 降级栈占 S1 约 91GB。
-**两者不能同时跑**,否则 OOM 整台机器——就是那种会连 tmux server 一起带走的故障。
+现在有三套栈,**两两互斥**——同一份 GPU 内存,而且两套 TP=2 的还共用 `:8000`:
+
+| 栈 | 节点实际占用(`free -g` 的 used,不是引擎预算) |
+|---|---|
+| Qwen3.8-Flash-Next(主力) | S1 **109** / S2 **105** GiB(2026-09-03 实测,共 121) |
+| DeepSeek-V4-Flash(回滚目标) | 两台各约 **104** GiB |
+| Qwen3.8-27B(单机降级) | S1 约 **91** GiB |
+
+⚠️ 别拿 `gpu_memory_utilization` 反推占用:Flash-Next 的 gmu 0.75 对应**引擎预算
+91.3 GiB**,而节点 used 是 109 GiB —— 差的那 18 GiB 是权重之外的常驻开销。
+判断还剩多少余量只看 `free -h` 的 available(当前 12/15 GiB)。
+
+同时跑会 OOM 整台机器——就是那种会连 tmux server 一起带走的故障。
 
 ```bash
-make qwen38-stop     # 必须先停
-make v4flash-run     # 再起
+make qwen38fn-stop   # 必须先停当前那套
+make v4flash-run     # 再起另一套
 ```
 
-反向同理。qwen38 容器**故意不设 `--restart`**,就是为了避免开机自启后和 k3s
-拉起的 V4-Flash 撞车。详见 `docs/qwen38-27b-fallback-cn.md` §5.4、§7。
+`make qwen38fn-run` 起栈前会**自检互斥**(`qwen38fn-preflight`),不再只靠文档
+提醒;另外两套仍靠人。qwen38 容器**故意不设 `--restart`**,就是为了避免开机自启
+后和 k3s 拉起的 TP=2 栈撞车。详见 `docs/qwen38-27b-fallback-cn.md` §5.4、§7。
 
 ---
 
@@ -164,7 +176,21 @@ DGX 服务器在中国大陆,多数国外 registry 要么被墙要么极慢。
 
 ---
 
-## 9. 两套栈的 CoT 字段名不同,读错会以为 thinking 坏了
+## 9. 跨栈标识写死后会静默失效(CoT 字段、kwarg 名、model 名)
+
+> **这是一类,不是一条。** 已经以三种不同面貌发生过三次,共同形状是:
+> 某处写死了「当前主力栈」的某个标识,换栈后它**不报错、不崩溃**,照常返回一个
+> 看起来完全正常的结果 —— 只是那个结果是错的。
+>
+> | 日期 | 写死的东西 | 表现 |
+> |---|---|---|
+> | 2026-08-15 | CoT 响应字段(下面 9.1) | 读到 `None`,与"thinking 没生效"同形 → 误判成 parser 坏了,**错误结论写进了文档** |
+> | 2026-09-02 | `bench_full.py` 的 kwarg 名(9.2) | 服务端照常 200,CoT 一个字没关 → 跨栈对照整个不成立(c96fcf3) |
+> | 2026-09-03 | `gb10-clock-cap.sh` 的 model 名(9.3) | 服务端 400 但 `curl` rc=0 → 拿**空载**采样打印"锁生效",时钟锁的唯一判据静默失效 24h |
+>
+> **换主力栈前后请逐行走 `docs/stack-switch-cn.md` 的触点清单。**
+
+### 9.1 CoT 响应字段:`reasoning_content` vs `reasoning`
 
 `/v1/chat/completions` 的响应里,思考内容(CoT)落在**哪个字段取决于 reasoning parser**:
 
@@ -190,6 +216,49 @@ DGX 服务器在中国大陆,多数国外 registry 要么被墙要么极慢。
 
 `/v1/responses` 路径两栈一致,CoT 走 `type:"reasoning"` 输出项,不受此坑影响。
 
-顺带:**开关 thinking 的 kwarg 名两栈也不同** —— V4-Flash 是
-`chat_template_kwargs:{"thinking":false}`,Qwen3.8 是
-`{"enable_thinking":false}`。照抄会静默失效。详见 `docs/clients-cn.md`。
+### 9.2 关 thinking 的 kwarg 名:`thinking` vs `enable_thinking`
+
+**开关 thinking 的 kwarg 名两栈也不同**,而且写错**不会报错** —— 服务端照常
+200,只是 CoT 一个字没关掉。2026-09-02 在 Flash-Next 上同一条 prompt 实测:
+
+| `chat_template_kwargs` | `reasoning_tokens` |
+|---|---|
+| `{}` | 41 |
+| `{"thinking": false}`(V4 的名字) | 40 ← **无效** |
+| `{"enable_thinking": false}` | **0** ← 生效 |
+
+后果:直接拿 harness 跑新栈,测到的是「带完整 CoT」的 tok/s,与已关 thinking 的
+基线根本不可比 —— 而且没有任何迹象提示你结果是错的。修法是把名字提成
+`THINK_KEY` 环境变量(c96fcf3),默认保持 `thinking` 以便旧基线可复现。
+
+### 9.3 判据工具里的 model 名 —— 最贵的一次
+
+`scripts/gb10-clock-cap.sh` 的 `verify` 要发一条真实生成才能采到负载期频率,
+它把 model 名写死成了 `deepseek-v4-flash`。2026-09-02 换栈后:
+
+1. 服务端返回 **400**(model 不存在)
+2. 但 `curl` 的退出码仍是 **0** —— 旧版据此认为生成成功
+3. 于是拿引擎**空载**时的两个采样点算出判据行并打印
+
+而**空载频率本来就会贴住上限**,读起来和锁真正生效时一模一样:
+
+```
+  head/rank0: max=2177 mean=2177 n=2      ← 空载,n=2,看起来完全正常
+  → 判据:负载期 mean/max 若明显低于 ~2400 且贴住你设的上限,锁生效。
+```
+
+CLAUDE.md 里写着「这是判断锁是否生效的**唯一**可靠手段」—— 那句话在这 24 小时
+里是假的。修法:model 名提成 `CAP_MODEL`;判据改成认「真的生成了 ≥50 token」
+而不是 `curl` 的退出码;没跑成就 `exit 3`,绝不打印可能被读成"通过"的数字。
+
+### 9.4 这一类的规则
+
+1. **栈标识一律提成环境变量**,默认值写当前主力栈,旁边注明"换栈时改这里"。
+2. **判据必须验证它真的跑了。** `curl` 退出码不算 —— 400 也是 rc=0。认真实产物:
+   生成了多少 token、采到多少个点。
+3. **没跑成就硬失败**,不要打印一个可能被读成"通过"的数字。
+4. **分不清"通过"和"根本没运行"的检查器,比没有检查器更糟。**
+   正面样板:`scripts/mem-watch.sh` 启动时逐个 `kubectl get deploy`,任一不存在
+   就 `exit 3` —— 宁可不启动,也不当一道静默失效的防线。
+
+详见 `docs/stack-switch-cn.md`(触点清单)和 `docs/clients-cn.md`(客户端侧)。

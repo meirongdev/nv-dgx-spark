@@ -13,13 +13,19 @@ Everything is driven through the `Makefile`. Detailed runbooks live in `docs/`
 
 | Stack | Nodes | Endpoint | Runtime | Status |
 |---|---|---|---|---|
-| **DeepSeek-V4-Flash-0731** | 2 (TP=2) | `:8000` `deepseek-v4-flash` | k3s | **primary** |
-| **Qwen3.8-27B-NVFP4** | 1 (S1) | `:8888` `qwen38-27b` | plain docker | **fallback** |
+| **Qwen3.8-Flash-Next NVFP4** | 2 (TP=2) | `:8000` `qwen38-flash-next` | k3s | **primary** (since 2026-09-02) |
+| **DeepSeek-V4-Flash-0731** | 2 (TP=2) | `:8000` `deepseek-v4-flash` | k3s | rollback target |
+| **Qwen3.8-27B-NVFP4** | 1 (S1) | `:8888` `qwen38-27b` | plain docker | single-node fallback |
 
-> ⚠️ **The primary and the fallback cannot run at the same time** — they want the
-> same GPU memory. `make qwen38-stop` before `make v4flash-run`, and vice versa.
+> ⚠️ **No two of these can run at the same time** — they want the same GPU
+> memory, and the two TP=2 stacks also share `:8000`. Stop one before starting
+> another.
 
-**Why a fallback exists:** V4-Flash is TP=2 and indivisible — its 167 GB of FP8
+> ⚠️ **Switching which stack is primary? Work `docs/stack-switch-cn.md`.**
+> "Which stack is current" is hardcoded in ~8 places, and every one of them
+> fails *silently*. Three wrong-number incidents have come from skipping it.
+
+**Why a single-node fallback exists:** both TP=2 stacks are indivisible — the
 weights don't fit one node, so when either machine dies the whole service dies.
 That happened on 2026-08-15. The fallback keeps a (slower, weaker) model serving
 on whichever node survives.
@@ -33,11 +39,14 @@ on whichever node survives.
 
 ```bash
 # primary stack (needs both nodes; kubectl uses ~/.kube/dgx-spark.yaml)
-make v4flash-run          # scale both ranks to 1, loads ~5 min
-make v4flash-status       # pods + /v1/models
-make v4flash-test         # coding smoke test + tok/s
+make qwen38fn-run         # preflight + scale both ranks to 1, loads 8-11 min
+make qwen38fn-status      # pods + /v1/models
+make qwen38fn-test        # smoke test + tool-call parser check
 
-# fallback stack (S1 alone)
+# rollback to V4-Flash (~5 min)
+make qwen38fn-rollback && make v4flash-run
+
+# single-node fallback (S1 alone)
 make qwen38-run           # loads ~200 s
 make qwen38-status
 make qwen38-test          # full benchmark, not just a smoke test
@@ -49,12 +58,15 @@ qwen                      # ./scripts/qwen-model-switch.sh flips the boot defaul
 
 Two rules worth knowing before you touch anything:
 
-1. **Never restart a single rank of V4-Flash.** The survivor hangs inside the
+1. **Never restart a single rank of a TP=2 stack.** The survivor hangs inside the
    collective *without exiting* — `/health` and `/v1/models` keep returning 200
-   while every real generation times out. Use `make v4flash-restart` (both ranks).
+   while every real generation times out. Use `make <stack>-restart` (both ranks).
 2. **Don't quote a single tok/s number.** Speculative-decoding throughput is
-   content-driven: the same config measures 31 tok/s on prose and 84 on
-   count-to-300. See `docs/benchmarking-cn.md`.
+   content-driven: on V4-Flash the same config measures 31 tok/s on prose and 84
+   on count-to-300. See `docs/benchmarking-cn.md`.
+3. **Assume any stack-specific default in a tool is stale until you check.**
+   Model names, CoT field names and thinking kwargs all differ per stack and all
+   fail silently. `docs/gotchas-cn.md` #9.
 
 ---
 
@@ -67,9 +79,11 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 
 | Doc | What's in it |
 |---|---|
-| [`docs/deepseek-v4-flash-cn.md`](docs/deepseek-v4-flash-cn.md) | Primary stack: engine build/prep, one-time setup |
+| ⚠️ *(no runbook yet)* | **Primary stack (Flash-Next) has no `docs/` runbook.** Its reasoning lives in `config/qwen38-flash-next.yaml` comments + `k8s/qwen38fn/`. Known gap |
+| **[`docs/stack-switch-cn.md`](docs/stack-switch-cn.md)** | **Primary-stack switch checklist — the ~8 places that hardcode "which stack is current", each of which fails silently. Read before and after any switch** |
+| [`docs/deepseek-v4-flash-cn.md`](docs/deepseek-v4-flash-cn.md) | Rollback stack (V4-Flash): engine build/prep, one-time setup |
 | [`docs/dspark-upgrade-cn.md`](docs/dspark-upgrade-cn.md) | DSpark speculative decoding: version landscape, tuning, gotchas |
-| [`docs/qwen38-27b-fallback-cn.md`](docs/qwen38-27b-fallback-cn.md) | Fallback stack: S2 post-mortem, deploy from scratch, recovery procedure |
+| [`docs/qwen38-27b-fallback-cn.md`](docs/qwen38-27b-fallback-cn.md) | Single-node fallback: S2 post-mortem, deploy from scratch, recovery procedure |
 | [`docs/host-maintenance-cn.md`](docs/host-maintenance-cn.md) | Host OS: apt / NVIDIA driver / kernel / DKMS — **read before any `apt upgrade`** |
 | [`docs/gb10-tuning-cn.md`](docs/gb10-tuning-cn.md) | GB10 host-level tuning: the GPU clock cap A/B (adopted), the knobs that don't exist, and what not to touch |
 | [`docs/china-network-mirrors-cn.md`](docs/china-network-mirrors-cn.md) | daocloud / ModelScope / Tsinghua mirrors from mainland China |
@@ -79,7 +93,7 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 
 | Doc | What's in it |
 |---|---|
-| [`docs/gotchas-cn.md`](docs/gotchas-cn.md) | **8 traps, each paid for in downtime.** Scan the headings before debugging anything |
+| [`docs/gotchas-cn.md`](docs/gotchas-cn.md) | **9 traps, each paid for in downtime.** Scan the headings before debugging anything |
 | [`docs/benchmarking-cn.md`](docs/benchmarking-cn.md) | How to measure throughput correctly + the current baseline |
 | [`docs/clients-cn.md`](docs/clients-cn.md) | codex / Qwen Code setup, reasoning-effort semantics, rebuilding on a new machine |
 | [`docs/auto-mitigation-cn.md`](docs/auto-mitigation-cn.md) | Crash-hardening spec: cgroup memory limit (this repo) + Prometheus alerting rules (homelab) |
