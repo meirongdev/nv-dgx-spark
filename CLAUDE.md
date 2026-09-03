@@ -32,6 +32,10 @@ Three separate wrong-number/wrong-verdict incidents have come from skipping this
   **35–66 tok/s depending on content** (mean 58.6, real code 62.1); concurrency
   peaks at **~304 tok/s aggregate at c8** (`max_num_seqs=8` is the binding limit,
   not KV). See `docs/benchmarking-cn.md` before quoting any number.
+  ⚠️ **MTP `k` is not a free knob here:** k=4 measured **+12.2%** over the live k=3
+  (adoption undecided), but **k=5–8 cannot start at all** — an upstream QSA assert
+  demands `capacity | block_size 1616`, and block_size is engine-chosen, not tunable.
+  Next feasible segment jumps to 9–12. `benchmarks/mtp-k-sweep-2026-09-03/`.
 - **V4-Flash** (rollback target): 284B/13B-active, official FP8, 1M ctx, **DSpark**
   speculative decoding, jasl fork image. Mean 67.2 tok/s but **2.7× spread across
   content** (31–84) because DSpark acceptance is content-driven; Flash-Next beats
@@ -410,6 +414,10 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
 - `benchmarks/bench-full-qwen38fn-2026-09-03/` — **current** baseline (Flash-Next
   + the V4 comparison). `benchmarks/bench-full-2026-08-05/` — the harness itself
   and the V4 baseline.
+- `benchmarks/mtp-k-sweep-2026-09-03/` — MTP `k` sweep: why `tok/step` (counted) is
+  the load-bearing number when a knob needs an engine restart, and the QSA assert
+  that caps `k` at 4. Its harness (`mtp_arm.py`) is the reusable pattern for any
+  **restart-required** knob, where interleaved pairing is physically impossible.
 
 **Monitoring**
 - `playbooks/node-exporter-deploy.yml`, `playbooks/smartctl-exporter-deploy.yml`.

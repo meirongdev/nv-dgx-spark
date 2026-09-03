@@ -86,6 +86,16 @@ env:
 # 4. 不设 --block-size(V4 用的是 256)
 #    blazux 提到该模型的 prefix caching 有 block-size 相关修复,用默认值。
 #
+# 5. MTP num_speculative_tokens = 3(沿用迁移时的值)
+#    2026-09-03 扫过(benchmarks/mtp-k-sweep-2026-09-03/):k=4 比 k=3 快 **+12.2%**
+#    (真实代码 60.2 → 67.1),**尚未采纳** —— 抬它要两个 rank 同时重启。
+#    ⚠️ **k 不是连续旋钮:k=5~8 根本起不来**,权重装完后硬崩:
+#      AssertionError: QSA ring capacity 12 must divide the attention block size 1616
+#    capacity 由 checkpoint 的 indexer_compress_ratio(4) 与 k 向上取整得出,而
+#    attention block_size **1616 是引擎自己定的**(为满足 attention page ≥ mamba
+#    page;与第 4 条同源,不是可调参数)。可行域因此是断的:k=1~4 与 9~12 可行,
+#    5~8 与 13~16 全部 BLOCKED。**在这个镜像上调 k,最多只能调到 4。**
+#
 # 另外三条与 V4 的差异,不是"收紧"而是硬性:
 #   - **删掉 --kv-cache-dtype fp8** —— 本 checkpoint 不支持,auto → bf16。
 #   - 官方 recipe 的 --max-num-seqs 256 是给每卡 190 GiB 的 GB300 写的;两份
