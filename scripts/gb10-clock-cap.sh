@@ -26,7 +26,8 @@
 #   scripts/gb10-clock-cap.sh verify        # 发真实生成,采样两节点负载期频率 ← 真正的判据
 #   scripts/gb10-clock-cap.sh install [MHZ] # 装并启用 systemd 单元(重启后仍生效)
 #   scripts/gb10-clock-cap.sh uninstall     # 停用并删除单元 + 解锁
-# 环境变量:CAP_HOSTS / CAP_MHZ / CAP_SSH_USER / CAP_SSH_KEY / CAP_HEAD / CAP_PORT
+# 环境变量:CAP_HOSTS / CAP_MHZ / CAP_SSH_USER / CAP_SSH_KEY / CAP_HEAD / CAP_PORT / CAP_MODEL
+#   ⚠️ CAP_MODEL 必须跟随当前主力栈 —— 写错会让 verify 退化成空载采样(见下)。
 # ============================================================
 set -uo pipefail
 
@@ -36,6 +37,10 @@ PORT="${CAP_PORT:-8000}"
 SSH_USER="${CAP_SSH_USER:-admin}"
 SSH_KEY="${CAP_SSH_KEY:-$HOME/.ssh/vgio}"
 MHZ="${CAP_MHZ:-2200}"
+# ⚠️ 换主力栈时**改这一个变量**。2026-09-02 切到 qwen38-flash-next 后这里仍写着
+#    deepseek-v4-flash,导致 verify 的生成 404 —— 而旧版脚本照样打印判据行,
+#    读起来像"通过"。锁的唯一判据因此静默失效过一次。
+MODEL="${CAP_MODEL:-qwen38-flash-next}"
 UNIT=gb10-clock-cap.service
 
 sshx(){ ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 "$SSH_USER@$1" "${@:2}"; }
@@ -75,20 +80,40 @@ cmd_verify(){
   cat > /tmp/.gb10_cap_verify.local <<'SH'
 #!/bin/bash
 set +e
-PEER="${PEER:-192.168.200.102}"; PORT="${PORT:-8000}"
+PEER="${PEER:-192.168.200.102}"; PORT="${PORT:-8000}"; MODEL="${MODEL:-qwen38-flash-next}"
 nvidia-smi --query-gpu=clocks.current.sm --format=csv,noheader,nounits -lms 400 > /tmp/.cap_v1 2>/dev/null &
 P=$!
 ssh -o BatchMode=yes -o StrictHostKeyChecking=no "admin@$PEER" \
   'nohup nvidia-smi --query-gpu=clocks.current.sm --format=csv,noheader,nounits -lms 400 > /tmp/.cap_v2 2>/dev/null & echo $! > /tmp/.cap_v2.pid'
-python3 -c "
+python3 - <<PY_PL > /tmp/.cap_pl.json || { echo "  !! payload 构造失败"; exit 3; }
+import json, os
+print(json.dumps({'model': "$MODEL",
+                  'messages': [{'role': 'user',
+                                'content': 'Explain tensor parallelism in distributed inference.'}],
+                  'max_tokens': 300, 'min_tokens': 300, 'temperature': 0}))
+PY_PL
+curl -s -m 120 "http://localhost:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
+  -d @/tmp/.cap_pl.json > /tmp/.cap_resp.json
+# 判据只认"真的生成了 token"。curl 的退出码不行 —— model 名写错时服务端返回
+# 400 而 curl 照样 rc=0,旧版就是这样把空载采样打印成了"通过"。
+GEN_TOK=$(python3 -c "
 import json
-print(json.dumps({'model':'deepseek-v4-flash','messages':[{'role':'user','content':'Explain tensor parallelism in distributed inference.'}],'max_tokens':300,'min_tokens':300,'temperature':0}))" > /tmp/.cap_pl.json
-curl -s -m 120 "http://localhost:$PORT/v1/chat/completions" -H 'Content-Type: application/json' -d @/tmp/.cap_pl.json \
-  | python3 -c 'import sys,json;print("  负载:生成",json.load(sys.stdin)["usage"]["completion_tokens"],"token")' 2>/dev/null \
-  || echo "  !! 生成失败(引擎没在跑?)"
+try:
+    print(json.load(open('/tmp/.cap_resp.json'))['usage']['completion_tokens'])
+except Exception:
+    print(0)")
+echo "  负载:生成 $GEN_TOK token"
 kill $P 2>/dev/null
 ssh -o BatchMode=yes -o StrictHostKeyChecking=no "admin@$PEER" 'kill $(cat /tmp/.cap_v2.pid) 2>/dev/null'
 scp -q -o BatchMode=yes -o StrictHostKeyChecking=no "admin@$PEER:/tmp/.cap_v2" /tmp/.cap_v2 2>/dev/null
+# ⚠️ 没有负载 = 没有判据。空载采样看起来完全正常(会贴住上限),所以这里必须
+# 硬失败,而不是打印一行读起来像"通过"的数字。
+if [ "${GEN_TOK:-0}" -lt 50 ] || ! grep -q . /tmp/.cap_v1 2>/dev/null; then
+  echo "  !! 生成失败($GEN_TOK token)—— 引擎没在跑,或 CAP_MODEL($MODEL) 与线上 served-model-name 不符。"
+  head -c 200 /tmp/.cap_resp.json 2>/dev/null; echo
+  echo "  !! 本次采样是空载的,**不能作为锁生效的判据**。先修好再测。"
+  exit 3
+fi
 python3 - <<'PY'
 for tag,f in (("head/rank0","/tmp/.cap_v1"),("peer/rank1","/tmp/.cap_v2")):
     try: v=[int(x) for x in open(f).read().split() if x.strip().isdigit()]
@@ -97,9 +122,15 @@ for tag,f in (("head/rank0","/tmp/.cap_v1"),("peer/rank1","/tmp/.cap_v2")):
 PY
 SH
   scp -q -i "$SSH_KEY" -o StrictHostKeyChecking=no /tmp/.gb10_cap_verify.local "$SSH_USER@$HEAD:$script"
-  sshx "$HEAD" "PORT=$PORT bash $script"
-  echo "→ 判据:负载期 mean/max 若明显低于 ~2400 且贴住你设的上限,锁生效。"
-  echo "  (GB10 按离散档位吸附,设 2200 实测约落在 2177-2190。)"
+  # ⚠️ 判据行只在远端**真的采到负载期样本**时才打印。远端失败(exit 3)时若照常
+  # 打印,读者就会把上面那两行空载数字当成结论 —— 那正是本脚本 2026-09-02 犯的错。
+  if sshx "$HEAD" "PORT=$PORT MODEL=$MODEL bash $script"; then
+    echo "→ 判据:负载期 mean/max 若明显低于 ~2400 且贴住你设的上限,锁生效。"
+    echo "  (GB10 按离散档位吸附,设 2200 实测约落在 2177-2190。)"
+  else
+    echo "→ ❌ 本次 verify **没有结论**(见上)。锁是否生效仍然未知。"
+    return 3
+  fi
 }
 
 cmd_install(){
