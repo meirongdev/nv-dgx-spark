@@ -2,7 +2,8 @@
 # Switch the Qwen Code CLI boot default between the DGX stacks and the Mac-local
 # omlx server.
 #
-#   qwen-model-switch.sh flashnext -> Qwen3.8-Flash-Next, dual-node k3s, :8000  [主力]
+#   qwen-model-switch.sh sglang    -> Qwen3.8-27B-Uncensored, SGLang 单节点, :8888 [主力]
+#   qwen-model-switch.sh flashnext -> Qwen3.8-Flash-Next, dual-node k3s, :8000  [回滚]
 #   qwen-model-switch.sh v4flash   -> DeepSeek-V4-Flash, dual-node k3s, :8000   [仅回滚用]
 #   qwen-model-switch.sh qwen38    -> Qwen3.8-27B-NVFP4, single-node S1, :8888  [降级栈]
 #   qwen-model-switch.sh omlx      -> Qwen3.6-35B-A3B, Mac 本地 omlx, :8000     [本地]
@@ -41,8 +42,13 @@ REPO_ENV="$REPO/.qwen/.env"
 #     here would let the CLI send prompts the server then rejects.
 #   - Qwen3.8-Flash-Next: 服务端 --max-model-len 262144(未开 YaRN)。名字以
 #     `qwen38` 开头,实测不命中 384k 预留,所以 262144 是安全的。
+#   - Qwen3.8-27B-Uncensored (SGLang): 服务端 context-length 262144。
+#     ⚠️ 名字是 `qwen3.8-27b-sglang` —— **带点**,与上面两个 `qwen38-*` 不同形,
+#     所以「不命中 384k 预留」这条不能照搬。2026-09-19 切换后**实测发过真实请求
+#     验证**(不是只看配置写没写对):见 docs/clients-cn.md。
 #   - Mac 本地 omlx 的两个模型:omlx 自报 max_model_len 262144。
 case "${1:-}" in
+  sglang)  MODEL=qwen3.8-27b-sglang; URL=http://100.97.87.120:8888/v1; CTXWIN=262144 ;;
   flashnext) MODEL=qwen38-flash-next; URL=http://100.97.87.120:8000/v1; CTXWIN=262144 ;;
   v4flash) MODEL=deepseek-v4-flash; URL=http://100.97.87.120:8000/v1; CTXWIN=1000000 ;;
   qwen38)  MODEL=qwen38-27b;        URL=http://100.97.87.120:8888/v1; CTXWIN=262144  ;;
@@ -59,7 +65,7 @@ print('%-46s model=%-20s ctx=%-9s auth.baseUrl=%s' % ('$f'.replace('$HOME','~'),
     done
     [ -f "$REPO_ENV" ] && grep -E '^OPENAI_(MODEL|BASE_URL)=' "$REPO_ENV" | sed 's/^/  .env  /'
     exit 0 ;;
-  *) echo "usage: $(basename "$0") {flashnext|v4flash|qwen38|omlx|gemma|status}" >&2; exit 1 ;;
+  *) echo "usage: $(basename "$0") {sglang|flashnext|v4flash|qwen38|omlx|gemma|status}" >&2; exit 1 ;;
 esac
 
 # Global settings: boot default. All four fields must agree.

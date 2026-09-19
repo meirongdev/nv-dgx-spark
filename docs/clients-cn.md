@@ -8,10 +8,15 @@
 
 | 栈 | 端点 | served name | 状态 |
 |---|---|---|---|
-| **Flash-Next(主)** | `100.97.87.120:8000` | `qwen38-flash-next` | 双节点 TP=2,需两台都在 |
-| V4-Flash(已停) | `100.97.87.120:8000` | `deepseek-v4-flash` | 2026-09-02 换下,权重/镜像保留可回滚 |
-| Qwen3.8-27B(降级) | `100.97.87.120:8888` | `qwen38-27b` | S1 单机 |
+| **27B-Uncensored(主)** | `100.97.87.120:8888` | `qwen3.8-27b-sglang` | **SGLang,S1 单机**;2026-09-19 起 |
+| Flash-Next(回滚) | `100.97.87.120:8000` | `qwen38-flash-next` | 双节点 TP=2;**单流代码最快 62.1** |
+| GLM-5.3-Flash EXL3(回滚) | `100.97.87.120:8888` | `GLM-5.3-Flash-EXL3` | 双节点;850K 上下文 |
+| V4-Flash(已停) | `100.97.87.120:8000` | `deepseek-v4-flash` | 权重/镜像保留可回滚 |
+| Qwen3.8-27B 原版(降级) | `100.97.87.120:8888` | `qwen38-27b` | S1 单机,无投机,24.9 tok/s |
 | **Mac 本地 omlx** | `127.0.0.1:8000` | `mlx-community__*` 等 | 与 DGX **同端口号**,靠主机名区分 |
+
+⚠️ **`:8888` 现在有三个栈共用**(27B-Uncensored / GLM / 27B 原版),`:8000` 两个。
+端口已经区分不了后端 —— **只能看 served name**。
 
 > ⚠️ **端口 8000 在两处都用**:`100.97.87.120:8000` 是 DGX,`127.0.0.1:8000` 是 Mac
 > 本地的 omlx。2026-09-02 发现全局 qwen 配置曾处于
@@ -25,10 +30,27 @@
 ## codex CLI
 
 ```bash
-codex --profile dgx          # → :8000  qwen38-flash-next(2026-09-02 起)
-codex --profile qwen38       # → :8888  qwen38-27b(降级栈)
+codex --profile dgx          # → :8888  qwen3.8-27b-sglang(2026-09-19 起,主力)
+codex --profile qwen38       # → :8888  qwen38-27b(原版降级栈)
 codex                        # 默认不变:ChatGPT 免费额度 gpt-5.5
 ```
+
+> **2026-09-19 实测 effort 枚举(27B-Uncensored / SGLang)** —— 与 Flash-Next
+> **相同**,但仍是实测,不是照抄(这几个栈的枚举互不相同过):
+>
+> | 值 | 结果 |
+> |---|---|
+> | `none` `low` `medium` `xhigh` | ✅ 200 |
+> | `minimal` `high` `max` | ❌ 400 |
+>
+> 服务端原话:`Supported types are xhigh (default), medium, and low`。
+> 同一道编码题(LRU cache + 三个单测,n=1):
+> `none` 9.7s/正文1767字符、`low` 19.2s/2295、`medium` 24.5s/**2513**、
+> `xhigh` 35.3s/1581(**67% 预算花在思考,正文最短**)。故默认 `medium`。
+>
+> ⚠️ **本栈 catalog 的 slug 是 `qwen3.8-27b-sglang`(带点)**,与 `qwen38-*`
+> 不同形。Qwen Code 的 384k 输出预留是按模型名匹配的,**2026-09-19 实测本名
+> 不命中**(真发请求验过,不是只看配置)—— 见下面「Qwen Code」一节。
 
 > **2026-09-02 实测的 reasoning effort 枚举(本栈)** —— 与 V4-Flash、也与下面
 > qwen38-27b 那张表**都不同**,别跨栈照抄:
@@ -118,7 +140,8 @@ base_instructions),生成方法见 `docs/qwen38-27b-fallback-cn.md` §6.3。
 
 ```bash
 qwen                                          # 用当前启动默认
-./scripts/qwen-model-switch.sh flashnext      # → DGX :8000 qwen38-flash-next  [主力]
+./scripts/qwen-model-switch.sh sglang         # → DGX :8888 qwen3.8-27b-sglang [主力]
+./scripts/qwen-model-switch.sh flashnext      # → DGX :8000 qwen38-flash-next  [回滚]
 ./scripts/qwen-model-switch.sh v4flash        # → DGX :8000 deepseek-v4-flash  [仅回滚]
 ./scripts/qwen-model-switch.sh qwen38         # → DGX :8888 qwen38-27b         [降级]
 ./scripts/qwen-model-switch.sh omlx           # → Mac 本地 Qwen3.6-35B-A3B
@@ -161,6 +184,12 @@ CLI 会按模型名匹配并**预留输出 token**:`contextLimit = max(0, contex
 写死 1000000 然后切到 qwen38 → CLI 会发出服务端拒收的超长请求;
 写死 262144 然后切回 V4-Flash → 触发 hard-limit-0,**全部请求失败**。
 `scripts/qwen-model-switch.sh` 会把这个字段和模型一起翻转(全局 + repo 两处)。
+
+> ⚠️ **2026-09-19:新主力的 served name 是 `qwen3.8-27b-sglang` —— 带点。**
+> 384k 输出预留是按模型名匹配的,已知 `deepseek-v4*` 命中、`qwen38-*` 不命中,
+> 而带点的这个属于**未知形状**。切换后**实际跑了一次 `qwen -p` 并确认引擎侧
+> 收到请求、CLI 正常回话**(没有 "hard limit: 0"),所以 262144 是安全的。
+> 加新栈时照此办理:**光看配置写对了不算验证。**
 
 ### thinking 开关
 

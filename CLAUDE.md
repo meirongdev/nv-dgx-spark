@@ -108,10 +108,17 @@ idle at 116 GiB. k3s is running with all four k3s deployments at 0 replicas, so
 V4-Flash only (`benchmarks/aider-polyglot-deepseek-v4-flash-2026-08-01/`, 82.4%).
 Flash-Next, GLM and this stack are all unmeasured.
 
-🔧 **Clients have NOT been switched** — codex/qwen still point at `:8000`
-`qwen38-flash-next`, which is down. The new served name is `qwen3.8-27b-sglang`
-on `:8888`. `docs/stack-switch-cn.md` layer 3 is open; so is `CAP_MODEL` in
-`scripts/gb10-clock-cap.sh` (still set to GLM's name and kwargs).
+✅ **Clients are switched and verified** (stack-switch layer 3 closed).
+`codex --profile dgx` and `qwen` both point at `:8888` `qwen3.8-27b-sglang`.
+Verified by **actually sending requests**, not just by reading the config:
+qwen replied and the engine logged the hits (no `hard limit: 0` — the dotted
+served name does *not* trip Qwen Code's 384k output reservation, which was the
+open question); for codex the CLI's own `--version` hangs (pre-existing, it
+never reads the profile), so the profile+catalog were parsed and the exact
+request codex would send was replayed against `/v1/responses` → 200.
+
+🔧 **Still open:** `CAP_MODEL`/port/kwargs in `scripts/gb10-clock-cap.sh` still
+point at GLM.
 
 ### Previous state (earlier on 2026-09-19) — GLM-5.3-Flash EXL3
 
@@ -476,9 +483,9 @@ All stacks are **unauthenticated** vLLM and serve `/v1/chat/completions` **and**
 **`docs/clients-cn.md`**.
 
 ```bash
-codex --profile dgx        # → :8000 qwen38-flash-next  (primary, since 2026-09-02)
-codex --profile qwen38     # → :8888 qwen38-27b        (single-node fallback)
-qwen                       # boot default; ./scripts/qwen-model-switch.sh to flip
+codex --profile dgx        # → :8888 qwen3.8-27b-sglang  (primary, since 2026-09-19)
+codex --profile qwen38     # → :8888 qwen38-27b          (stock 27B, no speculator)
+qwen                       # boot default; ./scripts/qwen-model-switch.sh sglang to flip
 ```
 
 ⚠️ Thinking kwargs **and** the CoT response field differ per stack
