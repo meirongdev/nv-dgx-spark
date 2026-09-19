@@ -6,12 +6,24 @@
 两套服务都是**无鉴权**的 vLLM;未设 `--api-key` 时 vLLM 接受任意 key
 (但客户端仍然要求能解析到一个非空值,所以到处用 `dummy`)。
 
-| 栈 | 端点 | served name | 状态 |
-|---|---|---|---|
-| **Flash-Next(主)** | `100.97.87.120:8000` | `qwen38-flash-next` | 双节点 TP=2,需两台都在 |
-| V4-Flash(已停) | `100.97.87.120:8000` | `deepseek-v4-flash` | 2026-09-02 换下,权重/镜像保留可回滚 |
-| Qwen3.8-27B(降级) | `100.97.87.120:8888` | `qwen38-27b` | S1 单机 |
-| **Mac 本地 omlx** | `127.0.0.1:8000` | `mlx-community__*` 等 | 与 DGX **同端口号**,靠主机名区分 |
+<!-- BEGIN generated:clients -->
+| 栈 | 端点 | served name | 关思考的 kwarg | CoT 字段 | ctxWindow |
+|---|---|---|---|---|---|
+| **qwen38un(主)** | `100.97.87.120:8888` | `qwen3.8-27b-sglang` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| gemma | `127.0.0.1:8000` | `mlx-community__gemma-4-26B-A4B-it-qat-nvfp4` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| glm53 | `100.97.87.120:8888` | `GLM-5.3-Flash-EXL3` | `{"reasoning_effort":"low"}` ⚠️ **关不掉**,这是最低档 | `reasoning` | 850000 |
+| omlx | `127.0.0.1:8000` | `mlx-community__Qwen3.6-35B-A3B-nvfp4` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| qwen38 | `100.97.87.120:8888` | `qwen38-27b` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| qwen38fn | `100.97.87.120:8000` | `qwen38-flash-next` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| v4flash | `100.97.87.120:8000` | `deepseek-v4-flash` | `{"thinking": false}` | `reasoning_content` | 1000000 |
+
+> ⚠️ **关思考的 kwarg 和 CoT 字段逐栈都不同,而且写错都是静默的**(gotcha #9)。
+> 上表由 `make stack-table` 从 `stacks/*/stack.env` 生成 —— 不要手改这里,改注册表。
+<!-- END generated:clients -->
+
+⚠️ **端口已经区分不了后端** —— `:8888` 有三个栈共用,`:8000` 两个。
+**只能看 served name。** `make info STACK=<id>` 打印某个栈的完整身份,
+`make stacks` 打印全表。
 
 > ⚠️ **端口 8000 在两处都用**:`100.97.87.120:8000` 是 DGX,`127.0.0.1:8000` 是 Mac
 > 本地的 omlx。2026-09-02 发现全局 qwen 配置曾处于
@@ -25,10 +37,27 @@
 ## codex CLI
 
 ```bash
-codex --profile dgx          # → :8000  qwen38-flash-next(2026-09-02 起)
-codex --profile qwen38       # → :8888  qwen38-27b(降级栈)
+codex --profile dgx          # → :8888  qwen3.8-27b-sglang(2026-09-19 起,主力)
+codex --profile qwen38       # → :8888  qwen38-27b(原版降级栈)
 codex                        # 默认不变:ChatGPT 免费额度 gpt-5.5
 ```
+
+> **2026-09-19 实测 effort 枚举(27B-Uncensored / SGLang)** —— 与 Flash-Next
+> **相同**,但仍是实测,不是照抄(这几个栈的枚举互不相同过):
+>
+> | 值 | 结果 |
+> |---|---|
+> | `none` `low` `medium` `xhigh` | ✅ 200 |
+> | `minimal` `high` `max` | ❌ 400 |
+>
+> 服务端原话:`Supported types are xhigh (default), medium, and low`。
+> 同一道编码题(LRU cache + 三个单测,n=1):
+> `none` 9.7s/正文1767字符、`low` 19.2s/2295、`medium` 24.5s/**2513**、
+> `xhigh` 35.3s/1581(**67% 预算花在思考,正文最短**)。故默认 `medium`。
+>
+> ⚠️ **本栈 catalog 的 slug 是 `qwen3.8-27b-sglang`(带点)**,与 `qwen38-*`
+> 不同形。Qwen Code 的 384k 输出预留是按模型名匹配的,**2026-09-19 实测本名
+> 不命中**(真发请求验过,不是只看配置)—— 见下面「Qwen Code」一节。
 
 > **2026-09-02 实测的 reasoning effort 枚举(本栈)** —— 与 V4-Flash、也与下面
 > qwen38-27b 那张表**都不同**,别跨栈照抄:
@@ -72,7 +101,7 @@ wire_api = "responses"           # codex 0.142 删掉了 "chat",必须用 respon
 catalog 的作用是消除 `Model metadata for <slug> not found. Defaulting to fallback
 metadata` 警告 —— 否则 codex 会拿 GPT-5 的 `272000×95%=258400` 当窗口,
 可能超出服务端上限。qwen38 的 catalog 直接从 dgx 的派生(保留其 17,730 字符
-base_instructions),生成方法见 `docs/qwen38-27b-fallback-cn.md` §6.3。
+base_instructions),生成方法见 `stacks/qwen38/runbook-cn.md` §6.3。
 
 ### reasoning effort:两套栈的档位语义完全不同
 
@@ -118,7 +147,8 @@ base_instructions),生成方法见 `docs/qwen38-27b-fallback-cn.md` §6.3。
 
 ```bash
 qwen                                          # 用当前启动默认
-./scripts/qwen-model-switch.sh flashnext      # → DGX :8000 qwen38-flash-next  [主力]
+./scripts/qwen-model-switch.sh sglang         # → DGX :8888 qwen3.8-27b-sglang [主力]
+./scripts/qwen-model-switch.sh flashnext      # → DGX :8000 qwen38-flash-next  [回滚]
 ./scripts/qwen-model-switch.sh v4flash        # → DGX :8000 deepseek-v4-flash  [仅回滚]
 ./scripts/qwen-model-switch.sh qwen38         # → DGX :8888 qwen38-27b         [降级]
 ./scripts/qwen-model-switch.sh omlx           # → Mac 本地 Qwen3.6-35B-A3B
@@ -162,6 +192,12 @@ CLI 会按模型名匹配并**预留输出 token**:`contextLimit = max(0, contex
 写死 262144 然后切回 V4-Flash → 触发 hard-limit-0,**全部请求失败**。
 `scripts/qwen-model-switch.sh` 会把这个字段和模型一起翻转(全局 + repo 两处)。
 
+> ⚠️ **2026-09-19:新主力的 served name 是 `qwen3.8-27b-sglang` —— 带点。**
+> 384k 输出预留是按模型名匹配的,已知 `deepseek-v4*` 命中、`qwen38-*` 不命中,
+> 而带点的这个属于**未知形状**。切换后**实际跑了一次 `qwen -p` 并确认引擎侧
+> 收到请求、CLI 正常回话**(没有 "hard limit: 0"),所以 262144 是安全的。
+> 加新栈时照此办理:**光看配置写对了不算验证。**
+
 ### thinking 开关
 
 两套栈的 kwarg 名**不一样**,照抄会静默失效:
@@ -199,6 +235,6 @@ CLI 会按模型名匹配并**预留输出 token**:`contextLimit = max(0, contex
 - **codex**:`~/.codex/<name>.config.toml` + `~/.codex/<name>-models.json`,
   外加 `~/.zshrc` 里 `export LOCAL_LLM_API_KEY=dummy`。
   qwen38 的完整重建步骤(含生成 catalog 的 python)见
-  `docs/qwen38-27b-fallback-cn.md` §6.3。
+  `stacks/qwen38/runbook-cn.md` §6.3。
 - **Qwen Code**:`~/.qwen/settings.json`,最小可用骨架见
-  `docs/qwen38-27b-fallback-cn.md` §6.2。repo 内的 `.qwen/.env` 是 gitignored 的。
+  `stacks/qwen38/runbook-cn.md` §6.2。repo 内的 `.qwen/.env` 是 gitignored 的。

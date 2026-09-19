@@ -5,7 +5,7 @@
     }
   },
   "model": {
-    "name": "qwen38-flash-next",
+    "name": "qwen3.8-27b-sglang",
     "generationConfig": {
       "timeout": 300000,
       "maxRetries": 8,

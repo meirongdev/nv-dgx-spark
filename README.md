@@ -11,18 +11,33 @@ Everything is driven through the `Makefile`. Detailed runbooks live in `docs/`
 
 ## What runs here
 
-| Stack | Nodes | Endpoint | Runtime | Status |
+Every model is a **stack** in the `stacks/` registry. This table is generated
+from it by `make stack-table` — don't hand-edit it.
+
+<!-- BEGIN generated:stacks -->
+| 栈 | 节点 | 端点 | 引擎 / 运行时 | 状态 |
 |---|---|---|---|---|
-| **DeepSeek-V4-Flash-0731** | 2 (TP=2) | `:8000` `deepseek-v4-flash` | k3s | **primary** |
-| **Qwen3.8-27B-NVFP4** | 1 (S1) | `:8888` `qwen38-27b` | plain docker | **fallback** |
+| **Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2**<br>`STACK=qwen38un` | 1 | `:8888` `qwen3.8-27b-sglang` | sglang / docker | **primary (2026-09-19 起)** |
+| GLM-5.3-Flash EXL3 4bpw<br>`STACK=glm53` | 2 | `:8888` `GLM-5.3-Flash-EXL3` | vllm-exl3 / docker | rollback #2 —— 850K ctx |
+| Qwen3.8-27B-NVFP4 (censored, no speculator)<br>`STACK=qwen38` | 1 | `:8888` `qwen38-27b` | vllm / docker | retired-ish —— 24.9 tok/s |
+| Qwen3.8-Flash-Next NVFP4 (MTP k=3)<br>`STACK=qwen38fn` | 2 | `:8000` `qwen38-flash-next` | vllm / k3s | rollback #1 —— 单流代码最快 62.1 |
+| DeepSeek-V4-Flash-0731 (DSpark n=5)<br>`STACK=v4flash` | 2 | `:8000` `deepseek-v4-flash` | vllm / k3s | rollback #3 |
+<!-- END generated:stacks -->
 
-> ⚠️ **The primary and the fallback cannot run at the same time** — they want the
-> same GPU memory. `make qwen38-stop` before `make v4flash-run`, and vice versa.
+> ⚠️ **No two of these can run at the same time** — they want the same GPU
+> memory, and several share a port. `make run` refuses to start while another
+> stack is up; its preflight walks the whole registry.
 
-**Why a fallback exists:** V4-Flash is TP=2 and indivisible — its 167 GB of FP8
+> **Switching which stack is primary?** `make switch TO=<id>`. "Which stack is
+> current" used to be hardcoded in ~8 places that each failed *silently* — three
+> wrong-number incidents came from that. It is now one file, `stacks/PRIMARY`,
+> and `make stack-check` fails when the docs drift from it.
+> `docs/stack-switch-cn.md` covers what is still manual.
+
+**Why a single-node fallback exists:** the TP=2 stacks are indivisible — the
 weights don't fit one node, so when either machine dies the whole service dies.
-That happened on 2026-08-15. The fallback keeps a (slower, weaker) model serving
-on whichever node survives.
+That happened on 2026-08-15 (`docs/s2-outage-2026-08-15-cn.md`). The fallback
+keeps a slower, weaker model serving on whichever node survives.
 
 **Hosts** — `100.97.87.120` (S1 / `spark-ccf3`) and `100.67.164.92`
 (S2 / `spark-2435`), SSH as `admin` with `~/.ssh/vgio`.
@@ -31,30 +46,40 @@ on whichever node survives.
 
 ## Quick start
 
-```bash
-# primary stack (needs both nodes; kubectl uses ~/.kube/dgx-spark.yaml)
-make v4flash-run          # scale both ranks to 1, loads ~5 min
-make v4flash-status       # pods + /v1/models
-make v4flash-test         # coding smoke test + tok/s
+One set of verbs drives every stack; `STACK=` picks the target, and leaving it
+off means whatever `stacks/PRIMARY` says.
 
-# fallback stack (S1 alone)
-make qwen38-run           # loads ~200 s
-make qwen38-status
-make qwen38-test          # full benchmark, not just a smoke test
+```bash
+make stacks                    # the registry: who's primary, ports, served names
+make info                      # current primary in detail
+
+make run                       # preflight (mutual exclusion) + start the primary
+make status                    # containers/pods + /v1/models + free -h
+make test                      # smoke test, gated on the served name matching
+make logs   STACK=qwen38fn WORKER=1
+
+make switch TO=v4flash         # change the primary stack, with acceptance checks
+make stack-check               # registry self-consistent + doc tables current
 
 # use it
-codex --profile dgx       # or --profile qwen38
-qwen                      # ./scripts/qwen-model-switch.sh flips the boot default
+codex --profile dgx
+qwen                           # ./scripts/qwen-model-switch.sh flips the boot default
 ```
+
+**Adding a model?** `stacks/README.md` — create `stacks/<id>/`, fill one
+`stack.env`, change nothing else.
 
 Two rules worth knowing before you touch anything:
 
-1. **Never restart a single rank of V4-Flash.** The survivor hangs inside the
+1. **Never restart a single rank of a TP=2 stack.** The survivor hangs inside the
    collective *without exiting* — `/health` and `/v1/models` keep returning 200
-   while every real generation times out. Use `make v4flash-restart` (both ranks).
+   while every real generation times out. Use `make <stack>-restart` (both ranks).
 2. **Don't quote a single tok/s number.** Speculative-decoding throughput is
-   content-driven: the same config measures 31 tok/s on prose and 84 on
-   count-to-300. See `docs/benchmarking-cn.md`.
+   content-driven: on V4-Flash the same config measures 31 tok/s on prose and 84
+   on count-to-300. See `docs/benchmarking-cn.md`.
+3. **Assume any stack-specific default in a tool is stale until you check.**
+   Model names, CoT field names and thinking kwargs all differ per stack and all
+   fail silently. `docs/gotchas-cn.md` #9.
 
 ---
 
@@ -63,23 +88,33 @@ Two rules worth knowing before you touch anything:
 Start with `CLAUDE.md` — it is the operational index for both agents and humans
 (`AGENTS.md` and `QWEN.md` are symlinks to it). Then:
 
-### Runbooks — how to build and operate
+### Per-stack — lives with the stack, not in `docs/`
+
+| Where | What's in it |
+|---|---|
+| **[`stacks/README.md`](stacks/README.md)** | **The contract: what adding a model requires (one `stack.env`, no edits elsewhere)** |
+| `stacks/<id>/recipe.yaml` | Why this stack's parameters are what they are, with the measurements. Every stack has one |
+| [`stacks/v4flash/runbook-cn.md`](stacks/v4flash/runbook-cn.md) | V4-Flash: engine build/prep, one-time setup |
+| [`stacks/v4flash/dspark-upgrade-cn.md`](stacks/v4flash/dspark-upgrade-cn.md) | DSpark speculative decoding: version landscape, tuning, gotchas |
+| [`stacks/qwen38/runbook-cn.md`](stacks/qwen38/runbook-cn.md) | Single-node fallback: deploy from scratch, the traps |
+| ⚠️ *(gap)* | `qwen38fn` / `glm53` / `qwen38un` have no runbook — only `recipe.yaml` comments |
+
+### Runbooks — shared across stacks
 
 | Doc | What's in it |
 |---|---|
-| [`docs/deepseek-v4-flash-cn.md`](docs/deepseek-v4-flash-cn.md) | Primary stack: engine build/prep, one-time setup |
-| [`docs/dspark-upgrade-cn.md`](docs/dspark-upgrade-cn.md) | DSpark speculative decoding: version landscape, tuning, gotchas |
-| [`docs/qwen38-27b-fallback-cn.md`](docs/qwen38-27b-fallback-cn.md) | Fallback stack: S2 post-mortem, deploy from scratch, recovery procedure |
+| **[`docs/stack-switch-cn.md`](docs/stack-switch-cn.md)** | **What `make switch` can't do for you — plus the three silent incidents that explain why the registry exists** |
+| [`docs/s2-outage-2026-08-15-cn.md`](docs/s2-outage-2026-08-15-cn.md) | S2's hardware death, why WoL failed (**no BMC on these boxes**), TP=2 recovery |
 | [`docs/host-maintenance-cn.md`](docs/host-maintenance-cn.md) | Host OS: apt / NVIDIA driver / kernel / DKMS — **read before any `apt upgrade`** |
 | [`docs/gb10-tuning-cn.md`](docs/gb10-tuning-cn.md) | GB10 host-level tuning: the GPU clock cap A/B (adopted), the knobs that don't exist, and what not to touch |
 | [`docs/china-network-mirrors-cn.md`](docs/china-network-mirrors-cn.md) | daocloud / ModelScope / Tsinghua mirrors from mainland China |
-| [`k8s/README.md`](k8s/README.md) | Live cluster manifests, versions, ops |
+| [`k8s/README.md`](k8s/README.md) | Cluster-level: Cilium, GPU plugin, versions, ops |
 
 ### Reference — read before you need it
 
 | Doc | What's in it |
 |---|---|
-| [`docs/gotchas-cn.md`](docs/gotchas-cn.md) | **8 traps, each paid for in downtime.** Scan the headings before debugging anything |
+| [`docs/gotchas-cn.md`](docs/gotchas-cn.md) | **10 traps, each paid for in downtime.** Scan the headings before debugging anything |
 | [`docs/benchmarking-cn.md`](docs/benchmarking-cn.md) | How to measure throughput correctly + the current baseline |
 | [`docs/clients-cn.md`](docs/clients-cn.md) | codex / Qwen Code setup, reasoning-effort semantics, rebuilding on a new machine |
 | [`docs/auto-mitigation-cn.md`](docs/auto-mitigation-cn.md) | Crash-hardening spec: cgroup memory limit (this repo) + Prometheus alerting rules (homelab) |
@@ -94,13 +129,16 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 ## Repository layout
 
 ```
-Makefile              single user-facing interface for every stack
+Makefile              generic verbs (run/stop/status/logs/test/switch); knows no stack names
 CLAUDE.md             operational index (AGENTS.md, QWEN.md → symlinks)
-k8s/                  live cluster: Cilium values, GPU plugin, v4flash manifests
-config/               stack recipes (vLLM flags; rendered into k8s/v4flash/)
-scripts/              launch / test / switch / repair helpers
+stacks/               THE REGISTRY — one directory per model
+  PRIMARY               one line: which stack is primary
+  _lib/                 stackctl + runtime adapters + whole-registry preflight
+  <id>/                 stack.env (identity) + recipe.yaml (why) + optional hooks
+k8s/                  cluster-level only: Cilium values, GPU plugin, registries
+scripts/              cross-stack tools — none hardcodes a stack identity
 playbooks/            Ansible: the two metrics exporters
-docs/                 runbooks, reference, decisions
+docs/                 only what is SHARED across stacks (per-stack docs live in stacks/<id>/)
 benchmarks/           measurement harnesses and dated reports
 ```
 

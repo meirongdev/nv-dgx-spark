@@ -2,17 +2,13 @@
 # Switch the Qwen Code CLI boot default between the DGX stacks and the Mac-local
 # omlx server.
 #
-#   qwen-model-switch.sh flashnext -> Qwen3.8-Flash-Next, dual-node k3s, :8000  [主力]
-#   qwen-model-switch.sh v4flash   -> DeepSeek-V4-Flash, dual-node k3s, :8000   [仅回滚用]
-#   qwen-model-switch.sh qwen38    -> Qwen3.8-27B-NVFP4, single-node S1, :8888  [降级栈]
-#   qwen-model-switch.sh omlx      -> Qwen3.6-35B-A3B, Mac 本地 omlx, :8000     [本地]
-#   qwen-model-switch.sh gemma     -> Gemma-4 26B QAT, Mac 本地 omlx, :8000     [本地]
-#   qwen-model-switch.sh status    -> show what each config file currently says
+#   qwen-model-switch.sh <target>  -> 切换启动默认(目标来自 stacks/ 注册表)
+#   qwen-model-switch.sh status    -> 打印三处配置现在各指向哪
+#   qwen-model-switch.sh --help    -> 列出所有可选目标(即注册表)
 #
-# ⚠️ 端口 8000 在两个地方都用:100.97.87.120:8000 是 DGX,127.0.0.1:8000 是 Mac
-#    本地的 omlx。**主机名才是区分点** —— 2026-09-02 发现全局配置曾处于
-#    `security.auth.baseUrl=127.0.0.1:8000`(omlx)+ `model.name=deepseek-v4-flash`
-#    (DGX 的模型)的自相矛盾状态,omlx 不提供那个模型,启动即 404。
+# ⚠️ 这里**没有一张目标表**了。目标 = stacks/<id>/stack.env 的 STACK_CLIENT_ALIAS,
+#    model / URL / contextWindowSize 三者都从同一份 stack.env 读 —— 加模型不用改本文件,
+#    也不可能再出现"别名对了但 ctx 写的是另一个栈的"这种半对半错的状态。
 #
 # Why a script rather than "just edit settings.json": the CLI's boot path NEVER
 # consults `modelProviders` (those are reachable only from interactive /model),
@@ -29,25 +25,44 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GLOBAL="$HOME/.qwen/settings.json"
 REPO_SETTINGS="$REPO/.qwen/settings.json"
 REPO_ENV="$REPO/.qwen/.env"
+# --- 目标从**注册表**来,不再是这里的一张表 ---------------------------------
+# 别名 = stacks/<id>/stack.env 里的 STACK_CLIENT_ALIAS(没写就用栈 id)。
+# 加一个模型时这个文件**不用动**。
+#
+# contextWindowSize 必须跟着模型走,不能是固定常数 —— 它住在 STACK_CTXWIN:
+#   · V4-Flash 原生 1M。CLI 对 `deepseek-v4*` **预留 384000** 输出 token
+#     (contextLimit = max(0, ctxWin - 384000)),低于 ~384k 的值会把硬阈值钳到 0,
+#     于是**每一个请求**都报 "hard limit: 0",哪怕 prompt 只有 4k。所以是 1000000,
+#     不是某个看起来更"安全"的小数字。
+#   · Qwen3.8-27B / Flash-Next / 27B-Uncensored 都是原生 262144;报 1M 会让 CLI
+#     发出服务端随后拒绝的 prompt。
+#   ⚠️ `qwen3.8-27b-sglang` **带点**,与 `qwen38-*` 不同形,所以"不命中 384k 预留"
+#     这条不能照搬 —— 2026-09-19 切换后是**实测发过真实请求**验的,不是看配置。
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$HERE/../stacks/_lib/common.sh"
 
-# contextWindowSize MUST travel with the model, not be a fixed constant:
-#   - V4-Flash: native 1M. The CLI matches `deepseek-v4*` and RESERVES 384000
-#     output tokens (contextLimit = max(0, contextWindowSize - 384000)), so any
-#     value below ~384k clamps the hard threshold to 0 and EVERY request fails
-#     with "hard limit: 0" — even a 4k prompt. Hence 1000000, not a smaller
-#     "safe" number.
-#   - Qwen3.8-27B: serves native 262144 (the YaRN-extended 1M was dropped
-#     2026-08-15 to avoid its short-context quality penalty). Advertising 1M
-#     here would let the CLI send prompts the server then rejects.
-#   - Qwen3.8-Flash-Next: 服务端 --max-model-len 262144(未开 YaRN)。名字以
-#     `qwen38` 开头,实测不命中 384k 预留,所以 262144 是安全的。
-#   - Mac 本地 omlx 的两个模型:omlx 自报 max_model_len 262144。
+# 别名 → 栈 id
+resolve_alias(){
+  local want="$1" id
+  for id in $(stack_ids); do
+    [ "$id" = "$want" ] && { echo "$id"; return 0; }
+    [ "$(stack_field "$id" STACK_CLIENT_ALIAS)" = "$want" ] && { echo "$id"; return 0; }
+  done
+  return 1
+}
+usage(){
+  local id a
+  echo "usage: $(basename "$0") <target>|status" >&2
+  echo "  可选目标(来自 stacks/):" >&2
+  for id in $(stack_ids); do
+    a=$(stack_field "$id" STACK_CLIENT_ALIAS); [ -n "$a" ] || a="$id"
+    printf '    %-11s %s @ %s:%s\n' "$a" "$(stack_field "$id" STACK_MODEL)" \
+      "$(stack_field "$id" STACK_HEAD)" "$(stack_field "$id" STACK_PORT)" >&2
+  done
+}
+
 case "${1:-}" in
-  flashnext) MODEL=qwen38-flash-next; URL=http://100.97.87.120:8000/v1; CTXWIN=262144 ;;
-  v4flash) MODEL=deepseek-v4-flash; URL=http://100.97.87.120:8000/v1; CTXWIN=1000000 ;;
-  qwen38)  MODEL=qwen38-27b;        URL=http://100.97.87.120:8888/v1; CTXWIN=262144  ;;
-  omlx)    MODEL=mlx-community__Qwen3.6-35B-A3B-nvfp4;        URL=http://127.0.0.1:8000/v1; CTXWIN=262144 ;;
-  gemma)   MODEL=mlx-community__gemma-4-26B-A4B-it-qat-nvfp4; URL=http://127.0.0.1:8000/v1; CTXWIN=262144 ;;
   status)
     for f in "$GLOBAL" "$REPO_SETTINGS"; do
       [ -f "$f" ] && python3 -c "
@@ -59,7 +74,18 @@ print('%-46s model=%-20s ctx=%-9s auth.baseUrl=%s' % ('$f'.replace('$HOME','~'),
     done
     [ -f "$REPO_ENV" ] && grep -E '^OPENAI_(MODEL|BASE_URL)=' "$REPO_ENV" | sed 's/^/  .env  /'
     exit 0 ;;
-  *) echo "usage: $(basename "$0") {flashnext|v4flash|qwen38|omlx|gemma|status}" >&2; exit 1 ;;
+  "" | -h | --help) usage; exit 1 ;;
+  *)
+    SW_ID=$(resolve_alias "$1") || { echo "未知目标 '$1'" >&2; usage; exit 1; }
+    load_stack "$SW_ID"
+    MODEL="$STACK_MODEL"
+    URL="http://$STACK_HEAD:$STACK_PORT/v1"
+    CTXWIN="${STACK_CTXWIN:?stacks/$SW_ID/stack.env 没写 STACK_CTXWIN —— 见本文件开头关于 hard-limit-0 的说明}"
+    # ⚠️ 端口 8000 在两处都用:100.97.87.120:8000 是 DGX,127.0.0.1:8000 是 Mac
+    #    本地的 omlx。**主机名才是区分点**。2026-09-02 发现全局配置曾处于
+    #    baseUrl=127.0.0.1:8000(omlx)+ model=deepseek-v4-flash(DGX)的自相矛盾
+    #    状态 —— omlx 不提供那个模型,启动即 404。URL 整条从注册表来就不会再发生。
+    ;;
 esac
 
 # Global settings: boot default. All four fields must agree.

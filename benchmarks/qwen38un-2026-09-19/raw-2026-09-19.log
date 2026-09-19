@@ -1,0 +1,83 @@
+# 原始输出 — Qwen3.8-27B-Uncensored + SGLang + DFlash2, 2026-09-19
+
+## decode (q38un-bench.sh)
+model=qwen3.8-27b-sglang thinking=false max_tokens=400 warmups=2 reps=3
+起始 MemAvailable = 6370 MiB
+
+  structured  run1  out=400 tok  wall= 6.88s   58.1 tok/s   (avail 6353 MiB)
+  structured  run2  out=400 tok  wall= 6.84s   58.5 tok/s   (avail 6328 MiB)
+  structured  run3  out=400 tok  wall= 6.84s   58.5 tok/s   (avail 6345 MiB)
+  structured  BEST  58.5 tok/s
+
+  code        run1  out=400 tok  wall= 8.85s   45.2 tok/s   (avail 6339 MiB)
+  code        run2  out=400 tok  wall= 8.81s   45.4 tok/s   (avail 6349 MiB)
+  code        run3  out=400 tok  wall= 8.82s   45.4 tok/s   (avail 6329 MiB)
+  code        BEST  45.4 tok/s
+
+  prose       run1  out=400 tok  wall=16.71s   23.9 tok/s   (avail 6353 MiB)
+  prose       run2  out=400 tok  wall=16.66s   24.0 tok/s   (avail 6338 MiB)
+  prose       run3  out=400 tok  wall=16.66s   24.0 tok/s   (avail 6329 MiB)
+  prose       BEST  24.0 tok/s
+
+结束 MemAvailable = 6379 MiB
+
+上游 README「Decode (this kit, 2026-08-28)」x1 = 62.9 tok/s (structured/code, thinking off)
+上游 issue #163 同样走 PYNCCL 的那台      x1 = 31.0 tok/s (structured)
+
+
+## 并发 c1-c4 (q38un-conc.sh)
+=== 并发梯度 ===
+model=qwen3.8-27b-sglang thinking=false max_tokens=400 熔断地板=700 MiB
+engine 上限 MAX_NUM_SEQS=4
+起始 MemAvailable = 6381 MiB
+
+warmup...
+并发  墙钟(s)  聚合tok/s  单流tok/s 内存最低 完成/发出
+c1          6.88         58.1         58.1     6329 MiB       1/1
+c2          7.13        112.1         56.1     6328 MiB       2/2
+c3          7.43        161.5         53.8     6348 MiB       3/3
+c4          7.66        208.8         52.2     6333 MiB       4/4
+
+结束 MemAvailable = 6353 MiB
+上游对照(structured, thinking off): x1 62.9 / x2 103.3 agg / x4 146.5 agg
+
+## 并发 c8/c16 (q38un-conc.sh)
+engine 上限 MAX_CONCURRENT_REQUESTS=16
+起始 MemAvailable = 6351 MiB
+
+warmup...
+并发  墙钟(s)  聚合tok/s  单流tok/s 内存最低 完成/发出
+c8          8.98        356.2         44.5     6328 MiB       8/8
+c16        17.95        356.6         22.3     6323 MiB     16/16
+
+结束 MemAvailable = 6338 MiB
+上游对照 DFlash2 并发梯度(0.90/16): x1 56.6 / x2 58.4 / x4 111.6 / x8 184.9 / x16 227.6 agg
+
+[exited with code 0]
+
+## 接受率(引擎日志复盘)
+n=32  min=2.88  中位=5.92  max=8.00   (structured 段 6.12;上游 issue #163 报 6.71)
+
+## mem-fraction 0.85 复测 (2026-09-19)
+起始 MemAvailable = 12003 MiB
+  structured  BEST  58.5 tok/s
+  code        BEST  45.4 tok/s
+  prose       BEST  24.0 tok/s
+结束 MemAvailable = 12029 MiB
+=== 并发 ===
+warmup...
+并发  墙钟(s)  聚合tok/s  单流tok/s 内存最低 完成/发出
+c1          6.88         58.1         58.1    11970 MiB       1/1
+c4          7.68        208.3         52.1    11995 MiB       4/4
+c8          8.92        358.6         44.8    11972 MiB       8/8
+c12        10.15        472.7         39.4    11982 MiB     12/12
+c16        17.97        356.1         22.3    11951 MiB     16/16
+
+结束 MemAvailable = 11999 MiB
+上游对照 DFlash2 并发梯度(0.90/16): x1 56.6 / x2 58.4 / x4 111.6 / x8 184.9 / x16 227.6 agg
+
+
+## memwatch 在 0.85 下可常驻
+2026-09-19 17:25:23 100.97.87.120: available=9% (ok)
+2026-09-19 17:25:24 100.67.164.92: available=95% (ok)
+(0.90 下第一拍即 'available=5% (crit 1/2)')

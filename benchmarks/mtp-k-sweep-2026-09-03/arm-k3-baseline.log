@@ -1,0 +1,27 @@
+  ✅ 引擎已静默 90s,开测
+=== MTP arm k=3 @ http://localhost:8000/v1 ===
+warm-up(5 条长生成 + 4 条短)…
+
+--- decode by content (temp 0, warm, best-of-2) ---
+prompt       tok    sec    tok/s
+count300    1092  17.14     63.7
+mult12       900  14.20     63.4
+json60       800  12.63     63.4
+bst          600   9.96     60.2
+story        296   9.26     32.0
+
+--- k=3 的投机解码剖面(计数,非计时)---
+  每次 draft 提议      3.00 tok   ← 行为验证通过 (声称 k=3)
+  总接受率             89.1%
+  **每步产出**         3.672 tok/step   (理论上限 4.00)
+  引擎步数             2018 steps / 126.6s busy
+  step/s               15.94 实测   vs 15.39 反推   (差 3.4%)
+
+  按 draft 位置:
+    pos0: 无条件  93.4%   条件  93.4%
+    pos1: 无条件  88.2%   条件  94.5%
+    pos2: 无条件  85.5%   条件  96.9%
+
+===== ARM k=3 =====
+decode mean 56.5 tok/s  |  count300=63.7  mult12=63.4  json60=63.4  bst=60.2  story=32.0
+tok/step 3.672  |  step/s 15.94  |  独占 OK (10 reqs, 0 foreign)

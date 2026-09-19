@@ -1,0 +1,40 @@
+=== k=5 启动失败证据(2026-09-03)===
+引擎: Qwen3.8-Flash-Next NVFP4, TP=2, 官方镜像 vllm 0.1.dev20073+g8e685d198
+
+--- 容器退出状态 ---
+exitCode 1, reason Error, startedAt 13:08:45Z finishedAt 13:12:08Z (权重装完后才失败)
+
+--- 根因 ---
+vllm/models/qwen3_8_flash_next/common/qsa_cache.py:781 get_kv_cache_spec()
+AssertionError: QSA ring capacity 12 must divide the attention block size 1616
+
+--- 上游代码 ---
+span     = self.compress_ratio + vllm_config.num_speculative_tokens
+capacity = self.compress_ratio * cdiv(span, self.compress_ratio)
+assert self.cache_config.block_size % capacity == 0
+
+--- block_size 1616 从哪来(不是可调参数)---
+interface.py:915  Setting attention block size to 1616 tokens to ensure that
+                  attention page size is >= mamba page size.
+1616 = 2^4 x 101
+
+--- checkpoint 参数 ---
+indexer_compress_ratio = 4  (config.json text_config)
+
+--- 可行性分段 ---
+  k= 1  capacity=  8  1616%cap=  0  OK
+  k= 2  capacity=  8  1616%cap=  0  OK
+  k= 3  capacity=  8  1616%cap=  0  OK
+  k= 4  capacity=  8  1616%cap=  0  OK
+  k= 5  capacity= 12  1616%cap=  8  BLOCKED
+  k= 6  capacity= 12  1616%cap=  8  BLOCKED
+  k= 7  capacity= 12  1616%cap=  8  BLOCKED
+  k= 8  capacity= 12  1616%cap=  8  BLOCKED
+  k= 9  capacity= 16  1616%cap=  0  OK
+  k=10  capacity= 16  1616%cap=  0  OK
+  k=11  capacity= 16  1616%cap=  0  OK
+  k=12  capacity= 16  1616%cap=  0  OK
+  k=13  capacity= 20  1616%cap= 16  BLOCKED
+  k=14  capacity= 20  1616%cap= 16  BLOCKED
+  k=15  capacity= 20  1616%cap= 16  BLOCKED
+  k=16  capacity= 20  1616%cap= 16  BLOCKED

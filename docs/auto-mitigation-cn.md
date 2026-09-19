@@ -10,7 +10,7 @@
 >
 > 先立项：**软件减载管的是「过载/OOM/卡死这类软件故障」和「事后自愈/取证」，
 > 管不了电源事故本身**。2026-08-15 S2 那次是断电级事件（见
-> `docs/qwen38-27b-fallback-cn.md` §1），本文所有手段都不防它；但仍值得做，
+> `stacks/qwen38/runbook-cn.md` §1），本文所有手段都不防它；但仍值得做，
 > 因为它们防住的是**真实存在、且这次差一点埋掉整栈**的软件宕机模式：
 > 统一内存 OOM 冻死整机（连 sshd/tmux 一起带走）、zombie TP 组、排队饱和。
 >
@@ -24,7 +24,7 @@
 | 手段 | 防什么 | 归属仓库 | 状态 |
 |---|---|---|---|
 | 宿主机内存看门狗（`mem-watch.sh`） | 整机 OOM 冻死（真实故障） | **本仓库** `scripts/` + `make memwatch` | ✅ **已实现**（§2） |
-| ~~k8s cgroup 内存上限~~ | ~~整机 OOM~~ | ~~`k8s/v4flash/`~~ | ❌ 已废弃（实测兜不住，§2.3） |
+| ~~k8s cgroup 内存上限~~ | ~~整机 OOM~~ | ~~`stacks/v4flash/k8s/`~~ | ❌ 已废弃（实测兜不住，§2.3） |
 | Prometheus 告警规则 | 提前发现过载/掉线，形成前兆 | **homelab** 监控栈 | 仅规格（§3，未落地） |
 
 ---
@@ -103,7 +103,7 @@ GB10 的 128 GB LPDDR5X 是 **CPU 与 GPU 共享的相干统一内存**。V4-Fla
 - 轮询两台节点（S1 `100.97.87.120`、S2 `100.67.164.92`，tailnet SSH `admin`@`~/.ssh/vgio`）；
 - 探不到节点 = **不算数**（fail-open，沿用仓库探针哲学：数据缺失必须放行，不误杀）；
 - 触发后写 state 文件 `/tmp/.v4flash-memwatch-fired` 并**保持**——
-  **不自动恢复**，引擎只在你 `make v4flash-run` 时回来，避免「scale 0 → 内存松 →
+  **不自动恢复**，引擎只在你 `make run STACK=v4flash` 时回来，避免「scale 0 → 内存松 →
   自拉起 → 又掉」抖动（与「两栈手工控制、qwen38 不设 --restart」的仓库哲学一致）；
 - 动作是 `kubectl scale deploy v4flash-worker v4flash-leader --replicas=0`——
   **两个 rank 一起**，不产生 zombie TP 组（gotcha #1）。
@@ -114,7 +114,7 @@ GB10 的 128 GB LPDDR5X 是 **CPU 与 GPU 共享的相干统一内存**。V4-Fla
 make memwatch-check     # 只读:两节点 available%(实测 S1/S2 均 ~11%)
 make memwatch           # 常驻守护(建议 tmux;观察 /tmp/v4flash-memwatch.log)
 tail -f ${TMPDIR:-/tmp}/v4flash-memwatch.log
-make memwatch-reset     # 触发 scale 0 后,先复位再 make v4flash-run 拉起
+make memwatch-reset     # 触发 scale 0 后,先复位再 make run STACK=v4flash 拉起
 ```
 
 > **局限**：守护挂在操作机（Mac）上，操作机要在线才有效；节点自身不自保。
@@ -140,7 +140,7 @@ Prometheus/Alertmanager，`cluster="dgx-spark"` 标签区分。
 | **vLLM `/metrics`** | ❌ 未纳入 Prometheus | 新增一个 scrape job，target `100.97.87.120:8000`，`metric_path=/metrics`，labels `cluster=dgx-spark`（vLLM 默认与 API 同端口暴露；若本 build 走专用 metrics 端口则以实测为准） |
 
 vLLM 侧真正有用的三个指标：`vllm:kv_cache_usage_perc`、`vllm:num_requests_running`、
-`vllm:num_requests_waiting`。`make v4flash-load` 现在只能手动查，纳入 Prometheus 后
+`vllm:num_requests_waiting`。`make load STACK=v4flash` 现在只能手动查，纳入 Prometheus 后
 才有曲线和告警。
 
 ### 3.2 告警规则清单
@@ -188,7 +188,7 @@ vLLM 侧真正有用的三个指标：`vllm:kv_cache_usage_perc`、`vllm:num_req
 - **A1/A2 的 `MemAvailable` 已含页缓存**，比裸 `MemFree` 准确，直接用它。
 - 这些规则**只是告警不带执行器**。若要「逼近红线自动 scale 0」，执行器已由
   看门狗承担（§2，本仓库已实现）；homelab 若想接自动动作，可用 Alertmanager
-  webhook 触发 `make v4flash-stop` —— 但注意别和 §2 看门狗重复/冲突。
+  webhook 触发 `make stop STACK=v4flash` —— 但注意别和 §2 看门狗重复/冲突。
 
 ---
 

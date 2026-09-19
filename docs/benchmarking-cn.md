@@ -24,7 +24,7 @@ DSpark 的解码速度 = `steps/s × 每步接受的 token 数`,而**接受率�
 | prefill 8K / 32K / 100K | 1760 / 2203 / 2084 tok/s(3 次中位数,±2%) |
 | DSpark 接受率 | 75.8%,4.79 tok/step(p0..p4 = .90/.81/.74/.68/.65) |
 
-降级栈 Qwen3.8-27B 的对照数字见 `docs/qwen38-27b-fallback-cn.md` §2.2
+降级栈 Qwen3.8-27B 的对照数字见 `stacks/qwen38/runbook-cn.md` §2.2
 (均值 24.9 tok/s,MTP 2.75 tok/step)——**稠密 27B 比 MoE A13B 慢 2.7 倍**,
 这是本集群最反直觉的一条结论。
 
@@ -37,7 +37,7 @@ DSpark 的解码速度 = `steps/s × 每步接受的 token 数`,而**接受率�
 ——同一个请求上 ~14 vs ~60,差 4 倍多。
 
 **正确做法**:用 `stream:false`,读 `usage.completion_tokens` 除以墙钟时间
-(`scripts/v4-test.sh` 就是这么做的);或者用服务端的
+(`stacks/v4flash/test.sh` 就是这么做的);或者用服务端的
 `vllm:generation_tokens_total` 除以墙钟时间。
 
 ### 2. 冷启动**和空闲**衰减约 30%

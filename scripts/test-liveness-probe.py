@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """v4flash 探针回归测试(`make probe-test`)。
 
-脚本本体只有一份 —— 直接从 k8s/v4flash/configmap-launch.yaml 里抽出来跑,
+脚本本体只有一份 —— 直接从 stacks/v4flash/k8s/configmap-launch.yaml 里抽出来跑,
 不在这里复制粘贴,避免改了 ConfigMap 而测试还在测旧逻辑。
 
 覆盖的是**两代探针误杀健康 leader 的真实场景**(见 ConfigMap 里的注释):
