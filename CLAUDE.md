@@ -88,7 +88,8 @@ abliterated — **hypothesis, not verified.**
 probes answered. The vendor's 64–99% → 0–6% harmful-refusal claim is **not**
 independently verified here, and capability regression was not measured.
 
-✅ **`make memwatch` is running again — first OOM guard in place all day.**
+✅ **`make memwatch` can run again** (verified 40 s, no trigger, `available=9% (ok)`)
+— but it is **not currently running**; start it in tmux to actually be guarded.
 `mem-fraction-static` is **0.85**, not upstream's 0.90: at 0.90 S1 idled at
 exactly **5.0%** and memwatch fired on its first tick (measured), i.e. no guard
 at all. 0.85 gives **11.4 GiB (9.4%)** and cost **nothing measurable** — decode
