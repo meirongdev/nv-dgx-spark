@@ -118,10 +118,21 @@ watchdog is *deliberately* no-auto-restore (anti-thrash; `scripts/mem-watch.sh`
 header + `docs/auto-mitigation-cn.md`). At 0.85 the measured outcome is the stack
 **stopped and staying stopped** until someone runs `make memwatch-reset`.
 
-`benchmarks/qwen38un-2026-09-19/README.md` records memwatch as **resident** since
-the move to 0.80. That is the newest claim in the repo, but it is a claim about
-host state, which no file can keep current — `make memwatch-check` is read-only
-and answers it in one second. Assume nothing is guarding until you have looked.
+✅ **memwatch verified resident, one instance** (2026-09-19 20:40, tmux session
+`memwatch`, `nodes=[100.97.87.120]`, startup self-check passed). Still: this is a
+claim about host state, which no file can keep current. `make memwatch-check` is
+read-only and answers it in a second — **assume nothing is guarding until you
+have looked.**
+
+⚠️ **A fixed bug stays alive in an already-running process.** That check found
+**three** watchdogs, started 19:40 / 19:43 / 19:46 during the stack switch. Two
+predated 9e4dc2f and were still running its bug: `nodes=[both]` on a single-node
+primary, while `tick()` acts when **any** node drops — so anything memory-heavy on
+the idle S2 would have stopped the primary on S1, two unrelated things. They were
+quiet only because S2 happened to be empty. Generalize it: **`git log` says the
+bug is fixed; it says nothing about the daemon you started before the fix.** After
+patching anything long-running (memwatch, a tmux loop, a sidecar), restart it and
+re-read its startup banner — that banner is what it is *actually* guarding.
 
 `max_running_requests` is 12 at **both** 0.85 and 0.80, so that penalty is not
 0.80's. **Never 0.95** — upstream hard-rebooted a box on it. Override chain:
