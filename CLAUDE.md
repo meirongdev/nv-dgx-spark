@@ -71,8 +71,10 @@ Three separate wrong-number/wrong-verdict incidents have come from skipping this
 `benchmarks/qwen38un-2026-09-19/README.md`.
 
 ✅ **Concurrency is the best this repo has ever measured — on half the hardware.**
-Peak **356.2 tok/s aggregate @ c8, single node** (Flash-Next 304 @ c8 on two
+Peak **472.7 tok/s aggregate @ c12, single node** (Flash-Next 304 @ c8 on two
 nodes; GLM 179.8 @ c4 on two). Host memory does not move across the whole ladder.
+c16 falls back to 356 — that is `max_running_requests=12` making ragged batches
+(12 + 4 stragglers), not a knee; same shape as Flash-Next's c10 artifact.
 
 ⚖️ **Single-stream is a mixed result.** Code **45.4** tok/s: +17% vs GLM's 38.8,
 but **−27% vs Flash-Next's 62.1**. So "GLM is too slow" is only partly fixed —
@@ -86,11 +88,15 @@ abliterated — **hypothesis, not verified.**
 probes answered. The vendor's 64–99% → 0–6% harmful-refusal claim is **not**
 independently verified here, and capability regression was not measured.
 
-⚠️ **`make memwatch` still cannot run.** S1 idles at **6.1 GiB (5.0%)**, exactly
-the CRIT line — much better than GLM's 1.8%, still no OOM guard, still no BMC.
-Cause: `mem-fraction-static 0.90` hands SGLang ~112 GiB while the weights are
-24 GB; the rest is a KV pool far larger than we need. Two untaken options are in
-the benchmark README. **Do not raise it to 0.95** — upstream hard-rebooted a box.
+✅ **`make memwatch` is running again — first OOM guard in place all day.**
+`mem-fraction-static` is **0.85**, not upstream's 0.90: at 0.90 S1 idled at
+exactly **5.0%** and memwatch fired on its first tick (measured), i.e. no guard
+at all. 0.85 gives **11.4 GiB (9.4%)** and cost **nothing measurable** — decode
+is bit-identical (58.5 / 45.4 / 24.0) and matched concurrency levels are within
+noise. The KV pool is still 1,368,663 tokens, 5.2× the 262144 context; 0.90 was
+handing SGLang ~112 GiB when the weights are 24 GB. **Never 0.95** — upstream
+hard-rebooted a box on it. Override chain: start.sh 0.95 → start-dflash.sh 0.90
+→ our `DF_EXTRA` 0.85, argparse last-wins.
 
 ✅ **The TP=2 failure class is gone** with a single-node primary: no zombie
 collectives (gotcha #1), no cross-node NCCL/RoCE, no lockstep restart rule. S2 is

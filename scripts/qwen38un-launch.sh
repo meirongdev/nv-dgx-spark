@@ -17,6 +17,20 @@ SGLANG_DIR="${SGLANG_DIR:-/home/admin/qwen38-sglang}"
 # 报 "Repo id must be in the form 'namespace/repo_name'"。
 export DF_EXTRA="--model-path ${MODEL_CT:-/root/.cache/huggingface/local/Qwen3.8-27B-Uncensored-NVFP4}"
 
+# --- mem-fraction-static ----------------------------------------------------
+# 上游 start-dflash.sh 设 0.90(覆盖 start.sh 的 0.95),并在注释里写明
+# **0.95 hard-rebooted the box**。0.95 是红线,别碰。
+#
+# 但 0.90 在本机留给主机只有 **6.1 GiB = 5.0%**(2026-09-19 实测),正好压在
+# memwatch 的 CRIT 线上 → 看门狗一启动就触发 → 等于没有 OOM 防线,而这两台没 BMC。
+# 而 0.90 划走的 ~112 GiB 里权重只占 24 GB,其余全是 KV 池 —— 远超
+# 262144 × 16 所需。拿用不上的 KV 换回主机 headroom 是划算的。
+#
+# 追加在 DF_EXTRA 末尾即可生效:EXTRA_ARGS 里 DF_EXTRA 在最后,argparse last-wins。
+# ⚠️ 改这个值之后必须重测 headroom **和**吞吐(KV 变小可能影响并发档)。
+MEM_FRACTION="${MEM_FRACTION:-0.85}"
+export DF_EXTRA="$DF_EXTRA --mem-fraction-static ${MEM_FRACTION}"
+
 # 草稿模型是按 **repo id** 传给 SGLang 的(--speculative-draft-model-path
 # z-lab/Qwen3.8-27B-DFlash2),即便已预缓存,HF hub 仍会发 HEAD 探更新 →
 # 容器内 "Network is unreachable" 重试 5 轮。离线开关让它直接吃缓存。
@@ -32,9 +46,10 @@ echo "=== qwen38un launch ==="
 echo "IMAGE     = $IMAGE"
 echo "DF_EXTRA  = $DF_EXTRA"
 echo "DOCKER_ENV= $DOCKER_ENV"
+echo "MEM_FRAC  = $MEM_FRACTION"
 echo ".env      : $(grep -vE '^\s*#|^\s*$' .env | tr '\n' ' ')"
 echo
 
-# ⚠️ mem-fraction-static 不在这里设 —— start-dflash.sh 会追加 0.90,覆盖
-#    start.sh 的 0.95。上游注释原文:0.95 hard-rebooted the box。别去"修"。
+# 链条:start.sh 设 0.95 → start-dflash.sh 追加 0.90 覆盖它 → 我们的 DF_EXTRA
+# 追加 $MEM_FRACTION 再覆盖(argparse last-wins)。理由见上面 mem-fraction 那段。
 exec ./start-dflash.sh
