@@ -117,8 +117,16 @@ open question); for codex the CLI's own `--version` hangs (pre-existing, it
 never reads the profile), so the profile+catalog were parsed and the exact
 request codex would send was replayed against `/v1/responses` → 200.
 
-🔧 **Still open:** `CAP_MODEL`/port/kwargs in `scripts/gb10-clock-cap.sh` still
-point at GLM.
+✅ **`scripts/gb10-clock-cap.sh` is on the new stack and re-verified** — cap is
+live (rank0 2183 MHz under load, n=29). Three things had to change beyond the
+model name, each found by testing rather than reading:
+- **SGLang ignores `min_tokens`** (vLLM honors it): the old load prompt returned
+  **2 tokens**. Swapped to a counting prompt that generates 300+ on its own.
+- **SGLang accepts any model name** → the "wrong `CAP_MODEL` gets 404'd" gate was
+  silently dead here. Now it compares `/v1/models` first (gotcha #10).
+- **Single-node stack ⇒ `peer/rank1` samples an idle S2** (207 MHz). The script
+  now labels that line as not-a-verdict instead of printing a bare number that
+  reads like a failure.
 
 ### Previous state (earlier on 2026-09-19) — GLM-5.3-Flash EXL3
 
@@ -448,6 +456,8 @@ Full detail with reproductions and dates: **`docs/gotchas-cn.md`**.
 | 6 | `HFValidationError` in-container → absolute HF-cache symlinks | downloading models |
 | 7 | `Syntax error in template` → Ansible eats `--format 'table {{.Names}}'` | any ansible + docker `--format` |
 | 8 | Foreign registries blocked/slow → daocloud + ModelScope + Tsinghua | all downloads |
+| 9 | Stack identity hardcoded (CoT field / kwarg / model name) fails **silently** | any cross-stack tool ⚠️ |
+| 10 | **SGLang accepts any model name** (200 + echoes it back) — "a wrong name 404s" is a vLLM-only assumption | identity gates ⚠️ |
 
 ## Measuring throughput
 

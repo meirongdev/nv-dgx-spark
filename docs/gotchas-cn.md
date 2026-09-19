@@ -262,3 +262,49 @@ CLAUDE.md 里写着「这是判断锁是否生效的**唯一**可靠手段」—
    就 `exit 3` —— 宁可不启动,也不当一道静默失效的防线。
 
 详见 `docs/stack-switch-cn.md`(触点清单)和 `docs/clients-cn.md`(客户端侧)。
+
+---
+
+## 10. SGLang **接受任意 model 名** —— "写错会被 404 挡住"这条在它上面不成立
+
+2026-09-19 切到 Qwen3.8-27B-Uncensored + SGLang 时发现。
+
+### 现象
+
+```console
+$ curl -s http://localhost:8888/v1/chat/completions -d '{
+    "model":"totally-bogus-model-xyz",
+    "messages":[{"role":"user","content":"Count 1 to 50."}],"max_tokens":100}'
+http = 200
+返回 model 字段 = "totally-bogus-model-xyz"     ← 假名字被原样回显
+completion_tokens = 100                          ← 照常用它加载的那个模型生成
+```
+
+未知的 `chat_template_kwargs` 同理:**静默忽略**,不报错。
+
+### 为什么危险
+
+本仓库有一整类检查依赖「model 名写错 → 服务端 404 → 闸门拦住」。
+**vLLM 确实会 404,SGLang 不会。** 于是同一段代码在换到 SGLang 栈后
+悄悄失去了保护:陈旧的 model 名会**静默通过**,而这正是 gotcha #9 那三次
+事故要防的东西。
+
+实测:`scripts/gb10-clock-cap.sh` 的负向用例在 GLM 栈上 `CAP_MODEL=不存在的名字`
+→ exit 3(正确),换到 SGLang 后同样的用例 → **exit 0**。闸门哑了。
+
+### 正确做法
+
+**拿 `/v1/models` 比对 served name,不要指望生成请求失败。**
+
+```bash
+SERVED=$(curl -s "http://localhost:$PORT/v1/models" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])")
+[ "$SERVED" = "$MODEL" ] || { echo "身份不符: $SERVED != $MODEL"; exit 3; }
+```
+
+这对 vLLM 也成立,所以是通用写法。已应用于:
+- `scripts/gb10-clock-cap.sh`(verify 前置检查)
+- `scripts/qwen38un-test.sh` / `scripts/glm53-test.sh`(冒烟脚本开头)
+
+⚠️ **写任何跨栈工具时,别把"服务端会替我挡住"当成一种保护** ——
+挡不挡是**引擎实现细节**,换个引擎就变了。身份要自己核。

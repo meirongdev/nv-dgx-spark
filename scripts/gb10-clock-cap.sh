@@ -33,7 +33,7 @@ set -uo pipefail
 
 HOSTS="${CAP_HOSTS:-100.97.87.120 100.67.164.92}"
 HEAD="${CAP_HEAD:-100.97.87.120}"          # 只有 head 暴露 OpenAI API
-PORT="${CAP_PORT:-8888}"          # ⚠️ 逐栈不同:k3s 两栈是 8000,GLM(docker)是 8888
+PORT="${CAP_PORT:-8888}"          # ⚠️ 逐栈不同:k3s 两栈 8000;SGLang/GLM/27B 原版都是 8888
 SSH_USER="${CAP_SSH_USER:-admin}"
 SSH_KEY="${CAP_SSH_KEY:-$HOME/.ssh/vgio}"
 MHZ="${CAP_MHZ:-2200}"
@@ -41,13 +41,24 @@ MHZ="${CAP_MHZ:-2200}"
 #    2026-09-02 切到 qwen38-flash-next 后这里仍写着 deepseek-v4-flash,导致
 #    verify 的生成 404 —— 而旧版脚本照样打印判据行,读起来像"通过"。
 #    锁的唯一判据因此静默失效过一次(约 24h)。
-# 2026-09-19 切到 GLM-5.3-Flash EXL3:model 名、端口(8000→8888)**和**思考 kwarg
-#    三者同时变了。前两个写错会 404/连不上(会响);第三个写错只是白烧 token
-#    在 CoT 上 —— min_tokens=300 仍然满足,判据仍成立,但那是运气不是设计。
-MODEL="${CAP_MODEL:-GLM-5.3-Flash-EXL3}"
-# 本栈没有"关思考",最低档是 reasoning_effort=low(见 scripts/glm53-test.sh 的表)。
-# 回滚到 k3s 两栈时置空: CAP_CHAT_KWARGS='' CAP_PORT=8000 CAP_MODEL=qwen38-flash-next
-CHAT_KWARGS_DEFAULT='{"reasoning_effort":"low"}'
+# 2026-09-19 当天切了两次(GLM-5.3-Flash EXL3 → Qwen3.8-27B-Uncensored/SGLang)。
+#    两次都是 model 名、端口、思考 kwarg **三者同时变**。
+# ⚠️ 换到 SGLang 还多踩一条:**SGLang 忽略 `min_tokens`**(vLLM 认)。
+#    实测发 min_tokens=300 只回了 **2 个 token** —— 请求照样 200,但根本没有负载。
+#    所以负载 prompt 改成**天然会产出足量 token** 的计数题,不再依赖 min_tokens
+#    (min_tokens 保留,对 vLLM 的三个栈仍有用,对 SGLang 无害)。
+#    脚本的 GEN_TOK<50 闸门会挡住这种情况(它挡住过),但闸门只是最后一道 ——
+#    别让它成为常态。
+MODEL="${CAP_MODEL:-qwen3.8-27b-sglang}"
+# 逐栈不同的思考 kwarg(第五套语义;全表见 config/qwen38-uncensored-sglang.yaml):
+#   本栈 SGLang  : {"enable_thinking": false}    ← 可以关
+#   Flash-Next   : {"enable_thinking": false}    ← 同名,但端口 8000
+#   GLM-5.3 EXL3 : {"reasoning_effort":"low"}    ← 关不掉,最低 low
+#   V4-Flash     : {"thinking": false}
+# 回滚示例:
+#   CAP_MODEL=qwen38-flash-next  CAP_PORT=8000 make clock-cap-verify
+#   CAP_MODEL=GLM-5.3-Flash-EXL3 CAP_CHAT_KWARGS='{"reasoning_effort":"low"}' make clock-cap-verify
+CHAT_KWARGS_DEFAULT='{"enable_thinking": false}'
 CHAT_KWARGS="${CAP_CHAT_KWARGS-$CHAT_KWARGS_DEFAULT}"   # 用 ${x-y} 而非 ${x:-y},
                                                         # 这样 CAP_CHAT_KWARGS='' 能显式置空(回滚 k3s 栈时用)
 UNIT=gb10-clock-cap.service
@@ -89,17 +100,37 @@ cmd_verify(){
   cat > /tmp/.gb10_cap_verify.local <<'SH'
 #!/bin/bash
 set +e
-PEER="${PEER:-192.168.200.102}"; PORT="${PORT:-8888}"; MODEL="${MODEL:-GLM-5.3-Flash-EXL3}"
+PEER="${PEER:-192.168.200.102}"; PORT="${PORT:-8888}"; MODEL="${MODEL:-qwen3.8-27b-sglang}"
 CHAT_KWARGS="${CHAT_KWARGS:-}"
 nvidia-smi --query-gpu=clocks.current.sm --format=csv,noheader,nounits -lms 400 > /tmp/.cap_v1 2>/dev/null &
 P=$!
 ssh -o BatchMode=yes -o StrictHostKeyChecking=no "admin@$PEER" \
   'nohup nvidia-smi --query-gpu=clocks.current.sm --format=csv,noheader,nounits -lms 400 > /tmp/.cap_v2 2>/dev/null & echo $! > /tmp/.cap_v2.pid'
+# ⚠️ **先用 /v1/models 核对身份,别指望生成请求会因 model 名错而失败。**
+# 2026-09-19 实测:**SGLang 接受任意 model 名** —— 发 "totally-bogus-model-xyz"
+# 照样 200、照样生成 100 token,还把假名字原样回显。也就是说在 SGLang 栈上,
+# 「CAP_MODEL 写错 → 服务端 404 → 闸门拦住」这条**完全不成立**:陈旧的
+# CAP_MODEL 会静默通过,而这正是本脚本 2026-09-02 事故要防的东西。
+# (vLLM 会 404,所以这个洞只在 SGLang 上;但检查放这里对两者都对。)
+SERVED=$(curl -s -m 20 "http://localhost:$PORT/v1/models" \
+  | python3 -c "import json,sys
+try: print(json.load(sys.stdin)['data'][0]['id'])
+except Exception: print('')" 2>/dev/null)
+if [ "$SERVED" != "$MODEL" ]; then
+  echo "  !! /v1/models 报的是 '${SERVED:-<无响应>}',而 CAP_MODEL='$MODEL'。"
+  echo "  !! 换栈后没跟上。**不要**据此判断锁是否生效(SGLang 会接受任意 model 名,"
+  echo "     生成请求不会替你报错)。改 scripts/gb10-clock-cap.sh 的 MODEL/PORT/CHAT_KWARGS。"
+  exit 3
+fi
 python3 - <<PY_PL > /tmp/.cap_pl.json || { echo "  !! payload 构造失败"; exit 3; }
 import json, os
 payload = {'model': "$MODEL",
+           # ⚠️ 计数题,不是开放问答 —— 它**天然**产出 300+ token,不依赖 min_tokens
+           #    (SGLang 忽略 min_tokens,实测只回 2 个 token)。换 prompt 前先确认
+           #    新 prompt 在**所有**要支持的栈上都能产出 >=50 token。
            'messages': [{'role': 'user',
-                         'content': 'Explain tensor parallelism in distributed inference.'}],
+                         'content': 'Count from 1 to 300, one number per line. '
+                                    'Output only the numbers.'}],
            'max_tokens': 300, 'min_tokens': 300, 'temperature': 0}
 # 逐栈不同的思考 kwarg。空 = 不发(k3s 两栈)。
 ck = r'''$CHAT_KWARGS'''.strip()
@@ -130,10 +161,28 @@ if [ "${GEN_TOK:-0}" -lt 50 ] || ! grep -q . /tmp/.cap_v1 2>/dev/null; then
   exit 3
 fi
 python3 - <<'PY'
-for tag,f in (("head/rank0","/tmp/.cap_v1"),("peer/rank1","/tmp/.cap_v2")):
-    try: v=[int(x) for x in open(f).read().split() if x.strip().isdigit()]
-    except OSError: v=[]
-    print(f"  {tag}: max={max(v)} mean={sum(v)/len(v):.0f} n={len(v)}" if v else f"  {tag}: 无采样")
+# ⚠️ **单节点栈下 peer 那行不是判据。** 2026-09-19 切到 SGLang(只用 S1)后
+#    实测 peer 采到 209 MHz —— 那是 S2 真正空闲的频率,不是"锁没生效"。
+#    空闲读数和判据长得完全不像,但它打印在"判据"字样下面就会被误读,
+#    所以这里显式标注,而不是甩一个裸数字出去。
+#    (S2 上的锁在它空闲时无法用本方法验证 —— 要验就得让它真的有负载。)
+loads = {}
+for tag, f in (("head/rank0", "/tmp/.cap_v1"), ("peer/rank1", "/tmp/.cap_v2")):
+    try: v = [int(x) for x in open(f).read().split() if x.strip().isdigit()]
+    except OSError: v = []
+    loads[tag] = v
+    if not v:
+        print(f"  {tag}: 无采样"); continue
+    mean = sum(v) / len(v)
+    note = ""
+    if mean < 800:
+        note = "   ← 该节点空闲,**本行不构成判据**(单节点栈时属正常)"
+    print(f"  {tag}: max={max(v)} mean={mean:.0f} n={len(v)}{note}")
+h = loads.get("head/rank0") or []
+p_ = loads.get("peer/rank1") or []
+if h and p_ and sum(p_)/len(p_) < 800:
+    print("  注:只有 head 参与了负载 —— 当前主力栈是单节点(qwen38un)。")
+    print("     要验 S2 的锁,得先在 S2 上跑起有负载的东西(如 make qwen38fn-run)。")
 PY
 SH
   scp -q -i "$SSH_KEY" -o StrictHostKeyChecking=no /tmp/.gb10_cap_verify.local "$SSH_USER@$HEAD:$script"
