@@ -1,0 +1,26 @@
+{
+ "files": {
+  ".gitattributes": 1570,
+  "LICENSE": 11544,
+  "README.md": 16703,
+  "chat_template.jinja": 8952,
+  "config.json": 46673,
+  "generation_config.json": 214,
+  "merges.txt": 3353259,
+  "model-00001-of-00005.safetensors": 4998298356,
+  "model-00002-of-00005.safetensors": 4968398300,
+  "model-00003-of-00005.safetensors": 4962827452,
+  "model-00004-of-00005.safetensors": 4959033888,
+  "model-00005-of-00005.safetensors": 3950531428,
+  "model-extra-00001-of-00001.safetensors": 849400424,
+  "model.safetensors.index.json": 193894,
+  "preprocessor_config.json": 390,
+  "recipe.yaml": 33998,
+  "tokenizer.json": 19989424,
+  "tokenizer_config.json": 1123,
+  "video_preprocessor_config.json": 385,
+  "vocab.json": 6722759
+ },
+ "repo": "orcarouter/Qwen3.8-27B-Uncensored-NVFP4",
+ "revision": "96d4d0b66d94314909d1af73f955e94bf68335ac"
+}

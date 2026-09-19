@@ -1,0 +1,11 @@
+{
+ "files": {
+  ".gitattributes": 1581,
+  "README.md": 5397,
+  "assets/dflash2-figure.png": 286889,
+  "config.json": 1239,
+  "model.safetensors": 3848817896
+ },
+ "repo": "z-lab/Qwen3.8-27B-DFlash2",
+ "revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4"
+}

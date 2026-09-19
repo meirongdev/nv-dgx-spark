@@ -69,6 +69,7 @@ MODE="${WATCH_MODE:-k8s}"                                        # k8s | docker
 DOCKER_HOST_IP="${WATCH_DOCKER_HOST:-100.97.87.120}"             # 跑 start.sh 的 head
 DOCKER_DIR="${WATCH_DOCKER_DIR:-/home/admin/glm53-exl3}"         # 上游 repo 所在目录
 DOCKER_CONTAINERS="${WATCH_DOCKER_CONTAINERS:-glm53-exl3-head}"  # 判"在跑"看它
+DOCKER_STOP="${WATCH_DOCKER_STOP:-./start.sh stop}"              # 逐栈不同的成对停机命令
 SSH_KEY_W="${WATCH_SSH_KEY:-$HOME/.ssh/vgio}"
 SSH_USER_W="${WATCH_SSH_USER:-admin}"
 ssh_head(){ ssh -i "$SSH_KEY_W" -o StrictHostKeyChecking=no -o BatchMode=yes \
@@ -133,9 +134,9 @@ scale_down(){
   log "CRITICAL: $who available=${pct}% < ${CRIT_PCT}% sustained — stopping $STACK"
   if [ "$MODE" = docker ]; then
     # ./start.sh stop 成对停 head+worker(stop_containers),不留 zombie TP 组。
-    ssh_head "cd '$DOCKER_DIR' && ./start.sh stop" \
-      && { log "start.sh stop done — both containers down. engine down."; } \
-      || err "start.sh stop 失败 —— 手动介入: make glm53-stop"
+    ssh_head "cd '$DOCKER_DIR' && $DOCKER_STOP" \
+      && { log "'$DOCKER_STOP' done — engine down."; } \
+      || err "'$DOCKER_STOP' 失败 —— 手动介入: make $STACK-stop"
   else
     # shellcheck disable=SC2086  # DEPLOYS 是有意分词的 deploy 名列表
     kubectl --kubeconfig "$KUBECONFIG" -n "$NS" scale deploy $DEPLOYS --replicas=0 \
@@ -217,8 +218,8 @@ if [ "$MODE" = docker ]; then
     err "ssh 不通:$SSH_USER_W@$DOCKER_HOST_IP(key=$SSH_KEY_W) —— 看门狗动不了手。"
     exit 3
   }
-  ssh_head "test -x '$DOCKER_DIR/start.sh'" 2>/dev/null || {
-    err "'$DOCKER_DIR/start.sh' 不存在或不可执行 —— 看门狗会保护不到任何东西。"
+  ssh_head "cd '$DOCKER_DIR' && test -x ${DOCKER_STOP%% *}" 2>/dev/null || {
+    err "'$DOCKER_DIR/${DOCKER_STOP%% *}' 不存在或不可执行 —— 看门狗会保护不到任何东西。"
     err "确认 WATCH_DOCKER_DIR 指向上游 repo(或改 Makefile 顶部的 MEMWATCH_STACK)。"
     exit 3
   }

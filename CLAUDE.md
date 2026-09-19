@@ -14,21 +14,25 @@ Blackwell) servers. Three stacks live here — one primary, two ways back:
 
 | Stack | Nodes | Endpoint | Runtime | Status |
 |---|---|---|---|---|
-| **GLM-5.3-Flash EXL3 4bpw** | **2** (TP=2) | `:8888` `GLM-5.3-Flash-EXL3` | **plain docker** (upstream `start.sh`) | **primary** (since 2026-09-19) |
-| Qwen3.8-Flash-Next NVFP4 | 2 (TP=2) | `:8000` `qwen38-flash-next` | k3s | rollback target #1 |
-| DeepSeek-V4-Flash-0731 | 2 (TP=2) | `:8000` `deepseek-v4-flash` | k3s | rollback target #2 |
-| Qwen3.8-27B-NVFP4 | 1 (S1) | `:8888` `qwen38-27b` | plain docker | single-node fallback |
+| **Qwen3.8-27B-Uncensored NVFP4** | **1** (S1) | `:8888` `qwen3.8-27b-sglang` | **SGLang** + DFlash2, docker | **primary** (since 2026-09-19) |
+| Qwen3.8-Flash-Next NVFP4 | 2 (TP=2) | `:8000` `qwen38-flash-next` | k3s (vLLM) | rollback #1 — **fastest on code (62.1)** |
+| GLM-5.3-Flash EXL3 4bpw | 2 (TP=2) | `:8888` `GLM-5.3-Flash-EXL3` | docker (upstream `start.sh`) | rollback #2 — 850K ctx |
+| DeepSeek-V4-Flash-0731 | 2 (TP=2) | `:8000` `deepseek-v4-flash` | k3s (vLLM) | rollback #3 |
+| Qwen3.8-27B-NVFP4 (censored) | 1 (S1) | `:8888` `qwen38-27b` | docker (vLLM, no speculator) | retired-ish — 24.9 tok/s |
 
-⚠️ **All four are mutually exclusive** — same GPU memory. Stop the running one
-before starting another (`make glm53-stop` / `qwen38fn-stop` / `v4flash-stop` /
-`qwen38-stop`). The two k3s TP=2 stacks both claim `:8000`; **GLM and the
-single-node fallback both claim `:8888`**. `make glm53-preflight` checks all four.
+⚠️ **All five are mutually exclusive** — same GPU memory. Even the single-node
+ones: the TP=2 stacks' **rank0 also lives on S1**. Three of them claim `:8888`.
+Stop the running one first; `make qwen38un-preflight` checks all of the others.
 
-⚠️ **GLM is the first primary that does NOT run in k3s.** It runs the upstream
-MiaAI-Lab `start.sh` under plain docker, so: `kubectl` shows nothing, the k3s
-liveness probes do not apply, and `make memwatch` needed a **docker mode**
-(`WATCH_MODE=docker`, wired via `MEMWATCH_STACK=glm53`) because `kubectl scale`
-cannot stop it. Recipe + full decision log: `config/glm53-flash-exl3.yaml`.
+⚠️ **The primary is now single-node.** S2 sits idle, which removes the whole
+TP=2 failure class (gotcha #1's zombie collectives, cross-node NCCL/RoCE, the
+lockstep restart rule). It also means **`make memwatch` must be in docker mode**
+(`MEMWATCH_STACK=qwen38un`) — `kubectl scale` cannot stop a docker container.
+
+⚠️ **Three different engines are now in play** (vLLM / vLLM+EXL3 overlay /
+SGLang) and **five different thinking-kwarg semantics**. There is no shared
+default: see the table in `config/qwen38-uncensored-sglang.yaml`. Getting this
+wrong is silent — `docs/stack-switch-cn.md` §0.
 
 ⚠️ **When you switch the primary stack, work `docs/stack-switch-cn.md`** — the
 identity of "the current stack" is hardcoded in ~8 places across scripts, the
@@ -59,7 +63,50 @@ Three separate wrong-number/wrong-verdict incidents have come from skipping this
 - `192.168.200.101/102` — the internal 200G CX7 link. Carries the TP=2 NCCL
   traffic (bypassing the CNI) and inter-node file copies.
 
-## Current state (2026-09-19) — GLM-5.3-Flash EXL3 primary, speed passed, **memory tight**
+## Current state (2026-09-19) — Qwen3.8-27B-Uncensored + SGLang primary, single-node
+
+**Two stack switches happened on 2026-09-19.** Flash-Next → GLM-5.3-Flash EXL3
+(memory-tight, slower on code than the stack it replaced), then GLM → **Qwen3.8-27B
+-Uncensored NVFP4 on SGLang + DFlash2, on one node**. Full numbers:
+`benchmarks/qwen38un-2026-09-19/README.md`.
+
+✅ **Concurrency is the best this repo has ever measured — on half the hardware.**
+Peak **356.2 tok/s aggregate @ c8, single node** (Flash-Next 304 @ c8 on two
+nodes; GLM 179.8 @ c4 on two). Host memory does not move across the whole ladder.
+
+⚖️ **Single-stream is a mixed result.** Code **45.4** tok/s: +17% vs GLM's 38.8,
+but **−27% vs Flash-Next's 62.1**. So "GLM is too slow" is only partly fixed —
+**Flash-Next remains the fastest single-stream code stack in the repo.**
+Also **−17% vs upstream's own 54.6** for the same recipe; partially explained
+(compressed-tensors −3%, acceptance 6.12 vs upstream 6.71), plausibly the rest is
+the DFlash2 draft being trained against the *stock* target while ours is
+abliterated — **hypothesis, not verified.**
+
+✅ **Uncensored verified** (`scripts/qwen38un-test.sh`): 3/3 benign-over-refusal
+probes answered. The vendor's 64–99% → 0–6% harmful-refusal claim is **not**
+independently verified here, and capability regression was not measured.
+
+⚠️ **`make memwatch` still cannot run.** S1 idles at **6.1 GiB (5.0%)**, exactly
+the CRIT line — much better than GLM's 1.8%, still no OOM guard, still no BMC.
+Cause: `mem-fraction-static 0.90` hands SGLang ~112 GiB while the weights are
+24 GB; the rest is a KV pool far larger than we need. Two untaken options are in
+the benchmark README. **Do not raise it to 0.95** — upstream hard-rebooted a box.
+
+✅ **The TP=2 failure class is gone** with a single-node primary: no zombie
+collectives (gotcha #1), no cross-node NCCL/RoCE, no lockstep restart rule. S2 is
+idle at 116 GiB. k3s is running with all four k3s deployments at 0 replicas, so
+`make qwen38fn-run` is a one-command rollback to the 62.1 tok/s stack.
+
+⏳ **Quality debt is now three stacks deep** — aider-polyglot has been run against
+V4-Flash only (`benchmarks/aider-polyglot-deepseek-v4-flash-2026-08-01/`, 82.4%).
+Flash-Next, GLM and this stack are all unmeasured.
+
+🔧 **Clients have NOT been switched** — codex/qwen still point at `:8000`
+`qwen38-flash-next`, which is down. The new served name is `qwen3.8-27b-sglang`
+on `:8888`. `docs/stack-switch-cn.md` layer 3 is open; so is `CAP_MODEL` in
+`scripts/gb10-clock-cap.sh` (still set to GLM's name and kwargs).
+
+### Previous state (earlier on 2026-09-19) — GLM-5.3-Flash EXL3
 
 **Primary stack switched Flash-Next → GLM-5.3-Flash EXL3 4bpw on 2026-09-19**,
 running the upstream MiaAI-Lab `start.sh` under plain docker. Speed is a clear

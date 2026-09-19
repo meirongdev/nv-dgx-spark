@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-warmer-logs v4flash-drift v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify v4flash-hotfix-status v4flash-hotfix-test qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop qwen38fn-preflight qwen38fn-run qwen38fn-status qwen38fn-logs qwen38fn-logs-worker qwen38fn-test qwen38fn-load qwen38fn-stop qwen38fn-restart qwen38fn-rollback ple-test memwatch-check memwatch memwatch-reset memwatch-test node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall glm53-preflight glm53-run glm53-status glm53-logs glm53-logs-worker glm53-stop glm53-restart glm53-boot-log
+.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-warmer-logs v4flash-drift v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify v4flash-hotfix-status v4flash-hotfix-test qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop qwen38fn-preflight qwen38fn-run qwen38fn-status qwen38fn-logs qwen38fn-logs-worker qwen38fn-test qwen38fn-load qwen38fn-stop qwen38fn-restart qwen38fn-rollback ple-test memwatch-check memwatch memwatch-reset memwatch-test node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall glm53-preflight glm53-run glm53-status glm53-logs glm53-logs-worker glm53-stop glm53-restart glm53-boot-log qwen38un-preflight qwen38un-run qwen38un-boot-log qwen38un-status qwen38un-logs qwen38un-stop qwen38un-restart
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -471,14 +471,21 @@ MEMWATCH ?= scripts/mem-watch.sh
 # 2026-09-02 主力栈切到 qwen38fn;回滚 V4 时改回 v4flash。
 # ⚠️ 注释另起一行 —— 写成行尾注释会让变量带上尾随空格,
 #    WATCH_DEPLOYS 会变成 "qwen38fn   -worker" 这种拼不出来的名字。
-MEMWATCH_STACK ?= glm53
-# ⚠️ glm53 是**唯一跑在 docker 上**的 TP=2 栈(上游 start.sh),k8s 那套
-# `kubectl scale` 对它完全无效 —— 所以这里必须整体切到 docker 形态,
-# 否则看门狗会变成一道哑的防线。脚本启动时会自检 ssh + start.sh 并拒绝启动。
-ifeq ($(MEMWATCH_STACK),glm53)
+MEMWATCH_STACK ?= qwen38un
+# ⚠️ 两个 docker 形态的栈(glm53 / qwen38un)都不能用 kubectl scale 停,必须整体切到
+#    docker 模式,否则看门狗会变成一道哑的防线。脚本启动时自检 ssh + 停机脚本。
+#    k3s 栈(qwen38fn / v4flash)走 else 分支。
+ifeq ($(MEMWATCH_STACK),qwen38un)
+MEMWATCH_ENV = WATCH_STACK=qwen38un WATCH_MODE=docker \
+               WATCH_DOCKER_HOST=$(Q38UN_HOST) WATCH_DOCKER_DIR=$(Q38UN_DIR) \
+               WATCH_DOCKER_CONTAINERS=$(Q38UN_CONT) \
+               WATCH_DOCKER_STOP=./stop.sh \
+               WATCH_SSH_KEY=$(SSH_KEY) WATCH_SSH_USER=$(SSH_USER)
+else ifeq ($(MEMWATCH_STACK),glm53)
 MEMWATCH_ENV = WATCH_STACK=glm53 WATCH_MODE=docker \
                WATCH_DOCKER_HOST=$(GLM53_HEAD) WATCH_DOCKER_DIR=$(GLM53_DIR) \
                WATCH_DOCKER_CONTAINERS=glm53-exl3-head \
+               WATCH_DOCKER_STOP="./start.sh stop" \
                WATCH_SSH_KEY=$(SSH_KEY) WATCH_SSH_USER=$(SSH_USER)
 else
 MEMWATCH_ENV = WATCH_STACK=$(MEMWATCH_STACK) WATCH_NS=$(MEMWATCH_STACK) \
@@ -682,3 +689,83 @@ glm53-stop:
 
 # 成对重启。⚠️ 绝不单独重建一个 rank —— 这是 TP=2 的固有性质,与引擎无关(gotcha #1)。
 glm53-restart: glm53-stop glm53-run
+
+# ===========================================================================
+# Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2 —— 单节点(只用 S1)
+# ===========================================================================
+# ⚠️ 与另外四个栈一样互斥,但**只占 S1** —— S2 空着。不过 Flash-Next/V4 的 rank0
+#    也在 S1,所以仍然不能同时跑(GPU 内存)。glm53/qwen38-27b 还同占 :8888。
+# 上游 MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark @ 9fb18ed(MIT),跑 start-dflash.sh。
+# 账记在 config/qwen38-uncensored-sglang.yaml。
+Q38UN_HOST   ?= 100.97.87.120
+Q38UN_PORT   ?= 8888
+Q38UN_DIR    ?= /home/admin/qwen38-sglang
+Q38UN_MODEL  ?= qwen3.8-27b-sglang
+# ⚠️ 权重必须放在 **被挂载的 HF_HOME 树内**。上游 start.sh 只挂两样:
+#    $(Q38UN_DIR)/.cache/huggingface -> /root/.cache/huggingface  和 triton 缓存。
+#    放在 /home/admin/models 下容器根本看不见 —— transformers 会把这个路径当成
+#    HF repo id 去解析并报 "Repo id must be in the form 'namespace/repo_name'"
+#    (2026-09-19 首次启动就是这么failed的,错误信息完全不提"路径没挂载")。
+Q38UN_WEIGHTS ?= $(Q38UN_DIR)/.cache/huggingface/local/Qwen3.8-27B-Uncensored-NVFP4
+Q38UN_WEIGHTS_CT ?= /root/.cache/huggingface/local/Qwen3.8-27B-Uncensored-NVFP4
+Q38UN_CONT   ?= qwen3.8-27b-sglang
+Q38UN_IMAGE  ?= lmsysorg/sglang:nightly-cu134-20260909-708f51e
+
+# 五栈互斥 + 权重/镜像就位。比 glm53-preflight 少一条主机内存闸门 —— 27B 只有
+# 24 GB 权重,mem-fraction 0.90 下主机仍剩 ~12 GiB(10%),不是紧约束。
+qwen38un-preflight:
+	@for ns in $(Q38FN_NS) $(DSV4_NS); do \
+		n=$$($(K8S) -n $$ns get deploy -o jsonpath='{.items[*].spec.replicas}' 2>/dev/null \
+			| tr ' ' '\n' | awk '{s+=$$1} END{print s+0}'); \
+		if [ "$$n" -gt 0 ]; then \
+			echo "ABORT: k3s 栈 $$ns 还有 $$n 个副本在跑(rank0 也在 S1,同争 GPU)。先 make $$ns-stop"; exit 1; \
+		fi; \
+	done
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) \
+		"for c in glm53-exl3-head $(Q38_CONTAINER); do \
+		   docker ps --filter name=\$$c --format '{{.Names}}' | grep -q . \
+		   && { echo \"ABORT: \$$c 在跑(同占 GPU/:8888),先停掉\"; exit 1; }; done; \
+		 n=\$$(find $(Q38UN_WEIGHTS) -maxdepth 1 -name '*.safetensors' 2>/dev/null | wc -l); \
+		 [ \"\$$n\" -eq 6 ] || { echo \"ABORT: 主权重只有 \$$n/6 分片\"; exit 1; }; \
+		 docker image inspect $(Q38UN_IMAGE) >/dev/null 2>&1 \
+		 || { echo 'ABORT: 镜像 $(Q38UN_IMAGE) 不在本机(见 config 里的 retag 步骤)'; exit 1; }" \
+	|| exit 1
+	@echo "preflight OK: 互斥、权重(6 分片)、镜像就位"
+
+# ⚠️ **DF_EXTRA 是本仓库偏离上游的唯一一处,不能省。**
+#    上游把 TARGET_PATH 当 HF repo id 传给 SGLang,由**容器**现下 —— 容器里没有
+#    hf-mirror 配置,且 gotcha #6 就是被 HF cache 的绝对符号链接咬的。
+#    DF_EXTRA 追加在 EXTRA_ARGS 最后,argparse last-wins,故能盖掉硬编码路径。
+# ⚠️ mem-fraction-static 由 start-dflash.sh 设成 **0.90**(覆盖 start.sh 的 0.95)。
+#    上游注释原文:0.95 hard-rebooted the box。**别去"修"成 0.95。**
+# ⚠️ DOCKER_ENV 里的离线开关不能省:草稿模型是按 **HF repo id** 传给 SGLang 的
+#    (--speculative-draft-model-path z-lab/...),即便已预缓存,HF hub 仍会发 HEAD
+#    请求探更新 → 容器内 "Network is unreachable" 重试 5 轮才回落缓存,白等一分钟。
+#    本仓库另外两个栈(qwen38fn / qwen38-27b)本来就带这两个变量。
+qwen38un-run: qwen38un-preflight
+	@scp -q -i $(SSH_KEY) -o StrictHostKeyChecking=no scripts/qwen38un-launch.sh \
+		$(SSH_USER)@$(Q38UN_HOST):/home/$(SSH_USER)/qwen38un-launch.sh
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) \
+		"tmux kill-session -t q38un-start 2>/dev/null; \
+		 tmux new-session -d -s q38un-start 'bash /home/$(SSH_USER)/qwen38un-launch.sh 2>&1 | tee /home/$(SSH_USER)/q38un-start.log'"
+	@echo "started in tmux 'q38un-start' on $(Q38UN_HOST)"
+	@echo "  跟进: make qwen38un-boot-log    状态: make qwen38un-status"
+
+qwen38un-boot-log:
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) \
+		"tail -40 /home/$(SSH_USER)/q38un-start.log 2>/dev/null | tr -d '\r' || echo 'no boot log yet'"
+
+qwen38un-status:
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) \
+		"docker ps --filter name=$(Q38UN_CONT) --format '{{.Names}} {{.Status}}'; \
+		 echo '--- /v1/models ---'; \
+		 curl -s http://localhost:$(Q38UN_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'; \
+		 echo '--- host mem ---'; free -h | head -2"
+
+qwen38un-logs:
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) "docker logs --tail=80 $(Q38UN_CONT)"
+
+qwen38un-stop:
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) "cd $(Q38UN_DIR) && ./stop.sh"
+
+qwen38un-restart: qwen38un-stop qwen38un-run
