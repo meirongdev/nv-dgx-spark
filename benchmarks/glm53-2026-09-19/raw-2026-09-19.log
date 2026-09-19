@@ -1,0 +1,74 @@
+# 原始输出 — GLM-5.3-Flash EXL3, 2026-09-19
+
+## decode (glm53-bench.sh)
+=== GLM-5.3-Flash EXL3 decode bench ===
+model=GLM-5.3-Flash-EXL3 effort=low max_tokens=400 warmups=2 reps=3
+起始 MemAvailable = 2505 MiB
+
+  structured  run1  out=400 tok  wall= 6.45s   62.1 tok/s   (avail 2479 MiB)
+  structured  run2  out=400 tok  wall= 6.33s   63.2 tok/s   (avail 2459 MiB)
+  structured  run3  out=400 tok  wall= 6.22s   64.3 tok/s   (avail 2479 MiB)
+  structured  BEST  64.3 tok/s
+
+  code        run1  out=400 tok  wall=10.86s   36.8 tok/s   (avail 2515 MiB)
+  code        run2  out=400 tok  wall=10.32s   38.8 tok/s   (avail 2498 MiB)
+  code        run3  out=400 tok  wall=11.21s   35.7 tok/s   (avail 2521 MiB)
+  code        BEST  38.8 tok/s
+
+  prose       run1  out=400 tok  wall=16.26s   24.6 tok/s   (avail 2533 MiB)
+  prose       run2  out=400 tok  wall=16.92s   23.6 tok/s   (avail 2516 MiB)
+  prose       run3  out=400 tok  wall=17.09s   23.4 tok/s   (avail 2470 MiB)
+  prose       BEST  24.6 tok/s
+
+结束 MemAvailable = 2463 MiB
+
+上游 README「Decode (this kit, 2026-08-28)」x1 = 62.9 tok/s (structured/code, thinking off)
+上游 issue #163 同样走 PYNCCL 的那台      x1 = 31.0 tok/s (structured)
+
+
+## 并发梯度 (glm53-conc.sh)
+=== 并发梯度 ===
+model=GLM-5.3-Flash-EXL3 effort=low max_tokens=400 熔断地板=700 MiB
+engine 上限 MAX_NUM_SEQS=4
+起始 MemAvailable = 2482 MiB
+
+warmup...
+并发  墙钟(s)  聚合tok/s  单流tok/s 内存最低 完成/发出
+c1          6.40         62.5         62.5     2444 MiB       1/1
+c2          7.14        112.0         56.0     2474 MiB       2/2
+c3          8.28        144.9         48.3     2521 MiB       3/3
+c4          8.90        179.8         44.9     2495 MiB       4/4
+
+结束 MemAvailable = 2502 MiB
+上游对照(structured, thinking off): x1 62.9 / x2 103.3 agg / x4 146.5 agg
+
+[exited with code 0]
+
+## prefill 64K (glm53-prefill.sh)
+=== 长 prompt prefill 阶梯 ===
+model=GLM-5.3-Flash-EXL3  档间地板=600 MiB  飞行中熔断=450 MiB  (prefix caching: 每发唯一 nonce → cold)
+起始 MemAvailable = 2046 MiB
+
+上游对照: 8k 1492 / 16k 1554 / 32k 1428 / 64k 1587 / 128k 1562 tok/s
+
+目标    实际tok   TTFT(s) prefill tok/s 内存最低 缓存命中
+64000         89255     54.00         1653     1945 MiB          0
+64000         89251     54.09         1650     1817 MiB          0
+
+结束 MemAvailable = 2520 MiB
+
+[exited with code 0]
+
+## prefill 128K (glm53-prefill.sh)
+=== 长 prompt prefill 阶梯 ===
+model=GLM-5.3-Flash-EXL3  档间地板=600 MiB  飞行中熔断=450 MiB  (prefix caching: 每发唯一 nonce → cold)
+起始 MemAvailable = 2435 MiB
+
+上游对照: 8k 1492 / 16k 1554 / 32k 1428 / 64k 1587 / 128k 1562 tok/s
+
+目标    实际tok   TTFT(s) prefill tok/s 内存最低 缓存命中
+128000       178468    109.69         1627     1042 MiB          0
+
+结束 MemAvailable = 1251 MiB
+
+[exited with code 0]
