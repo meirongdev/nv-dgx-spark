@@ -97,20 +97,41 @@ abliterated — **hypothesis, not verified.**
 probes answered. The vendor's 64–99% → 0–6% harmful-refusal claim is **not**
 independently verified here, and capability regression was not measured.
 
-✅ **`make memwatch` can run again** (verified 40 s, no trigger, `available=9% (ok)`)
-— but it is **not currently running**; start it in tmux to actually be guarded.
-`mem-fraction-static` is **0.85**, not upstream's 0.90: at 0.90 S1 idled at
-exactly **5.0%** and memwatch fired on its first tick (measured), i.e. no guard
-at all. 0.85 gives **11.4 GiB (9.4%) at boot** — but it **drifts**: after ~2 h of serving
-plus benchmarking it measured **7.4 GiB (6.1%)**, and `drop_caches` reclaimed only
-137 MiB, so it is the engine's own host RSS growing (`sglang::scheduler` 4.4 GiB +
-detokenizer 1.4 + python3 1.7), not page cache. Still above CRIT 5%, but the
-margin is ~1 point, not 4 — **watch this**. The switch cost **nothing measurable** — decode
-is bit-identical (58.5 / 45.4 / 24.0) and matched concurrency levels are within
-noise. The KV pool is still 1,368,663 tokens, 5.2× the 262144 context; 0.90 was
-handing SGLang ~112 GiB when the weights are 24 GB. **Never 0.95** — upstream
-hard-rebooted a box on it. Override chain: start.sh 0.95 → start-dflash.sh 0.90
-→ our `DF_EXTRA` 0.85, argparse last-wins.
+✅ **`mem-fraction-static` is 0.80**, not upstream's 0.90 — and **0.85 is a tried
+and rejected middle step, not a safer-looking alternative.** Both lower values
+were adopted to buy back the OOM guard, because these boxes have **no BMC**:
+
+| fraction | headroom at boot | steady (after ~2 h) | memwatch | KV pool |
+|---|---|---|---|---|
+| 0.90 (upstream) | 6.10 GiB (5.0%) | — | ❌ fires on its first tick | — |
+| 0.85 (rejected) | 11.4 GiB (9.4%) | **7.4 → 5.0%** | ❌ **fired at 2 h 10 m; stack stopped** | 1,368,663 |
+| **0.80 (live)** | **17.4 GiB (14.3%)** | ~11% | ✅ stable | 1,220,951 |
+
+⚠️ **Boot headroom is not steady headroom.** At 0.85, 9.4% at boot looked safe and
+decayed to 5.0% after two hours of serving + benchmarking. What drifts is the
+engine's own host RSS (`sglang::scheduler` 4.4 GiB + detokenizer 1.4 + python3
+1.7), growing with request history / radix-cache metadata — `drop_caches`
+reclaimed only 137 MiB. **Tune this against the steady value, never the boot one.**
+
+⚠️ **"Use the higher value and let it self-recover" does not work here** — the
+watchdog is *deliberately* no-auto-restore (anti-thrash; `scripts/mem-watch.sh`
+header + `docs/auto-mitigation-cn.md`). At 0.85 the measured outcome is the stack
+**stopped and staying stopped** until someone runs `make memwatch-reset`.
+
+`benchmarks/qwen38un-2026-09-19/README.md` records memwatch as **resident** since
+the move to 0.80. That is the newest claim in the repo, but it is a claim about
+host state, which no file can keep current — `make memwatch-check` is read-only
+and answers it in one second. Assume nothing is guarding until you have looked.
+
+`max_running_requests` is 12 at **both** 0.85 and 0.80, so that penalty is not
+0.80's. **Never 0.95** — upstream hard-rebooted a box on it. Override chain:
+start.sh 0.95 → start-dflash.sh 0.90 → our `DF_EXTRA` 0.80, argparse last-wins.
+
+⏳ **Throughput at 0.80 has not been re-measured.** The headline numbers below
+(472.7 tok/s @ c12; decode 58.5 / 45.4 / 24.0) were taken at **0.85**
+(`benchmarks/qwen38un-2026-09-19/README.md` §throughput says so). KV went
+1.37M → 1.22M tokens while `max_running_requests` stayed 12, so the expectation
+is "no change" — **but that is an expectation, not a measurement.**
 
 ✅ **The TP=2 failure class is gone** with a single-node primary: no zombie
 collectives (gotcha #1), no cross-node NCCL/RoCE, no lockstep restart rule. S2 is
