@@ -6,17 +6,24 @@
 两套服务都是**无鉴权**的 vLLM;未设 `--api-key` 时 vLLM 接受任意 key
 (但客户端仍然要求能解析到一个非空值,所以到处用 `dummy`)。
 
-| 栈 | 端点 | served name | 状态 |
-|---|---|---|---|
-| **27B-Uncensored(主)** | `100.97.87.120:8888` | `qwen3.8-27b-sglang` | **SGLang,S1 单机**;2026-09-19 起 |
-| Flash-Next(回滚) | `100.97.87.120:8000` | `qwen38-flash-next` | 双节点 TP=2;**单流代码最快 62.1** |
-| GLM-5.3-Flash EXL3(回滚) | `100.97.87.120:8888` | `GLM-5.3-Flash-EXL3` | 双节点;850K 上下文 |
-| V4-Flash(已停) | `100.97.87.120:8000` | `deepseek-v4-flash` | 权重/镜像保留可回滚 |
-| Qwen3.8-27B 原版(降级) | `100.97.87.120:8888` | `qwen38-27b` | S1 单机,无投机,24.9 tok/s |
-| **Mac 本地 omlx** | `127.0.0.1:8000` | `mlx-community__*` 等 | 与 DGX **同端口号**,靠主机名区分 |
+<!-- BEGIN generated:clients -->
+| 栈 | 端点 | served name | 关思考的 kwarg | CoT 字段 | ctxWindow |
+|---|---|---|---|---|---|
+| **qwen38un(主)** | `100.97.87.120:8888` | `qwen3.8-27b-sglang` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| gemma | `127.0.0.1:8000` | `mlx-community__gemma-4-26B-A4B-it-qat-nvfp4` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| glm53 | `100.97.87.120:8888` | `GLM-5.3-Flash-EXL3` | `{"reasoning_effort":"low"}` ⚠️ **关不掉**,这是最低档 | `reasoning` | 850000 |
+| omlx | `127.0.0.1:8000` | `mlx-community__Qwen3.6-35B-A3B-nvfp4` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| qwen38 | `100.97.87.120:8888` | `qwen38-27b` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| qwen38fn | `100.97.87.120:8000` | `qwen38-flash-next` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| v4flash | `100.97.87.120:8000` | `deepseek-v4-flash` | `{"thinking": false}` | `reasoning_content` | 1000000 |
 
-⚠️ **`:8888` 现在有三个栈共用**(27B-Uncensored / GLM / 27B 原版),`:8000` 两个。
-端口已经区分不了后端 —— **只能看 served name**。
+> ⚠️ **关思考的 kwarg 和 CoT 字段逐栈都不同,而且写错都是静默的**(gotcha #9)。
+> 上表由 `make stack-table` 从 `stacks/*/stack.env` 生成 —— 不要手改这里,改注册表。
+<!-- END generated:clients -->
+
+⚠️ **端口已经区分不了后端** —— `:8888` 有三个栈共用,`:8000` 两个。
+**只能看 served name。** `make info STACK=<id>` 打印某个栈的完整身份,
+`make stacks` 打印全表。
 
 > ⚠️ **端口 8000 在两处都用**:`100.97.87.120:8000` 是 DGX,`127.0.0.1:8000` 是 Mac
 > 本地的 omlx。2026-09-02 发现全局 qwen 配置曾处于
@@ -94,7 +101,7 @@ wire_api = "responses"           # codex 0.142 删掉了 "chat",必须用 respon
 catalog 的作用是消除 `Model metadata for <slug> not found. Defaulting to fallback
 metadata` 警告 —— 否则 codex 会拿 GPT-5 的 `272000×95%=258400` 当窗口,
 可能超出服务端上限。qwen38 的 catalog 直接从 dgx 的派生(保留其 17,730 字符
-base_instructions),生成方法见 `docs/qwen38-27b-fallback-cn.md` §6.3。
+base_instructions),生成方法见 `stacks/qwen38/runbook-cn.md` §6.3。
 
 ### reasoning effort:两套栈的档位语义完全不同
 
@@ -228,6 +235,6 @@ CLI 会按模型名匹配并**预留输出 token**:`contextLimit = max(0, contex
 - **codex**:`~/.codex/<name>.config.toml` + `~/.codex/<name>-models.json`,
   外加 `~/.zshrc` 里 `export LOCAL_LLM_API_KEY=dummy`。
   qwen38 的完整重建步骤(含生成 catalog 的 python)见
-  `docs/qwen38-27b-fallback-cn.md` §6.3。
+  `stacks/qwen38/runbook-cn.md` §6.3。
 - **Qwen Code**:`~/.qwen/settings.json`,最小可用骨架见
-  `docs/qwen38-27b-fallback-cn.md` §6.2。repo 内的 `.qwen/.env` 是 gitignored 的。
+  `stacks/qwen38/runbook-cn.md` §6.2。repo 内的 `.qwen/.env` 是 gitignored 的。

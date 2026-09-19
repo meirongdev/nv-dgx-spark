@@ -1,6 +1,11 @@
-# dgx-spark k3s 集群 — manifests 与版本记录
+# dgx-spark k3s 集群 — 集群级 manifests 与版本记录
 
 设计文档:`docs/k3s-migration-design-cn.md`。搭建日期 2026-08-12。
+
+> ⚠️ **这里只剩集群级的东西。** 每个栈的 manifests(namespace / configmap-launch /
+> leader / worker / service)在 2026-09-19 迁到了 `stacks/<id>/k8s/` —— 一个栈的
+> 全部资产(身份、配方、启动脚本、manifests、runbook)住在同一个目录里,
+> 这样**新增一个模型是新增一个目录,不用改任何既有文件**。见 `stacks/README.md`。
 
 ## 版本
 
@@ -18,13 +23,16 @@ registries.yaml          → 两节点 /etc/rancher/k3s/registries.yaml(daocloud
 cilium-values.yaml       → helm install/upgrade -f 用
 gpu/runtimeclass.yaml    → RuntimeClass nvidia
 gpu/nvidia-device-plugin.yaml → vendored v0.17.4 + runtimeClassName
-v4flash/                 → namespace / configmap-launch / leader / worker / service
+
+栈级(不在本目录):
+stacks/v4flash/k8s/      → namespace / configmap-launch / leader / worker / service
+stacks/qwen38fn/k8s/     → 同上
 ```
 
 ## 重建 kubeconfig(换机器 / 文件丢了)
 
 `~/.kube/dgx-spark.yaml` 不在仓库里(含客户端证书私钥),丢了就重新从 server 节点取。
-2026-08-16 实际重建过一次 —— 当时 `make v4flash-*` 全部报
+2026-08-16 实际重建过一次 —— 当时所有 `make ... STACK=v4flash` 全部报
 `stat ~/.kube/dgx-spark.yaml: no such file or directory`:
 
 ```bash
@@ -58,7 +66,7 @@ kubectl -n v4flash delete pod --all                # 重启(必须两侧一起)
 
 1. **绝不单独重启一个 rank。** 单 rank 重建会让另一侧永久卡在集合通信里,
    Pod 仍 `1/1 Running`、`/health` 照常 200,但真实生成永久超时(2026-08-13
-   演练实测)。已有探针兜底,但恢复要 ~10 分钟。一律成对操作:`make v4flash-restart`。
+   演练实测)。已有探针兜底,但恢复要 ~10 分钟。一律成对操作:`make restart STACK=v4flash`。
 
    探针判据是**「有活但*持续*零进展」**(`v4flash/configmap-launch.yaml` 里的
    `liveness.py`):读不排队的 `/metrics`,只有 `running+waiting > 0` **且**
@@ -89,7 +97,7 @@ kubectl -n v4flash delete pod --all                # 重启(必须两侧一起)
    改 spec 的正确落地方式是先停再 apply:
 
    ```bash
-   make v4flash-stop && kubectl apply -f k8s/v4flash/   # apply 把 replicas 收敛回 1
+   make stop STACK=v4flash && kubectl apply -f stacks/v4flash/k8s/   # apply 把 replicas 收敛回 1
    ```
 
    2026-08-16 用这条落地了 worker 探针改动,两侧同时加载,4m20s 恢复。
@@ -109,7 +117,7 @@ kubectl -n v4flash delete pod --all                # 重启(必须两侧一起)
 | `kubectl.kubernetes.io/default-container: vllm` 注解 | ❌ 无 | ✅ 有 |
 | `hotfix-issue55.py` + rank0.sh 里的调用 | ✅ 有(已提交 `407b556`) | ❌ **无** |
 
-危险在于本 README 一直把 `make v4flash-stop && kubectl apply -f k8s/v4flash/`
+危险在于本 README 一直把 `make stop STACK=v4flash && kubectl apply -f stacks/v4flash/k8s/`
 写成落地探针改动的标准做法 —— 在收编之前跑这条会**一次性删掉** warmer 和三个
 JIT 缓存挂载(重启即重编译 kernel,正是 warmer 在遮掩的开销),同时把 issue55
 热修加回去。两个方向的意外都不会有人提醒你。

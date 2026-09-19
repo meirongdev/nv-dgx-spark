@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-warmer-logs v4flash-drift v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify v4flash-hotfix-status v4flash-hotfix-test qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop qwen38fn-preflight qwen38fn-run qwen38fn-status qwen38fn-logs qwen38fn-logs-worker qwen38fn-test qwen38fn-load qwen38fn-stop qwen38fn-restart qwen38fn-rollback ple-test memwatch-check memwatch memwatch-reset memwatch-test node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall glm53-preflight glm53-run glm53-status glm53-logs glm53-logs-worker glm53-stop glm53-restart glm53-boot-log qwen38un-preflight qwen38un-run qwen38un-boot-log qwen38un-status qwen38un-logs qwen38un-stop qwen38un-restart
+.PHONY: venv install ping facts cmd inventory all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download run stop restart status logs logs-worker boot-log load preflight info test stacks stack-info switch stack-table stack-check preflight-test memwatch memwatch-check memwatch-reset memwatch-test clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -29,6 +29,10 @@ SMARTCTL_EXPORTER_ARCH ?= linux-arm64
 SMARTCTL_EXPORTER_PORT ?= 9633
 SMARTCTL_EXPORTER_LOG_HOST ?= 100.97.87.120
 
+# k3s 集群(kubeconfig 在这台操作机上)。栈级的 namespace / deploy 名不在这里 ——
+# 那些住在 stacks/<id>/stack.env,由 stacks/_lib/adapter-k3s.sh 读取。
+K8S ?= kubectl --kubeconfig $(HOME)/.kube/dgx-spark.yaml
+
 # Create virtual environment and install Ansible
 venv:
 	uv venv .venv
@@ -36,10 +40,6 @@ venv:
 
 # Install dependencies (alias for venv)
 install: venv
-
-# Test SSH connection to all hosts
-test:
-	uv run ansible all -i $(INVENTORY) -m ping --ssh-extra-args="-i $(SSH_KEY)"
 
 # Ping all hosts
 ping:
@@ -236,287 +236,106 @@ smartctl-exporter-stop:
 smartctl-exporter-logs:
 	ssh -i $(SSH_KEY) $(SSH_USER)@$(SMARTCTL_EXPORTER_LOG_HOST) "sudo journalctl -u smartctl_exporter --no-pager -n 50"
 
-# ========================================
-# DeepSeek-V4-Flash (dual-node vLLM; eugr spark-vllm-docker + jasl/vllm fork)
-# ========================================
-# NOT Ansible-driven: drives eugr's run-recipe on the head node over SSH.
-# One-time build + torch-fix + proxy revival: see docs/deepseek-v4-flash-cn.md.
-# Recipe mirror lives at config/deepseek-v4-flash.yaml.
-DSV4_HEAD   ?= 100.97.87.120
-DSV4_HARNESS ?= /home/admin/spark-vllm-docker
-DSV4_PORT   ?= 8000
-DSV4_WORKER ?= 192.168.200.102
-# k3s (current runtime): kubeconfig on this machine, namespace, manifests.
-K8S           ?= kubectl --kubeconfig $(HOME)/.kube/dgx-spark.yaml
-DSV4_NS       ?= v4flash
-
-# Launch = scale both ranks to 1. Boot autostart is k3s's own systemd service
-# (nodes Ready + GPU registered gate the pods), so there is no separate unit.
-v4flash-run:
-	$(K8S) -n $(DSV4_NS) scale deploy v4flash-worker v4flash-leader --replicas=1
-	@echo "loads ~5min (167GB weights), poll: make v4flash-status"
-
-v4flash-status:
-	@$(K8S) -n $(DSV4_NS) get pods -o wide
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
-		"curl -s http://localhost:$(DSV4_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'"
-
-v4flash-logs:
-	$(K8S) -n $(DSV4_NS) logs --tail=60 deploy/v4flash-leader
-
-v4flash-logs-worker:
-	$(K8S) -n $(DSV4_NS) logs --tail=60 deploy/v4flash-worker
-
-# warmer sidecar 的日志(重启后预热曲线 + 空闲衰减探测)。warmer.py 的头注释
-# 引用了这个目标,但在 2026-09-02 收编分叉之前它并不存在。
-# 结构化记录在宿主机 /home/admin/.cache/vllm/warmer.jsonl(跨 Pod 重启保留)。
-v4flash-warmer-logs:
-	$(K8S) -n $(DSV4_NS) logs --tail=40 deploy/v4flash-leader -c warmer
-
-# 仓库 manifests 与线上的真实差异(服务端 dry-run)。
-# ⚠️ apply 之前先跑这个 —— 2026-09-02 就是它挖出 warmer sidecar 和三个 JIT
-# 缓存挂载只存在于线上,而 `kubectl apply -f k8s/v4flash/` 会把它们悄悄删掉。
-v4flash-drift:
-	@$(K8S) diff -f k8s/v4flash/ 2>/dev/null | grep -E '^[+-]' | grep -vE '^[+-]{3}|generation:' \
-		|| echo "no drift: 仓库与线上一致"
-
-
-v4flash-test:
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) "BASE=http://localhost:$(DSV4_PORT) bash /home/admin/v4-test.sh"
-
-# Who is using the engine right now. "Feels slow" is usually concurrency
-# saturation (max_num_seqs=6), not the engine — check this before anything else
-# (2026-08-02 incident: a 6-way batch workload was misread as an upgrade regression).
-v4flash-load:
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(DSV4_HEAD) \
-		"curl -s http://localhost:$(DSV4_PORT)/metrics | grep -E 'num_requests_(running|waiting)\{|kv_cache_usage' | grep -v '^#'; \
-		echo '--- client IPs on :$(DSV4_PORT) ---'; \
-		ss -tn | grep ':$(DSV4_PORT)' | awk '{print \$$5}' | cut -d: -f1 | sort | uniq -c | sort -rn"
-	@echo '--- engine last minute ---'
-	@$(K8S) -n $(DSV4_NS) logs --since=1m deploy/v4flash-leader 2>/dev/null | grep 'loggers.py' | tail -3 || true
-
-# Stop = scale both ranks to 0. NOTE: k8s/v4flash/*.yaml carry `replicas: 1`,
-# so a later `kubectl apply` restarts the stack — that is intended (apply should
-# converge to the steady state), but don't apply while you mean to stay stopped.
-v4flash-stop:
-	$(K8S) -n $(DSV4_NS) scale deploy v4flash-leader v4flash-worker --replicas=0
-
-# Restart both ranks together. Never restart one alone: a single-rank restart
-# leaves the surviving rank hung in collectives (zombie TP group — /health still
-# returns 200). See docs/k3s-migration-design-cn.md §4.7.
-v4flash-restart:
-	$(K8S) -n $(DSV4_NS) delete pod --all
-	@echo "both ranks recreated; loads ~5min, poll: make v4flash-status"
-
-# Liveness-probe regression test. Extracts liveness.py / worker_liveness.py
-# straight out of k8s/v4flash/configmap-launch.yaml and replays the scenarios
-# that got a HEALTHY leader killed twice on 2026-08-16 (plus a real hang, so the
-# probe still bites). Pure stdlib, runs locally — no cluster, no venv.
-# ⚠️ Run this before touching either probe script.
-probe-test:
-	python3 scripts/test-liveness-probe.py
-
-# Push the probe scripts to the live cluster. ConfigMap is a plain volume mount
-# (NOT subPath), so kubelet syncs the new files into the RUNNING containers —
-# no pod restart, no inference downtime. Probe *fields* in leader.yaml/worker.yaml
-# are a different story: those need a pod rebuild to take effect.
-probe-apply: probe-test
-	$(K8S) apply -f k8s/v4flash/configmap-launch.yaml
-	@echo "ConfigMap updated; kubelet syncs /scripts into both pods within ~60s."
-	@echo "verify: make probe-verify"
-
-# Run the live probe scripts by hand inside both running pods (isolated state
-# file, so the real probe's own state is untouched). rc=0 on a healthy stack.
-probe-verify:
-	@echo "--- leader ---"
-	$(K8S) -n $(DSV4_NS) exec deploy/v4flash-leader -- \
-		env V4FLASH_STATE=/tmp/.probe_check python3 /scripts/liveness.py \
-		&& echo "leader rc=0 (healthy)"
-	@echo "--- worker ---"
-	$(K8S) -n $(DSV4_NS) exec deploy/v4flash-worker -- \
-		env V4FLASH_WORKER_STATE=/tmp/.wprobe_check python3 /scripts/worker_liveness.py \
-		&& echo "worker rc=0 (healthy)"
-
-# ---- issue #55 热修:流式 tool call 截断谎报 finish_reason ----
-# 补丁本体在 k8s/v4flash/configmap-launch.yaml 的 hotfix-issue55.py(含完整推理),
-# rank0.sh 每次启动跑一次(幂等)。改 ConfigMap 后必须 `make v4flash-restart` —— 补丁
-# 改的是已经 import 进 API server 进程的模块,光同步文件不生效。
-# ⚠️ 只有 rank0 有 OpenAI entrypoint,rank1 是 --headless,不需要也不检查。
-v4flash-hotfix-status:
-	$(K8S) -n $(DSV4_NS) exec deploy/v4flash-leader -- \
-		python3 /scripts/hotfix-issue55.py --status
-
-# 端到端验收(打之前应当 FAIL,打之后应当全 PASS)。含回归用例:自然结束的
-# tool call 必须仍报 finish_reason="tool_calls"。
-v4flash-hotfix-test:
-	python3 scripts/repro-issue55.py
-
-# ========================================
-# Qwen3.8-Flash-Next (换装中的主力候选, k3s, TP=2)
-# ========================================
-# NVFP4 checkpoint (RadixArk, ~126 GiB) + 官方 vllm/vllm-openai:qwen38-flash-next
-# 镜像。方案与分阶段执行见 docs/;flags 真相源是 config/qwen38-flash-next.yaml,
-# 线上跑的是 k8s/qwen38fn/configmap-launch.yaml —— **两者成对改**。
+# ===========================================================================
+# 栈的生命周期 —— 所有栈共用这一组动词
+# ===========================================================================
+# 这里**不认识任何一个栈的名字**。栈的身份住在 stacks/<id>/stack.env,
+# 当前主力栈住在 stacks/PRIMARY(一行 id)。加一个模型 = 新建 stacks/<id>/,
+# 本文件一个字都不用改。契约见 stacks/README.md。
 #
-# ⚠️ 与 v4flash 栈和 qwen38-27b fallback 栈**三者互斥**(同一份 GPU 内存,
-#    gotcha #2)。qwen38fn-run 会先自检,不再只靠文档提醒。
-Q38FN_NS   ?= qwen38fn
-Q38FN_HEAD ?= 100.97.87.120
-Q38FN_PORT ?= 8000
-Q38FN_TEST_SRC ?= scripts/qwen38fn-test.sh
-Q38FN_IMAGE ?= docker.m.daocloud.io/vllm/vllm-openai:qwen38-flash-next
+#   make run                      # 起当前主力栈(stacks/PRIMARY)
+#   make run    STACK=glm53       # 起指定栈
+#   make logs   STACK=qwen38fn WORKER=1
+#   make stacks                   # 注册表一览
+#   make switch TO=qwen38fn       # 换主力栈(含验收)
+#
+# ⚠️ 所有栈**互斥**(同一份 GPU 内存,gotcha #2)。run 前的 preflight 会遍历
+#    **整个注册表**逐个探测,不是一张手写的名单 —— 所以新栈一落地,所有既有栈
+#    自动开始检查它。
+STACKCTL := stacks/_lib/stackctl.sh
+STACK    ?=
+TAIL     ?= 60
 
-# 起栈前的互斥自检 + 掉页缓存。单独跑也行(只读部分),run 会自动带上。
-qwen38fn-preflight:
-	@v4=$$($(K8S) -n $(DSV4_NS) get deploy -o jsonpath='{.items[*].spec.replicas}' 2>/dev/null \
-		| tr ' ' '\n' | awk '{s+=$$1} END{print s+0}'); \
-	if [ "$$v4" -gt 0 ]; then \
-		echo "ABORT: v4flash 还有 $$v4 个副本在跑 —— 两个栈会抢同一份 GPU 内存(gotcha #2)。"; \
-		echo "       先执行: make v4flash-stop"; exit 1; \
-	fi
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) \
-		"docker ps --filter name=$(Q38_CONTAINER) --format '{{.Names}}' | grep -q . \
-		 && { echo 'ABORT: fallback 栈 $(Q38_CONTAINER) 在跑,先 make qwen38-stop'; exit 1; } || true"
-	@for h in $(HOSTS); do \
-		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
-			"test -d /home/$(SSH_USER)/.cache/huggingface/hub/Qwen3.8-Flash-Next-NVFP4 \
-			 || { echo \"ABORT: $$h 上没有权重目录(阶段 1 未完成)\"; exit 1; }; \
-			 sudo k3s ctr -n k8s.io images ls -q | grep -q vllm-qwen38fn \
-			 || { echo \"ABORT: $$h 的 containerd 里没有 vllm-qwen38fn 镜像(阶段 1 未完成)\"; exit 1; }" \
-		|| exit 1; \
-	done
-	@echo "preflight OK: 互斥已确认,两节点的镜像与权重就位"
+run stop restart status boot-log load preflight info test:
+	@$(STACKCTL) $@ $(STACK)
 
-# 126 GiB 加载期间热页缓存会饿死 GPU allocator(x00byte 实测),先在两台宿主机
-# 上 drop 一次。rank 脚本里还有一次 best-effort 兜底,覆盖 kubelet 自行重建的路径。
-qwen38fn-run: qwen38fn-preflight
-	@for h in $(HOSTS); do \
-		ssh -i $(SSH_KEY) $(SSH_USER)@$$h "sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'" \
-			&& echo "$$h: page cache dropped"; \
-	done
-	$(K8S) -n $(Q38FN_NS) scale deploy qwen38fn-worker qwen38fn-leader --replicas=1
-	@echo "loads 8-11min (126GiB weights) — 比 V4 的 5min 长,别急着判死"
-	@echo "poll: make qwen38fn-status"
+# make logs STACK=x WORKER=1 看 rank1(双节点栈);单节点栈会直说"没有 worker"。
+logs:
+	@TAIL=$(TAIL) $(STACKCTL) $(if $(WORKER),logs-worker,logs) $(STACK)
 
-qwen38fn-status:
-	@$(K8S) -n $(Q38FN_NS) get pods -o wide
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) \
-		"curl -s http://localhost:$(Q38FN_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'"
+logs-worker:
+	@TAIL=$(TAIL) $(STACKCTL) logs-worker $(STACK)
 
-qwen38fn-logs:
-	$(K8S) -n $(Q38FN_NS) logs --tail=60 deploy/qwen38fn-leader
+stacks:                    # 注册表一览(谁是主力、端口、served name)
+	@$(STACKCTL) list
+	@echo
+	@echo "PRIMARY = $$($(STACKCTL) primary)"
 
-qwen38fn-logs-worker:
-	$(K8S) -n $(Q38FN_NS) logs --tail=60 deploy/qwen38fn-worker
+# ---- 换主力栈 --------------------------------------------------------------
+# 「当前主力栈是谁」以前写死在 ~8 个地方,每一处改错都**不报错**
+# (docs/stack-switch-cn.md §0 记了同形状的三次事故)。现在只有 stacks/PRIMARY
+# 一处,其余全部从注册表推导 —— 这个目标负责改它并跑验收。
+switch:
+ifndef TO
+	$(error 用法: make switch TO=<stack-id>;可选的栈见 make stacks)
+endif
+	@bash scripts/stack-switch.sh $(TO)
 
-# 冒烟测试 + tool-call parser 验证(qwen3_xml vs qwen3_coder,见脚本注释)。
-# ⚠️ 这是冒烟不是 benchmark —— 引用 tok/s 前先读 docs/benchmarking-cn.md。
-qwen38fn-test:
-	scp -i $(SSH_KEY) -o StrictHostKeyChecking=no $(Q38FN_TEST_SRC) $(SSH_USER)@$(Q38FN_HEAD):/home/$(SSH_USER)/qwen38fn-test.sh
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) \
-		"BASE=http://localhost:$(Q38FN_PORT) bash /home/$(SSH_USER)/qwen38fn-test.sh"
+# ---- 注册表与文档的一致性 ---------------------------------------------------
+# stack-table 重新生成 CLAUDE.md / README.md / docs/clients-cn.md 里的栈表格;
+# stack-check 只校验不改写,不一致就**非 0 退出**。
+# 这是"文档静默过期"那一类事故的机械化防线:091b6e4 换了主力栈却一份文档都没动,
+# CLAUDE.md 因此在 24 小时里持续告诉每个 session 错误的主力栈。
+stack-table:
+	@python3 scripts/stack-table.py --write
 
-qwen38fn-load:
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) \
-		"curl -s http://localhost:$(Q38FN_PORT)/metrics | grep -E 'num_requests_(running|waiting)\{|kv_cache_usage' | grep -v '^#'; \
-		echo '--- client IPs on :$(Q38FN_PORT) ---'; \
-		ss -tn | grep ':$(Q38FN_PORT)' | awk '{print \$$5}' | cut -d: -f1 | sort | uniq -c | sort -rn"
-	@echo '--- engine last minute ---'
-	@$(K8S) -n $(Q38FN_NS) logs --since=1m deploy/qwen38fn-leader 2>/dev/null | grep 'loggers.py' | tail -3 || true
+stack-check:
+	@python3 scripts/stack-table.py --check
 
-# PLE FP8 补丁 + 预检的端到端回归。抽 ConfigMap 里**线上那份**脚本,送到 S1,
-# 在真实镜像 + 真实 checkpoint 的容器里跑(不占 GPU,不动运行中的栈)。
-# ⚠️ 改 patch-ple-fp8.py 或 ple-preflight.py 之前必跑 —— 它们守的是静默降级。
-ple-test:
-	@python3 -c "import pathlib,re,sys,tempfile,os; \
-	s=pathlib.Path('k8s/qwen38fn/configmap-launch.yaml').read_text(); \
-	d=tempfile.mkdtemp(); \
-	[pathlib.Path(d,k).write_text('\n'.join(l[4:] for l in re.search(r'\n  '+re.escape(k)+r': \|\n(.*?)(?=\n  [a-z0-9_.-]+\.(?:py|sh): \||\n  # ----)',s,re.S).group(1).split('\n'))) for k in ('patch-ple-fp8.py','ple-preflight.py')]; \
-	print(d)" > /tmp/.ple_dir
-	@d=$$(cat /tmp/.ple_dir); \
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) "rm -rf /tmp/scr && mkdir -p /tmp/scr" && \
-	scp -q -i $(SSH_KEY) $$d/patch-ple-fp8.py $$d/ple-preflight.py $(SSH_USER)@$(Q38FN_HEAD):/tmp/scr/ && \
-	scp -q -i $(SSH_KEY) scripts/test-ple-patch.sh $(SSH_USER)@$(Q38FN_HEAD):/tmp/e2e.sh && \
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38FN_HEAD) "docker run --rm \
-	  -v /tmp/scr:/scripts:ro -v /tmp/e2e.sh:/tmp/e2e.sh:ro \
-	  -v /home/$(SSH_USER)/.cache/huggingface/hub/Qwen3.8-Flash-Next-NVFP4:/model:ro \
-	  --entrypoint bash $(Q38FN_IMAGE) /tmp/e2e.sh 2>&1 | grep -vE 'INFO |WARNING |W0902'"
+# 互斥自检的回归(纯本地,探测打桩)。它守的是 gotcha #2 —— 两个栈抢同一份 GPU
+# 内存会 OOM 整机,而这两台没有 BMC。⚠️ 改 stacks/_lib/preflight.sh 之前必跑。
+preflight-test:
+	bash scripts/test-preflight.sh
 
-qwen38fn-stop:
-	$(K8S) -n $(Q38FN_NS) scale deploy qwen38fn-leader qwen38fn-worker --replicas=0
+# ---- 各栈自带的专属目标(可选)----------------------------------------------
+# 栈可以放一个 stacks/<id>/Makefile.mk 声明只有它需要的目标(探针回归、补丁
+# 回归之类)。没有就没有 —— 又一处"加模型不用改既有文件"。
+-include stacks/*/Makefile.mk
 
-# 成对重启。⚠️ 绝不单独重建一个 rank —— 幸存方会永久卡在集合通信里,
-# /health 和 /v1/models 照常 200(gotcha #1,与引擎无关,是 TP=2 的固有性质)。
-qwen38fn-restart:
-	$(K8S) -n $(Q38FN_NS) delete pod --all
-	@echo "both ranks recreated; loads 8-11min, poll: make qwen38fn-status"
-
-# 回滚到 V4-Flash(约 5 分钟)。观察期内 V4 的权重和镜像必须保留。
-qwen38fn-rollback:
-	$(K8S) -n $(Q38FN_NS) scale deploy --all --replicas=0
-	@echo "qwen38fn stopped; 等 free -h 回落后执行: make v4flash-run"
-	@echo "⚠️ 别忘了把 MEMWATCH_STACK 改回 v4flash,以及回滚客户端配置"
-
-# ---- Host-level memory watchdog (防整机 OOM). See scripts/mem-watch.sh ----
-# On GB10 unified memory, vLLM's ~100GB pre-allocation bypasses the container
-# cgroup (verified 2026-08-15), so node-level available memory is the only
-# signal that sees it. The watchdog polls both nodes over SSH and, before the
-# node OOMs, scales BOTH vLLM ranks to 0 (clean, no zombie TP group). No
-# auto-restore — bring the engine back with `make v4flash-run`.
+# ===========================================================================
+# 宿主机内存看门狗(防整机 OOM)
+# ===========================================================================
+# GB10 统一内存上,引擎预占的 ~100GB 会**绕过容器 cgroup**,所以只有节点级
+# available 内存看得见它。看门狗在节点 OOM 之前把栈整体停掉(不留僵尸 TP 组)。
+# 不自动恢复:`make run` 才会把引擎拉回来。建议放 tmux 里常驻。
+#
+# ⚠️ 换主力栈时**这里没有任何东西要改** —— 看门狗自己去读 stacks/PRIMARY。
+#    (在此之前它靠 Makefile 里一段 ifeq 阶梯 + 脚本里的一组 WATCH_* 默认值,
+#     指错栈时它会照常巡检、照常记日志,真要动手时 scale 一组不存在的对象。)
 MEMWATCH ?= scripts/mem-watch.sh
 
-# ⚠️ 换主力栈时**改这一个变量**(v4flash → qwen38fn)。看门狗认的是具体的
-# namespace + deploy 名;指错了它会照常巡检、照常记日志,却在真要动手时 scale
-# 一组不存在的对象 —— 一道静默失效的防线。脚本启动时会自检并拒绝启动。
-# 2026-09-02 主力栈切到 qwen38fn;回滚 V4 时改回 v4flash。
-# ⚠️ 注释另起一行 —— 写成行尾注释会让变量带上尾随空格,
-#    WATCH_DEPLOYS 会变成 "qwen38fn   -worker" 这种拼不出来的名字。
-MEMWATCH_STACK ?= qwen38un
-# ⚠️ 两个 docker 形态的栈(glm53 / qwen38un)都不能用 kubectl scale 停,必须整体切到
-#    docker 模式,否则看门狗会变成一道哑的防线。脚本启动时自检 ssh + 停机脚本。
-#    k3s 栈(qwen38fn / v4flash)走 else 分支。
-ifeq ($(MEMWATCH_STACK),qwen38un)
-# ⚠️ **WATCH_NODES 只给 S1** —— 本栈是单节点,引擎只在 S1 上。
-#    默认值是两台(为 TP=2 栈写的),而 tick() 是「**任一**节点跌破 CRIT 就动手」,
-#    动作却是「停掉 S1 的 qwen38un」。于是一旦有人在 **S2** 上跑别的模型,
-#    S2 的内存下降会把 **S1 的主力栈**停掉 —— 两件毫不相干的事。
-#    2026-09-19 S2 空出来后立刻发现这条(还没被咬,但一部署就会)。
-MEMWATCH_ENV = WATCH_STACK=qwen38un WATCH_MODE=docker \
-               WATCH_NODES=$(Q38UN_HOST) \
-               WATCH_DOCKER_HOST=$(Q38UN_HOST) WATCH_DOCKER_DIR=$(Q38UN_DIR) \
-               WATCH_DOCKER_CONTAINERS=$(Q38UN_CONT) \
-               WATCH_DOCKER_STOP=./stop.sh \
-               WATCH_SSH_KEY=$(SSH_KEY) WATCH_SSH_USER=$(SSH_USER)
-else ifeq ($(MEMWATCH_STACK),glm53)
-MEMWATCH_ENV = WATCH_STACK=glm53 WATCH_MODE=docker \
-               WATCH_DOCKER_HOST=$(GLM53_HEAD) WATCH_DOCKER_DIR=$(GLM53_DIR) \
-               WATCH_DOCKER_CONTAINERS=glm53-exl3-head \
-               WATCH_DOCKER_STOP="./start.sh stop" \
-               WATCH_SSH_KEY=$(SSH_KEY) WATCH_SSH_USER=$(SSH_USER)
-else
-MEMWATCH_ENV = WATCH_STACK=$(MEMWATCH_STACK) WATCH_NS=$(MEMWATCH_STACK) \
-               WATCH_DEPLOYS="$(MEMWATCH_STACK)-worker $(MEMWATCH_STACK)-leader"
-endif
-
-memwatch-check:            # 单次打印两节点 available%(只读)
-	$(MEMWATCH_ENV) $(MEMWATCH) --once
+memwatch-check:            # 单次打印各节点 available%(只读)
+	@$(MEMWATCH) --once $(STACK)
 
 memwatch:                  # 常驻循环(防 OOM,建议放 tmux)
-	$(MEMWATCH_ENV) $(MEMWATCH)
+	@$(MEMWATCH) $(STACK)
 
 memwatch-reset:            # 清除已触发状态,解除保持
-	$(MEMWATCH_ENV) $(MEMWATCH) --reset
+	@$(MEMWATCH) --reset $(STACK)
 
-# 去抖逻辑回归(纯本地,不碰集群)。直接 source 线上那份 mem-watch.sh,
-# 复现 2026-09-02 修掉的那个「看门狗永不触发」的 bug。改 tick() 前必跑。
+# 去抖逻辑回归(纯本地,不碰集群)。改 tick() 前必跑。
 memwatch-test:
 	bash scripts/test-mem-watch.sh
 
-# ---- GB10 GPU clock cap (能效). See scripts/gb10-clock-cap.sh + docs/gb10-tuning-cn.md ----
-# 2026-08-25 双机 A/B 实测:上限 2200 MHz 下 decode 无显著变化(配对差 +0.9%,
-# 95%CI [-1.9%,+3.7%], n=11 交错)、prefill -3.7%、双机 GPU rail 功耗 -36%。
+# ===========================================================================
+# GB10 GPU 时钟上限(能效)
+# ===========================================================================
+# 2026-08-25 双机 A/B:2200 MHz 下 decode 无显著变化(配对差 +0.9%,95%CI
+# [-1.9%,+3.7%], n=11 交错)、prefill -3.7%、双机 GPU rail 功耗 -36%。
 # ⚠️ 两台必须对称(TP=2 锁步);⚠️ -lgc 重启即失效(用 clock-cap-install 持久化);
 # ⚠️ nvidia-smi 无任何字段能报告锁是否生效 —— 只能用 clock-cap-verify(带负载采样)。
+# ⚠️ verify 要发真实生成,所以它需要知道 model 名/端口/思考 kwarg ——
+#    这三个现在从 stacks/PRIMARY 推导,换栈时不用改脚本。
 CLOCKCAP ?= scripts/gb10-clock-cap.sh
 
 clock-cap-apply:           # 两节点加锁(CAP_MHZ 可覆盖,默认 2200);运行时,重启失效
@@ -536,242 +355,3 @@ clock-cap-install:         # 装 systemd 单元,重启后仍生效
 
 clock-cap-uninstall:       # 移除单元并解锁
 	$(CLOCKCAP) uninstall
-
-# ----------------------------------------
-# Qwen3.8-27B-NVFP4 — single-node FALLBACK stack (S1 only, plain docker)
-# ----------------------------------------
-# Exists because V4-Flash is TP=2 and indivisible: when one node dies the whole
-# service dies (2026-08-15 S2 hardware death). This stack keeps serving on the
-# surviving node. It is SLOWER (24.9 vs 67.2 tok/s mean — dense 27B beats no
-# MoE with 13B active) and weaker at agentic coding; it is a fallback, not an
-# upgrade. Full runbook + benchmark: docs/qwen38-27b-fallback-cn.md
-#
-# MUTUALLY EXCLUSIVE with V4-Flash — both want the same GPU memory. Always
-# `make qwen38-stop` before `make v4flash-run`, and vice versa.
-Q38_HOST      ?= 100.97.87.120
-Q38_PORT      ?= 8888
-Q38_CONTAINER ?= qwen38-27b
-Q38_START_SRC ?= scripts/qwen38-start.sh
-Q38_TEST_SRC  ?= scripts/qwen38-test.sh
-
-qwen38-run:
-	scp -i $(SSH_KEY) -o StrictHostKeyChecking=no $(Q38_START_SRC) $(SSH_USER)@$(Q38_HOST):/home/$(SSH_USER)/qwen38-start.sh
-	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(Q38_HOST) \
-		"chmod +x /home/$(SSH_USER)/qwen38-start.sh && bash /home/$(SSH_USER)/qwen38-start.sh"
-	@echo "loads ~220s (22GB weights), poll: make qwen38-status"
-
-qwen38-status:
-	@ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(Q38_HOST) \
-		"docker ps -a --filter name=$(Q38_CONTAINER) --format '{{ .Names }}  {{ .Status }}'; \
-		curl -s http://localhost:$(Q38_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'; \
-		free -h | head -2"
-
-# Full benchmark: 3 warm-ups (discarded) + 4 prompt shapes + MTP acceptance.
-# Never count SSE deltas under spec decode — that measures steps/s, not tok/s.
-qwen38-test:
-	scp -i $(SSH_KEY) -o StrictHostKeyChecking=no $(Q38_TEST_SRC) $(SSH_USER)@$(Q38_HOST):/home/$(SSH_USER)/qwen38-test.sh
-	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(Q38_HOST) \
-		"BASE=http://localhost:$(Q38_PORT) bash /home/$(SSH_USER)/qwen38-test.sh"
-
-qwen38-logs:
-	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(Q38_HOST) \
-		"docker logs --tail=60 $(Q38_CONTAINER)"
-
-qwen38-stop:
-	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(Q38_HOST) \
-		"docker rm -f $(Q38_CONTAINER) 2>/dev/null; echo 'stopped'; free -h | head -2"
-
-# ===========================================================================
-# GLM-5.3-Flash EXL3 (4bpw) —— 阶段 A:按上游 MiaAI-Lab 配方用 **docker** 部署
-# ===========================================================================
-# ⚠️ 本栈与其它三个栈不同:**不是本仓库写的部署,而是跑上游的 start.sh**。
-#    参数真相源是 $(GLM53_DIR)/.env;我们相对上游只改了 6 行,账记在
-#    config/glm53-flash-exl3.yaml。上游 repo 钉在 commit 8f29c6dd(与镜像配套)。
-# 阶段 B(迁 k3s)未开始。
-GLM53_HEAD   ?= 100.97.87.120
-GLM53_PORT   ?= 8888
-GLM53_DIR    ?= /home/admin/glm53-exl3
-GLM53_MODEL  ?= GLM-5.3-Flash-EXL3
-GLM53_SNAP   ?= /home/admin/.cache/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-TR3-4bpw/snapshots/25a44fdbf16862a46b7cc9921142c6c81350af2f
-GLM53_IMAGE  ?= ghcr.nju.edu.cn/miaai-lab/glm-5.3-flash-2x-dgx-sparks:exl3-instanttensor
-
-# 起栈前自检:四栈互斥(gotcha #2)+ 两节点的权重/镜像就位。
-# start.sh 自己也有 preflight,但它看不见我们的 k3s 栈 —— 这一段补的就是那个盲区。
-glm53-preflight:
-	@for ns in $(Q38FN_NS) $(DSV4_NS); do \
-		n=$$($(K8S) -n $$ns get deploy -o jsonpath='{.items[*].spec.replicas}' 2>/dev/null \
-			| tr ' ' '\n' | awk '{s+=$$1} END{print s+0}'); \
-		if [ "$$n" -gt 0 ]; then \
-			echo "ABORT: k3s 栈 $$ns 还有 $$n 个副本在跑 —— 会抢同一份 GPU 内存(gotcha #2)。"; \
-			echo "       先执行: make $$ns-stop"; exit 1; \
-		fi; \
-	done
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
-		"docker ps --filter name=$(Q38_CONTAINER) --format '{{.Names}}' | grep -q . \
-		 && { echo 'ABORT: fallback 栈 $(Q38_CONTAINER) 在跑(且同占 :8888),先 make qwen38-stop'; exit 1; } || true"
-	@for h in $(HOSTS); do \
-		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
-			"n=\$$(find $(GLM53_SNAP) -maxdepth 1 -name '*.safetensors' 2>/dev/null | wc -l); \
-			 [ \"\$$n\" -eq 120 ] || { echo \"ABORT: $$h 权重只有 \$$n/120 分片\"; exit 1; }; \
-			 docker image inspect $(GLM53_IMAGE) >/dev/null 2>&1 \
-			 || { echo \"ABORT: $$h 上没有镜像 $(GLM53_IMAGE)\"; exit 1; }" \
-		|| exit 1; \
-	done
-	@echo "  互斥/权重/镜像 OK"
-# --- 主机内存闸门 -----------------------------------------------------------
-# 2026-09-19 首次启动就栽在这里:S2 的 polkitd 涨到 **6.27 GiB RSS**,于是
-# 可用内存 103.09 GiB < gmu 0.85 要的 103.44 GiB —— **只差 0.35 GiB**,
-# 但要等到容器起来、权重开始加载、3 分钟后才在 worker 里报:
-#   ValueError: Free memory on device cuda:0 (103.09/121.69 GiB) on startup is
-#   less than desired GPU memory utilization (0.85, 103.44 GiB).
-# 上游 README「Running on a different 2×Spark kit」写明过这条(“resident services
-# 会让你差不到 1 GiB 而过不了启动内存检查”),其 issue #193 跟帖也报过同一个
-# polkitd 膨胀(他们 3.3 GiB)。上游自己的 preflight_memory() 看不住(其 #205
-# 称之为 blind spot),所以这道闸门放在我们这边。
-#
-# 解法(按顺序试):sudo systemctl restart polkit → drop_caches → 仍不够再降 gmu。
-	@for h in $(HOSTS); do \
-		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
-			"sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'" >/dev/null \
-			&& echo "  $$h: page cache dropped"; \
-	done
-	@util=$$(ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
-		"grep -E '^GPU_MEM_UTIL=' $(GLM53_DIR)/.env | tail -1 | cut -d= -f2"); \
-	for h in $(HOSTS); do \
-		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
-			"awk -v u=$$util -v host=$$h '/^MemTotal:/{t=\$$2} /^MemAvailable:/{a=\$$2} \
-			 END{ tg=t/1048576; ag=a/1048576; need=tg*u; \
-			      printf \"  %s: avail %.1f GiB / need %.1f GiB (gmu %s of %.1f)\", host, ag, need, u, tg; \
-			      if (ag < need) { printf \"  <-- 不足 %.2f GiB\n\", need-ag; exit 1 } print \"\" }' /proc/meminfo; \
-			 rc=\$$?; \
-			 p=\$$(ps -eo rss,comm | awk '/polkitd/{print \$$1}'); \
-			 if [ -n \"\$$p\" ] && [ \"\$$p\" -gt 1048576 ]; then \
-			   echo \"  !! $$h polkitd 占 \$$((p/1048576)) GiB —— sudo systemctl restart polkit\"; fi; \
-			 exit \$$rc" \
-		|| { echo "ABORT: $$h 可用内存不足以满足 GPU_MEM_UTIL=$${util} 。"; \
-		     echo "       先试: ssh $$h 'sudo systemctl restart polkit'(见上面注释),再重跑 preflight。"; exit 1; }; \
-	done
-	@echo "preflight OK: 四栈互斥、权重(120 分片)、镜像、主机内存闸门全部通过"
-
-# ⚠️⚠️ **SKIP_BUILD=1 是硬性的,不要手敲 ./start.sh。**
-# 漏掉它 → ensure_image() 认为配方戳不符 → 在 S1 上跑源码构建 → head 节点 OOM
-# (CLAUDE.md「统一内存约束」;2026-07-04 实际发生过,连 tmux server 一起带走)。
-# 而那两个戳**永远不可能相等**——overlay_recipe_hash() 把绝对路径喂给了 sha256sum,
-# 哈希因此依赖 checkout 的位置。完整证据见 config/glm53-flash-exl3.yaml。
-# 它打印的 `stamp X != repo Y` 警告是恒定噪声,不是信号。
-#
-# ⚠️ 跑在 tmux 里:start.sh 是长时编排器(镜像自检 → 起两容器 → wait_for_health
-#    → 24 条 boot-shape warmup),SSH 走 DERP 中继会掉线,掉一次就把它打断在半路,
-#    可能留下半启动的容器。CLAUDE.md「tmux(SSH drop protection)」同理。
-glm53-run: glm53-preflight
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
-		"tmux kill-session -t glm53-start 2>/dev/null; \
-		 tmux new-session -d -s glm53-start \
-		   'cd $(GLM53_DIR) && SKIP_BUILD=1 ./start.sh 2>&1 | tee /home/$(SSH_USER)/glm53-start.log'"
-	@echo "started in tmux session 'glm53-start' on $(GLM53_HEAD)"
-	@echo "  跟进: make glm53-boot-log     (或 make tmux-attach HOST=$(GLM53_HEAD) SESSION=glm53-start)"
-	@echo "  状态: make glm53-status"
-
-glm53-boot-log:            # 本次启动的 start.sh 输出(不是引擎日志,那是 glm53-logs)
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
-		"tail -40 /home/$(SSH_USER)/glm53-start.log 2>/dev/null | tr -d '\r' || echo 'no boot log yet'"
-
-glm53-status:
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
-		"cd $(GLM53_DIR) && ./start.sh status; \
-		 echo '--- /v1/models ---'; \
-		 curl -s http://localhost:$(GLM53_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'; \
-		 echo '--- host mem ---'; free -h | head -2"
-
-glm53-logs:
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) "docker logs --tail=80 glm53-exl3-head"
-
-glm53-logs-worker:
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
-		"ssh -o BatchMode=yes 192.168.200.102 'docker logs --tail=80 glm53-exl3-worker'"
-
-glm53-stop:
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) "cd $(GLM53_DIR) && ./start.sh stop"
-
-# 成对重启。⚠️ 绝不单独重建一个 rank —— 这是 TP=2 的固有性质,与引擎无关(gotcha #1)。
-glm53-restart: glm53-stop glm53-run
-
-# ===========================================================================
-# Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2 —— 单节点(只用 S1)
-# ===========================================================================
-# ⚠️ 与另外四个栈一样互斥,但**只占 S1** —— S2 空着。不过 Flash-Next/V4 的 rank0
-#    也在 S1,所以仍然不能同时跑(GPU 内存)。glm53/qwen38-27b 还同占 :8888。
-# 上游 MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark @ 9fb18ed(MIT),跑 start-dflash.sh。
-# 账记在 config/qwen38-uncensored-sglang.yaml。
-Q38UN_HOST   ?= 100.97.87.120
-Q38UN_PORT   ?= 8888
-Q38UN_DIR    ?= /home/admin/qwen38-sglang
-Q38UN_MODEL  ?= qwen3.8-27b-sglang
-# ⚠️ 权重必须放在 **被挂载的 HF_HOME 树内**。上游 start.sh 只挂两样:
-#    $(Q38UN_DIR)/.cache/huggingface -> /root/.cache/huggingface  和 triton 缓存。
-#    放在 /home/admin/models 下容器根本看不见 —— transformers 会把这个路径当成
-#    HF repo id 去解析并报 "Repo id must be in the form 'namespace/repo_name'"
-#    (2026-09-19 首次启动就是这么failed的,错误信息完全不提"路径没挂载")。
-Q38UN_WEIGHTS ?= $(Q38UN_DIR)/.cache/huggingface/local/Qwen3.8-27B-Uncensored-NVFP4
-Q38UN_WEIGHTS_CT ?= /root/.cache/huggingface/local/Qwen3.8-27B-Uncensored-NVFP4
-Q38UN_CONT   ?= qwen3.8-27b-sglang
-Q38UN_IMAGE  ?= lmsysorg/sglang:nightly-cu134-20260909-708f51e
-
-# 五栈互斥 + 权重/镜像就位。比 glm53-preflight 少一条主机内存闸门 —— 27B 只有
-# 24 GB 权重,mem-fraction 0.90 下主机仍剩 ~12 GiB(10%),不是紧约束。
-qwen38un-preflight:
-	@for ns in $(Q38FN_NS) $(DSV4_NS); do \
-		n=$$($(K8S) -n $$ns get deploy -o jsonpath='{.items[*].spec.replicas}' 2>/dev/null \
-			| tr ' ' '\n' | awk '{s+=$$1} END{print s+0}'); \
-		if [ "$$n" -gt 0 ]; then \
-			echo "ABORT: k3s 栈 $$ns 还有 $$n 个副本在跑(rank0 也在 S1,同争 GPU)。先 make $$ns-stop"; exit 1; \
-		fi; \
-	done
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) \
-		"for c in glm53-exl3-head $(Q38_CONTAINER); do \
-		   docker ps --filter name=\$$c --format '{{.Names}}' | grep -q . \
-		   && { echo \"ABORT: \$$c 在跑(同占 GPU/:8888),先停掉\"; exit 1; }; done; \
-		 n=\$$(find $(Q38UN_WEIGHTS) -maxdepth 1 -name '*.safetensors' 2>/dev/null | wc -l); \
-		 [ \"\$$n\" -eq 6 ] || { echo \"ABORT: 主权重只有 \$$n/6 分片\"; exit 1; }; \
-		 docker image inspect $(Q38UN_IMAGE) >/dev/null 2>&1 \
-		 || { echo 'ABORT: 镜像 $(Q38UN_IMAGE) 不在本机(见 config 里的 retag 步骤)'; exit 1; }" \
-	|| exit 1
-	@echo "preflight OK: 互斥、权重(6 分片)、镜像就位"
-
-# ⚠️ **DF_EXTRA 是本仓库偏离上游的唯一一处,不能省。**
-#    上游把 TARGET_PATH 当 HF repo id 传给 SGLang,由**容器**现下 —— 容器里没有
-#    hf-mirror 配置,且 gotcha #6 就是被 HF cache 的绝对符号链接咬的。
-#    DF_EXTRA 追加在 EXTRA_ARGS 最后,argparse last-wins,故能盖掉硬编码路径。
-# ⚠️ mem-fraction-static 由 start-dflash.sh 设成 **0.90**(覆盖 start.sh 的 0.95)。
-#    上游注释原文:0.95 hard-rebooted the box。**别去"修"成 0.95。**
-# ⚠️ DOCKER_ENV 里的离线开关不能省:草稿模型是按 **HF repo id** 传给 SGLang 的
-#    (--speculative-draft-model-path z-lab/...),即便已预缓存,HF hub 仍会发 HEAD
-#    请求探更新 → 容器内 "Network is unreachable" 重试 5 轮才回落缓存,白等一分钟。
-#    本仓库另外两个栈(qwen38fn / qwen38-27b)本来就带这两个变量。
-qwen38un-run: qwen38un-preflight
-	@scp -q -i $(SSH_KEY) -o StrictHostKeyChecking=no scripts/qwen38un-launch.sh \
-		$(SSH_USER)@$(Q38UN_HOST):/home/$(SSH_USER)/qwen38un-launch.sh
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) \
-		"tmux kill-session -t q38un-start 2>/dev/null; \
-		 tmux new-session -d -s q38un-start 'bash /home/$(SSH_USER)/qwen38un-launch.sh 2>&1 | tee /home/$(SSH_USER)/q38un-start.log'"
-	@echo "started in tmux 'q38un-start' on $(Q38UN_HOST)"
-	@echo "  跟进: make qwen38un-boot-log    状态: make qwen38un-status"
-
-qwen38un-boot-log:
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) \
-		"tail -40 /home/$(SSH_USER)/q38un-start.log 2>/dev/null | tr -d '\r' || echo 'no boot log yet'"
-
-qwen38un-status:
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) \
-		"docker ps --filter name=$(Q38UN_CONT) --format '{{.Names}} {{.Status}}'; \
-		 echo '--- /v1/models ---'; \
-		 curl -s http://localhost:$(Q38UN_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'; \
-		 echo '--- host mem ---'; free -h | head -2"
-
-qwen38un-logs:
-	@ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) "docker logs --tail=80 $(Q38UN_CONT)"
-
-qwen38un-stop:
-	ssh -i $(SSH_KEY) $(SSH_USER)@$(Q38UN_HOST) "cd $(Q38UN_DIR) && ./stop.sh"
-
-qwen38un-restart: qwen38un-stop qwen38un-run

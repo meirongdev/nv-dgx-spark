@@ -55,7 +55,7 @@ docker pull ghcr.nju.edu.cn/<org>/<img>:<tag>
 读 manifest → 取 config blob 摘要,与节点上 `docker image inspect --format '{{.Id}}'`
 比对。上例两值均为 `ef9f5013…`,证明南大源服务的是**与上游逐字节相同**的镜像,
 不是重打包。(`docker save | k3s ctr images import` 会重新打包 → 那条路上的摘要
-不可用于此比对,见 `config/qwen38-flash-next.yaml` 里三个互不相等摘要的教训。)
+不可用于此比对,见 `stacks/qwen38fn/recipe.yaml` 里三个互不相等摘要的教训。)
 
 ## 模型权重:用 ModelScope
 

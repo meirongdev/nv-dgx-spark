@@ -30,10 +30,10 @@
 任何单 rank 事件都会触发:进程 OOM、CUDA 错误、一个节点重启、一次误手的
 `kubectl delete pod`。旧的 systemd 方案对此免疫,因为重启它会**同时**拆掉两台的容器。
 
-**所以永远用 `make v4flash-restart`(两个 rank 一起),恢复代价约 10 分钟。**
+**所以永远用 `make restart STACK=v4flash`(两个 rank 一起),恢复代价约 10 分钟。**
 
 现在有 liveness 探针能兜住:leader 的探针(`liveness.py`,在
-`k8s/v4flash/configmap-launch.yaml` 里)检测的是**"有活干但零进展"**——读 `/metrics`,
+`stacks/v4flash/k8s/configmap-launch.yaml` 里)检测的是**"有活干但零进展"**——读 `/metrics`,
 仅当 `num_requests_running+waiting > 0` **且** `vllm:iteration_tokens_total_count`
 自上次检查以来没有前进时才判失败。worker 的探针盯着 leader 的 `/health`,共同命运。
 
@@ -68,13 +68,13 @@
 同时跑会 OOM 整台机器——就是那种会连 tmux server 一起带走的故障。
 
 ```bash
-make qwen38fn-stop   # 必须先停当前那套
-make v4flash-run     # 再起另一套
+make stop STACK=qwen38fn   # 必须先停当前那套
+make run STACK=v4flash     # 再起另一套
 ```
 
-`make qwen38fn-run` 起栈前会**自检互斥**(`qwen38fn-preflight`),不再只靠文档
+`make run STACK=qwen38fn` 起栈前会**自检互斥**(`qwen38fn-preflight`),不再只靠文档
 提醒;另外两套仍靠人。qwen38 容器**故意不设 `--restart`**,就是为了避免开机自启
-后和 k3s 拉起的 TP=2 栈撞车。详见 `docs/qwen38-27b-fallback-cn.md` §5.4、§7。
+后和 k3s 拉起的 TP=2 栈撞车。详见 `stacks/qwen38/runbook-cn.md` §5.4、§7。
 
 ---
 
@@ -101,7 +101,7 @@ make v4flash-run     # 再起另一套
   `benchmarks/aider-polyglot-deepseek-v4-flash-2026-08-01/build_noproxy.sh`。
 - 真正需要外网的场景(github clone)要保留代理。
 - **`docker run` 同样被注入** —— 起 qwen38 容器时已显式清空这些变量
-  (见 `scripts/qwen38-start.sh`)。
+  (见 `stacks/qwen38/launch.sh`)。
 - registry **pull** 走的是 daemon 而不是这个文件,所以不受影响——
   daocloud 对某个镜像慢(如 `buildpack-deps:jammy` 39 KB/s)是另一回事,
   优先选本地已有的 base image。
@@ -188,7 +188,12 @@ DGX 服务器在中国大陆,多数国外 registry 要么被墙要么极慢。
 > | 2026-09-02 | `bench_full.py` 的 kwarg 名(9.2) | 服务端照常 200,CoT 一个字没关 → 跨栈对照整个不成立(c96fcf3) |
 > | 2026-09-03 | `gb10-clock-cap.sh` 的 model 名(9.3) | 服务端 400 但 `curl` rc=0 → 拿**空载**采样打印"锁生效",时钟锁的唯一判据静默失效 24h |
 >
-> **换主力栈前后请逐行走 `docs/stack-switch-cn.md` 的触点清单。**
+> ✅ **2026-09-19 结构性修掉了这一类。** 结论不是"下次更仔细" —— 三次都不是不仔细
+> 造成的。是这些标识**不该存在于工具里**:它们现在集中在 `stacks/<id>/stack.env`,
+> 工具从 `stacks/PRIMARY` 推导,没有"默认是上一个主力栈"这种东西。
+> 下面 9.1-9.3 保留原始经过(它们解释了**为什么**这么做,也仍然是活的语义差异);
+> 9.4 的规则在写任何新的跨栈工具时依然适用。
+> 剩下机器管不了的部分见 `docs/stack-switch-cn.md` §3。
 
 ### 9.1 CoT 响应字段:`reasoning_content` vs `reasoning`
 
@@ -212,7 +217,7 @@ DGX 服务器在中国大陆,多数国外 registry 要么被墙要么极慢。
 
 **稳妥写法**:两个字段都读。
 `msg.get("reasoning") or msg.get("reasoning_content") or ""`
-(`scripts/qwen38-test.sh` 已改成这样)。
+(`stacks/qwen38/test.sh` 已改成这样)。
 
 `/v1/responses` 路径两栈一致,CoT 走 `type:"reasoning"` 输出项,不受此坑影响。
 
@@ -253,15 +258,25 @@ CLAUDE.md 里写着「这是判断锁是否生效的**唯一**可靠手段」—
 
 ### 9.4 这一类的规则
 
-1. **栈标识一律提成环境变量**,默认值写当前主力栈,旁边注明"换栈时改这里"。
+1. **不要在工具里写栈的默认值 —— 从注册表读。** (2026-09-19 前这条写的是
+   "提成环境变量,默认值写当前主力栈",那仍然不够:默认值本身就会过期,
+   而过期的默认值看起来和正确的一模一样。想临时指向别的栈就收一个参数,
+   例如 `CAP_STACK=<id>` / `make ... STACK=<id>`。)
 2. **判据必须验证它真的跑了。** `curl` 退出码不算 —— 400 也是 rc=0。认真实产物:
    生成了多少 token、采到多少个点。
 3. **没跑成就硬失败**,不要打印一个可能被读成"通过"的数字。
 4. **分不清"通过"和"根本没运行"的检查器,比没有检查器更糟。**
-   正面样板:`scripts/mem-watch.sh` 启动时逐个 `kubectl get deploy`,任一不存在
-   就 `exit 3` —— 宁可不启动,也不当一道静默失效的防线。
+   正面样板:`scripts/mem-watch.sh` 启动时自检"真要动手时动得了",动不了就
+   `exit 3` —— 宁可不启动,也不当一道静默失效的防线。
+5. **负向用例和正向用例一样重要。** 这类 bug 的全部危害就是「失败路径看起来像
+   成功」,只测正向路径永远发现不了:
 
-详见 `docs/stack-switch-cn.md`(触点清单)和 `docs/clients-cn.md`(客户端侧)。
+   ```bash
+   CAP_MODEL=不存在的名字 bash scripts/gb10-clock-cap.sh verify; echo $?   # 必须非 0
+   ```
+
+详见 `stacks/README.md`(新增模型的契约 + 写跨栈工具的规则)、
+`docs/stack-switch-cn.md`(机器管不了的部分)和 `docs/clients-cn.md`(客户端侧)。
 
 ---
 
@@ -304,7 +319,7 @@ SERVED=$(curl -s "http://localhost:$PORT/v1/models" \
 
 这对 vLLM 也成立,所以是通用写法。已应用于:
 - `scripts/gb10-clock-cap.sh`(verify 前置检查)
-- `scripts/qwen38un-test.sh` / `scripts/glm53-test.sh`(冒烟脚本开头)
+- `stacks/qwen38un/test.sh` / `stacks/glm53/test.sh`(冒烟脚本开头)
 
 ⚠️ **写任何跨栈工具时,别把"服务端会替我挡住"当成一种保护** ——
 挡不挡是**引擎实现细节**,换个引擎就变了。身份要自己核。

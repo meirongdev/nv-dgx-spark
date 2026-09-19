@@ -10,34 +10,43 @@ follow the pointers rather than guessing.
 ## Project Overview
 
 Deployment tooling for vLLM inference across two NVIDIA DGX Spark (GB10
-Blackwell) servers. Three stacks live here — one primary, two ways back:
+Blackwell) servers. Every model is a **stack** in the `stacks/` registry —
+one is primary, the rest are ways back:
 
-| Stack | Nodes | Endpoint | Runtime | Status |
+<!-- BEGIN generated:stacks -->
+| 栈 | 节点 | 端点 | 引擎 / 运行时 | 状态 |
 |---|---|---|---|---|
-| **Qwen3.8-27B-Uncensored NVFP4** | **1** (S1) | `:8888` `qwen3.8-27b-sglang` | **SGLang** + DFlash2, docker | **primary** (since 2026-09-19) |
-| Qwen3.8-Flash-Next NVFP4 | 2 (TP=2) | `:8000` `qwen38-flash-next` | k3s (vLLM) | rollback #1 — **fastest on code (62.1)** |
-| GLM-5.3-Flash EXL3 4bpw | 2 (TP=2) | `:8888` `GLM-5.3-Flash-EXL3` | docker (upstream `start.sh`) | rollback #2 — 850K ctx |
-| DeepSeek-V4-Flash-0731 | 2 (TP=2) | `:8000` `deepseek-v4-flash` | k3s (vLLM) | rollback #3 |
-| Qwen3.8-27B-NVFP4 (censored) | 1 (S1) | `:8888` `qwen38-27b` | docker (vLLM, no speculator) | retired-ish — 24.9 tok/s |
+| **Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2**<br>`STACK=qwen38un` | 1 | `:8888` `qwen3.8-27b-sglang` | sglang / docker | **primary (2026-09-19 起)** |
+| GLM-5.3-Flash EXL3 4bpw<br>`STACK=glm53` | 2 | `:8888` `GLM-5.3-Flash-EXL3` | vllm-exl3 / docker | rollback #2 —— 850K ctx |
+| Qwen3.8-27B-NVFP4 (censored, no speculator)<br>`STACK=qwen38` | 1 | `:8888` `qwen38-27b` | vllm / docker | retired-ish —— 24.9 tok/s |
+| Qwen3.8-Flash-Next NVFP4 (MTP k=3)<br>`STACK=qwen38fn` | 2 | `:8000` `qwen38-flash-next` | vllm / k3s | rollback #1 —— 单流代码最快 62.1 |
+| DeepSeek-V4-Flash-0731 (DSpark n=5)<br>`STACK=v4flash` | 2 | `:8000` `deepseek-v4-flash` | vllm / k3s | rollback #3 |
+<!-- END generated:stacks -->
 
-⚠️ **All five are mutually exclusive** — same GPU memory. Even the single-node
-ones: the TP=2 stacks' **rank0 also lives on S1**. Three of them claim `:8888`.
-Stop the running one first; `make qwen38un-preflight` checks all of the others.
+> The table above is generated from `stacks/*/stack.env` by `make stack-table`
+> and verified by `make stack-check`. **Do not hand-edit it** — edit the registry.
 
-⚠️ **The primary is now single-node.** S2 sits idle, which removes the whole
+⚠️ **All of them are mutually exclusive** — same GPU memory. Even the single-node
+ones: the TP=2 stacks' **rank0 also lives on S1**. Several claim `:8888`.
+Stop the running one first — `make run STACK=<id>` refuses to start otherwise,
+and its preflight walks **the whole registry**, so a newly added stack is checked
+by every existing one without anyone editing a list.
+
+⚠️ **The primary is currently single-node.** S2 sits idle, which removes the whole
 TP=2 failure class (gotcha #1's zombie collectives, cross-node NCCL/RoCE, the
-lockstep restart rule). It also means **`make memwatch` must be in docker mode**
-(`MEMWATCH_STACK=qwen38un`) — `kubectl scale` cannot stop a docker container.
+lockstep restart rule).
 
-⚠️ **Three different engines are now in play** (vLLM / vLLM+EXL3 overlay /
-SGLang) and **five different thinking-kwarg semantics**. There is no shared
-default: see the table in `config/qwen38-uncensored-sglang.yaml`. Getting this
-wrong is silent — `docs/stack-switch-cn.md` §0.
+⚠️ **Three different engines are in play** (vLLM / vLLM+EXL3 overlay / SGLang) and
+**five different thinking-kwarg semantics**. There is no shared default. They live
+in each stack's `STACK_THINK_KWARG` / `STACK_THINK_OFF` / `STACK_COT_FIELD`, and
+`docs/clients-cn.md` carries the generated cross-stack table. Getting this wrong
+is silent — gotcha #9.
 
-⚠️ **When you switch the primary stack, work `docs/stack-switch-cn.md`** — the
-identity of "the current stack" is hardcoded in ~8 places across scripts, the
-Makefile and client configs, and **every one of them fails silently**, not loudly.
-Three separate wrong-number/wrong-verdict incidents have come from skipping this.
+✅ **Switching the primary stack is `make switch TO=<id>`.** "Which stack is
+current" used to be hardcoded in ~8 places that each failed *silently*; it is now
+one file (`stacks/PRIMARY`) that every tool reads. What is still manual — codex's
+own config files, and the prose in `## Current state` below — is printed by that
+command and listed in `docs/stack-switch-cn.md`.
 
 - **Flash-Next** (primary): NVFP4, native 262144 ctx, **MTP** speculative decoding
   (`num_speculative_tokens=3`), official vLLM image (no fork). Warm single-stream
@@ -51,7 +60,7 @@ Three separate wrong-number/wrong-verdict incidents have come from skipping this
 - **V4-Flash** (rollback target): 284B/13B-active, official FP8, 1M ctx, **DSpark**
   speculative decoding, jasl fork image. Mean 67.2 tok/s but **2.7× spread across
   content** (31–84) because DSpark acceptance is content-driven; Flash-Next beats
-  it on concurrency (+29% at c6) and prefill (+100% at 100K). `make qwen38fn-rollback`.
+  it on concurrency (+29% at c6) and prefill (+100% at 100K). `make switch TO=v4flash`.
 - **Qwen3.8-27B** (single-node fallback): exists because both TP=2 stacks are
   indivisible — when one node dies the whole service dies (2026-08-15 S2 hardware
   death). **Slower and weaker, not an upgrade**: 24.9 tok/s mean.
@@ -84,7 +93,7 @@ Also **−17% vs upstream's own 54.6** for the same recipe; partially explained
 the DFlash2 draft being trained against the *stock* target while ours is
 abliterated — **hypothesis, not verified.**
 
-✅ **Uncensored verified** (`scripts/qwen38un-test.sh`): 3/3 benign-over-refusal
+✅ **Uncensored verified** (`stacks/qwen38un/test.sh`): 3/3 benign-over-refusal
 probes answered. The vendor's 64–99% → 0–6% harmful-refusal claim is **not**
 independently verified here, and capability regression was not measured.
 
@@ -106,7 +115,7 @@ hard-rebooted a box on it. Override chain: start.sh 0.95 → start-dflash.sh 0.9
 ✅ **The TP=2 failure class is gone** with a single-node primary: no zombie
 collectives (gotcha #1), no cross-node NCCL/RoCE, no lockstep restart rule. S2 is
 idle at 116 GiB. k3s is running with all four k3s deployments at 0 replicas, so
-`make qwen38fn-run` is a one-command rollback to the 62.1 tok/s stack.
+`make run STACK=qwen38fn` is a one-command rollback to the 62.1 tok/s stack.
 
 ⏳ **Quality debt is now three stacks deep** — aider-polyglot has been run against
 V4-Flash only (`benchmarks/aider-polyglot-deepseek-v4-flash-2026-08-01/`, 82.4%).
@@ -174,94 +183,59 @@ rollback stacks cannot start. Graphical session and `sparkDash` also stopped.
 
 Earlier state (S2's 2026-08-15 power death and the 6.5 h recovery — no BMC/IPMI,
 WoL failed, needed someone at the box) is post-mortem'd in
-`docs/qwen38-27b-fallback-cn.md` §1 and §7.
+`docs/s2-outage-2026-08-15-cn.md`.
 
 ## Common Commands
 
-### GLM-5.3-Flash EXL3 (primary, plain docker — NOT k3s)
-
-Runs the upstream `start.sh` on S1 at `/home/admin/glm53-exl3` (pinned to
-commit `8f29c6dd`, which matches the shipped image). `.env` there is the live
-parameter source; `config/glm53-flash-exl3.yaml` records our 6-line delta and why.
+**One set of verbs drives every stack.** `STACK=` picks the target; leaving it
+off means the current primary (`stacks/PRIMARY`). The Makefile does not know any
+stack's name — see `stacks/README.md`.
 
 ```bash
-make glm53-run        # preflight (4-way mutual exclusion + weights + image +
-                      #   HOST MEMORY GATE) then start.sh inside tmux. ~5 min.
-make glm53-status     # containers + /v1/models + free -h
-make glm53-boot-log   # this boot's start.sh output (glm53-logs is the engine)
-make glm53-logs       # head;  glm53-logs-worker for rank1 (over the 200G link)
-make glm53-stop       # ./start.sh stop — stops BOTH ranks
-make glm53-restart    # stop + run
+make stacks                     # the registry: who's primary, ports, served names
+make info                       # the current primary in detail (thinking kwarg, CoT field…)
+
+make run                        # preflight (whole-registry mutual exclusion) then start
+make run     STACK=glm53        # …a specific stack
+make status  STACK=qwen38fn     # pods/containers + /v1/models + free -h
+make test    STACK=qwen38un     # smoke test — gated on /v1/models matching the registry
+make logs    STACK=qwen38fn WORKER=1   # rank1 (dual-node stacks only)
+make boot-log STACK=glm53       # this boot's launcher output (not the engine log)
+make load                       # who is using the engine right now
+make stop / make restart        # restart always moves BOTH ranks (gotcha #1)
+
+make switch  TO=qwen38fn        # change the primary stack, with acceptance checks
+make stack-check                # registry self-consistent + doc tables not stale
 ```
 
-⚠️ **Never run `./start.sh` by hand — always `make glm53-run`.** Without
-`SKIP_BUILD=1` the launcher decides the image recipe stamp is stale and
-**rebuilds the image on S1**, which is the thing that OOM'd the head on
-2026-07-04. And that stamp can *never* match: `overlay_recipe_hash()` feeds
-absolute paths to `sha256sum`, so it depends on where the repo is checked out
-(measured: same content at two paths → two different hashes). Its
-`stamp X != repo Y` warning is permanent noise, not a signal.
+Per-stack notes that the verbs don't carry:
 
-⚠️ **The host-memory gate exists because the first boot failed on it.** S2's
-`polkitd` had grown to 6.27 GiB RSS, leaving 103.09 GiB free vs the 103.44 GiB
-that `gpu-memory-utilization` wanted — short by 0.35 GiB, and it only surfaced
-3 minutes in as a CUDA-layer `ValueError`. Fix: `sudo systemctl restart polkit`.
-Upstream hit the same polkitd growth (their issue #193).
+- **glm53** — runs the *upstream* `start.sh`. ⚠️ Never run it by hand: without
+  `SKIP_BUILD=1` the launcher decides the image recipe stamp is stale and
+  **rebuilds the image on S1**, which is what OOM'd the head on 2026-07-04. That
+  stamp can *never* match (`overlay_recipe_hash()` feeds absolute paths to
+  `sha256sum`), so its `stamp X != repo Y` warning is permanent noise, not a
+  signal. `make run STACK=glm53` passes `SKIP_BUILD=1` for you.
+  It also carries an extra host-memory gate (`stacks/glm53/preflight.sh`) because
+  the first boot failed on it: S2's `polkitd` had grown to 6.27 GiB RSS, leaving
+  103.09 GiB free vs the 103.44 GiB `gpu-memory-utilization` wanted — short by
+  0.35 GiB, surfacing only 3 minutes in as a CUDA-layer `ValueError`.
+  Fix: `sudo systemctl restart polkit`. Upstream hit the same growth (their #193).
+- **qwen38fn** — `make ple-test` is a regression for the PLE FP8 patch.
+  ⚠️ **Run it before touching `patch-ple-fp8.py` / `ple-preflight.py`** — they
+  guard a SILENT quality degradation (51 GiB PLE table upcast to bf16 with no
+  scale: the model still serves, quality quietly drops).
+- **v4flash** — `make probe-test` / `probe-apply` / `probe-verify` for the
+  liveness probes, `make v4flash-drift` before any `kubectl apply`, and
+  `make v4flash-hotfix-{status,test}` for the issue #55 streaming tool-call patch.
+  These live in `stacks/v4flash/Makefile.mk`.
+- **k3s stacks** (`qwen38fn`, `v4flash`) — kubectl runs from **this machine**,
+  `~/.kube/dgx-spark.yaml`.
 
-### Qwen3.8-Flash-Next (rollback target #1, k3s)
-
-kubectl runs from **this machine** — `~/.kube/dgx-spark.yaml`.
-
-```bash
-make qwen38fn-run       # preflight (mutual-exclusion self-check + drop_caches) then
-                        #   scale both ranks to 1 — loads 8-11 min (126 GiB NVFP4)
-make qwen38fn-status    # pods + /v1/models
-make qwen38fn-test      # smoke test + tool-call parser check (NOT a benchmark)
-make qwen38fn-load      # who is using the engine now (running/waiting, KV%, client IPs)
-make qwen38fn-logs      # leader (rank0);  qwen38fn-logs-worker for rank1
-make qwen38fn-restart   # recreate BOTH ranks (never restart one alone)
-make qwen38fn-stop      # scale both to 0
-make qwen38fn-rollback  # stop Flash-Next, then `make v4flash-run` (~5 min)
-
-make ple-test           # end-to-end regression for the PLE FP8 patch + preflight
-                        #   ⚠️ MUST run before touching patch-ple-fp8.py /
-                        #   ple-preflight.py — they guard a SILENT quality
-                        #   degradation (51 GiB PLE table upcast to bf16 with no
-                        #   scale: model still serves, quality quietly drops)
-```
-
-### V4-Flash (rollback target, k3s)
-
-Kept runnable during the Flash-Next observation window — do not delete its weights
-or image.
-
-```bash
-make v4flash-run        # scale both ranks to 1 (loads ~5min)
-make v4flash-status     # pods + /v1/models
-make v4flash-test       # coding smoke test + tok/s
-make v4flash-load       # who is using the engine now
-make v4flash-logs       # leader (rank0);  v4flash-logs-worker for rank1
-make v4flash-restart    # recreate BOTH ranks (never restart one alone)
-make v4flash-stop       # scale both to 0
-
-make probe-test         # unit-test the liveness probes locally
-make probe-apply        # push probe scripts via ConfigMap — no pod restart
-make probe-verify       # run the live probes by hand inside both pods
-```
-
-⚠️ **Never restart a single rank, on either TP=2 stack** — it leaves the survivor
-hung in collectives while `/health` and `/v1/models` still return 200. This is a
-property of TP=2, not of any one engine. Gotcha #1 in `docs/gotchas-cn.md`.
-
-### Qwen3.8-27B (single-node fallback, plain docker on S1)
-
-```bash
-make qwen38-run         # loads ~200s (22GB weights)
-make qwen38-status      # container + /v1/models + free -h
-make qwen38-test        # full benchmark: 3 warm-ups + 4 prompt shapes + acceptance
-make qwen38-logs
-make qwen38-stop
-```
+⚠️ **Never restart a single rank of a TP=2 stack** — it leaves the survivor hung
+in collectives while `/health` and `/v1/models` still return 200. This is a
+property of TP=2, not of any one engine, and `make restart` is the only safe
+path. Gotcha #1 in `docs/gotchas-cn.md`.
 
 ### Misc
 
@@ -353,9 +327,10 @@ fallback is a plain-docker container on S1 `:8888`, outside k3s.
 - **Host memory watchdog** (`make memwatch`, run it in tmux) scales BOTH ranks to
   0 before a node OOMs — vLLM's ~100 GB pre-allocation bypasses the container
   cgroup on GB10, so node-level available memory is the only signal that sees it.
-  No auto-restore; bring it back with `make qwen38fn-run`. ⚠️ The watchdog
-  targets one stack by name — `MEMWATCH_STACK` in the Makefile (now `qwen38fn`). A k8s cgroup memory
-  limit was tried and **rejected** — `docs/auto-mitigation-cn.md`.
+  No auto-restore; bring it back with `make run`. ✅ The watchdog reads
+  `stacks/PRIMARY` — there is nothing to change when the primary moves, and it
+  refuses to start (exit 3) if it cannot actually stop that stack. A k8s cgroup
+  memory limit was tried and **rejected** — `docs/auto-mitigation-cn.md`.
 
 ## GB10 host tuning (clock cap adopted 2026-08-25)
 
@@ -392,8 +367,8 @@ Full A/B data + the do-not-touch list: `docs/gb10-tuning-cn.md`.
 
 ## V4-Flash engine notes
 
-Full build/prep runbook: `docs/deepseek-v4-flash-cn.md`. DSpark specifics:
-`docs/dspark-upgrade-cn.md`. Recipe: `config/deepseek-v4-flash.yaml`.
+Full build/prep runbook: `stacks/v4flash/runbook-cn.md`. DSpark specifics:
+`stacks/v4flash/dspark-upgrade-cn.md`. Recipe: `stacks/v4flash/recipe.yaml`.
 
 - **Why two nodes:** official FP8 weights are ~167GB / 48 shards — they don't fit
   one GB10's 128GB. TP=2 splits them (~83GB/node), leaving room for KV cache.
@@ -513,36 +488,51 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
 - `README.md` — human entry point and doc map.
 - `Makefile` — the single user-facing interface for every stack.
 
-**Live cluster**
-- `k8s/` — `README.md` (versions + ops + traps), `registries.yaml`,
-  `cilium-values.yaml`, `gpu/` (RuntimeClass + vendored device plugin),
-  `qwen38fn/` (**primary**) and `v4flash/` (rollback) — each a ConfigMap with the
-  per-rank launch scripts, two Deployments and a Service.
-- `config/qwen38-flash-next.yaml` — **primary** recipe: the source of truth for the
-  **vLLM flags only**. Live launch commands are `k8s/qwen38fn/configmap-launch.yaml`
-  (rendered from it). **Change both together.**
-- `config/deepseek-v4-flash.yaml` — same relationship to `k8s/v4flash/`.
+**The stack registry — `stacks/`**
+- `stacks/README.md` — **the contract: what adding a model requires.** Short
+  version: create `stacks/<id>/`, fill one `stack.env`, change nothing else.
+- `stacks/PRIMARY` — one line: the current primary stack's id. **The only place
+  that fact lives.** Every tool derives from it; `make switch TO=<id>` edits it.
+- `stacks/_lib/` — `stackctl.sh` (all make verbs), `common.sh` (registry reads +
+  required-field validation), `preflight.sh` (whole-registry mutual exclusion +
+  asset checks), `adapter-{k3s,docker}.sh` (one file per runtime).
+- `stacks/<id>/stack.env` — the machine-readable identity: served name, port,
+  host, runtime, **thinking kwarg / CoT field**, watchdog stop action, assets.
+- `stacks/<id>/recipe.yaml` — *why* those parameters, with the measurements.
+  For k3s stacks the flags are the source of truth for
+  `stacks/<id>/k8s/configmap-launch.yaml` — **change both together.**
+- `stacks/<id>/{launch,test,preflight}.sh`, `Makefile.mk`, `k8s/`, `runbook-cn.md`
+  — all optional hooks, picked up automatically when present.
 
-**Scripts** (⚠️ those marked **[stack-bound]** hardcode a default stack identity —
-`docs/stack-switch-cn.md` is the complete list)
-- `scripts/qwen38fn-test.sh` — **primary** smoke test + tool-call parser check
-  (`make qwen38fn-test`). A smoke test, *not* a benchmark. **[stack-bound]**
-- `scripts/qwen38fn-fetch-weights.sh` / `qwen38fn-import-image.sh` — one-time
-  126 GiB checkpoint fetch and the two-node image import.
+**Live cluster**
+- `k8s/` — cluster-level only now: `README.md` (versions + ops + traps),
+  `registries.yaml`, `cilium-values.yaml`, `gpu/` (RuntimeClass + vendored device
+  plugin). Per-stack manifests moved to `stacks/<id>/k8s/`.
+
+**Shared scripts** — these are cross-stack tools. ✅ **None of them hardcodes a
+stack identity any more**; they all read the registry (that used to be the single
+largest source of silent breakage — gotcha #9).
+- `scripts/stack-table.py` — renders the registry into the doc tables and
+  validates the registry itself (`make stack-table` / `make stack-check`).
+- `scripts/stack-switch.sh` — `make switch TO=<id>`: stop → PRIMARY → start →
+  regenerate tables → flip clients → print what only a human can do.
+- `scripts/mem-watch.sh` — host memory watchdog (`make memwatch*`). Reads
+  `stacks/PRIMARY`; refuses to start (exit 3) if it cannot actually stop that stack.
+  `scripts/mem-watch.sh --config [id]` prints what it would guard.
+- `scripts/gb10-clock-cap.sh` — GPU clock cap apply/verify/install. `verify`
+  drives a real generation, so it takes model/port/thinking-kwarg from the
+  registry; `CAP_STACK=<id>` aims it elsewhere.
+- `scripts/qwen-model-switch.sh` — flips the Qwen Code **boot default**; targets
+  are the registry (`--help` lists them live).
 - `scripts/mem-floor.sh` — host-memory floor stress test; the evidence behind
   `gpu_memory_utilization 0.75`. **Re-run it before raising gmu or max_num_seqs.**
-- `scripts/v4-test.sh` — coding smoke test for the rollback stack (one short
-  prompt — a smoke test, *not* a benchmark). **[stack-bound]**
-- `scripts/qwen38-start.sh` / `qwen38-test.sh` — fallback stack launch + benchmark
-  (`make qwen38-run` / `qwen38-test` rsync these to S1).
-- `scripts/qwen-model-switch.sh` — flips the Qwen Code **boot default** between
-  stacks (four fields across three files must agree — see `docs/clients-cn.md`).
-- `scripts/mem-watch.sh` — host memory watchdog (`make memwatch*`); the stack it
-  guards is `MEMWATCH_STACK` in the Makefile. **[stack-bound]**
-- `scripts/gb10-clock-cap.sh` — GPU clock cap apply/verify/install. Its `verify`
-  drives a real generation, so it carries `CAP_MODEL`. **[stack-bound]**
-- `scripts/test-liveness-probe.py` — probe unit tests (`make probe-test`); the
-  live probes themselves ship in each stack's `configmap-launch.yaml`.
+- `scripts/test-liveness-probe.py` / `scripts/test-mem-watch.sh` /
+  `scripts/test-ple-patch.sh` / `scripts/repro-issue55.py` — regressions.
+  ⚠️ Two of them are registry-wide, so a newly added stack is covered without
+  anyone editing them: `test-mem-watch.sh` asserts the watchdog can really stop
+  **every** registered stack (a new stack that forgets its stop action fails
+  there, not during an OOM), and `test-preflight.sh` (`make preflight-test`)
+  asserts every stack excludes every other one.
 - `scripts/vllm-fix-torch.sh` — fixes the torch-CPU build trap.
 - `scripts/v2rayn-launch.sh` — revives the S1 v2rayN proxy (needed for github
   clones during a V4-Flash build).
@@ -551,13 +541,15 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
 **Docs** (see `README.md` for the full map)
 - `docs/gotchas-cn.md`, `docs/benchmarking-cn.md`, `docs/clients-cn.md` —
   the three split out of this file.
-- **`docs/stack-switch-cn.md` — the primary-stack switch checklist. Read it
-  before and after any switch; it is the anti-recurrence mechanism for the
-  silent-staleness class of bug.**
-- `docs/deepseek-v4-flash-cn.md`, `docs/dspark-upgrade-cn.md` — the rollback stack.
-- `docs/qwen38-27b-fallback-cn.md` — single-node fallback + the S2 post-mortem.
-- ⚠️ **Flash-Next has no runbook doc yet** — the primary stack's reasoning lives in
-  `config/qwen38-flash-next.yaml`'s comments and `k8s/qwen38fn/`. Known gap.
+- **`docs/stack-switch-cn.md` — what `make switch` cannot do for you.** Most of
+  the old 4-layer checklist is now mechanized; this doc is the residue plus the
+  three incidents that explain why any of it exists.
+- `docs/s2-outage-2026-08-15-cn.md` — S2's hardware death, why WoL failed
+  (**no BMC/IPMI on these boxes**), and the TP=2 recovery procedure.
+- Per-stack runbooks live with their stack: `stacks/v4flash/runbook-cn.md`,
+  `stacks/v4flash/dspark-upgrade-cn.md`, `stacks/qwen38/runbook-cn.md`.
+- ⚠️ **qwen38fn, glm53 and qwen38un have no runbook yet** — their reasoning lives
+  in `stacks/<id>/recipe.yaml` comments. Known gap.
 - `docs/k3s-migration-design-cn.md` — cluster design (⚠️ §6 superseded).
 - `docs/host-maintenance-cn.md` — apt / driver / kernel / DKMS runbook.
 - `docs/gb10-tuning-cn.md` — GB10 host tuning: GPU clock cap (adopted 2026-08-25), non-existent knobs, do-not-touch list.
@@ -577,7 +569,9 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
 ## Conventions
 
 - Docs in `docs/` are Chinese (`-cn.md`) with all commands, error strings and
-  identifiers verbatim in English. This file stays English.
+  identifiers verbatim in English. This file stays English. **`docs/` holds only
+  what is shared across stacks** — anything true of exactly one model belongs in
+  `stacks/<id>/`, so adding a model adds files instead of editing them.
 - Images on both servers: **Flash-Next `vllm-qwen38fn:latest`** (official
   `vllm/vllm-openai:qwen38-flash-next`, pinned by RepoDigest in the recipe — the
   PLE patch is tied to a specific image version, so tag drift makes it silently
@@ -596,8 +590,15 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
 - Ansible (the two monitoring exporter playbooks): always `uv run ansible` / `uv run ansible-playbook`;
   to add/remove hosts edit `HOSTS` in the Makefile then `make inventory`.
 - Commits follow Conventional Commits (`feat:`, `fix:`, `docs:`, `perf:`).
-- **Any change that moves which stack is primary must update this file's stack
-  table and `## Current state` in the same commit.** 091b6e4 switched the primary
-  stack and touched no docs at all; CLAUDE.md then told every agent session the
-  wrong primary for 24 h, which is how the clock-cap check came to be silently
-  broken. `docs/stack-switch-cn.md` is the checklist.
+- **Adding a model must not modify existing files.** New stack = new
+  `stacks/<id>/` directory. If you find yourself editing the Makefile, a shared
+  script or a doc table to make a new model work, that is a bug in the registry —
+  fix the registry instead. `stacks/README.md` is the contract.
+- **Any change that moves which stack is primary runs `make switch TO=<id>`**,
+  which rewrites `stacks/PRIMARY` and regenerates the doc tables. `make stack-check`
+  fails the build if they drift, so this is no longer a thing to remember.
+  ⚠️ What is *still* manual: the `## Current state` prose above, and codex's own
+  config files. 091b6e4 switched the primary stack and touched no docs at all;
+  CLAUDE.md then told every agent session the wrong primary for 24 h, which is how
+  the clock-cap check came to be silently broken. The table can no longer go
+  stale that way — the prose still can.

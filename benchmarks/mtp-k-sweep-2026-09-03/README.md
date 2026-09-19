@@ -1,8 +1,8 @@
 # MTP `num_speculative_tokens` 扫描 —— Qwen3.8-Flash-Next NVFP4（2026-09-03）
 
-迁移主力栈时 `num_speculative_tokens` 直接沿用了 **3**（`config/qwen38-flash-next.yaml:121`），
+迁移主力栈时 `num_speculative_tokens` 直接沿用了 **3**（`stacks/qwen38fn/recipe.yaml:121`），
 没在本机扫过。V4-Flash 那边 DSpark 的教训正是"卡片给的更大值在 GB10 上更慢"
-（n=7 反而白费两次 draft，见 `docs/dspark-upgrade-cn.md`），所以这个参数在这里
+（n=7 反而白费两次 draft，见 `stacks/v4flash/dspark-upgrade-cn.md`），所以这个参数在这里
 也不能默认"越大越好"。
 
 **结论：k=4 比现役的 k=3 快 +12.2%（decode 均值），五个 prompt 全部正向。
@@ -103,11 +103,11 @@ AssertionError: QSA ring capacity 12 must divide the attention block size 1616
 
 ## 落地状态：未落地
 
-现役仍是 **k=3**（`config/qwen38-flash-next.yaml` 与 `k8s/qwen38fn/configmap-launch.yaml`
+现役仍是 **k=3**（`stacks/qwen38fn/recipe.yaml` 与 `stacks/qwen38fn/k8s/configmap-launch.yaml`
 两个 rank 一致）。抬到 4 要付的账：
 
 - 两个文件**一起改**（recipe 是 flags 的唯一真相源，ConfigMap 是渲染结果），
-  然后 `make qwen38fn-restart` **同时重建两个 rank**（gotcha #1：单 rank 重启留下
+  然后 `make restart STACK=qwen38fn` **同时重建两个 rank**（gotcha #1：单 rank 重启留下
   僵尸 TP 组，`/health` 照样 200）。
 - 更深的 draft 会动 KV / 激活内存的账 —— 动之前按约定先跑 `scripts/mem-floor.sh`。
 - 单流 +12.2% 是否值得重启，取决于当时的优先级；本目录只交测量，不代做这个决定。

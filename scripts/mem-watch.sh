@@ -16,7 +16,7 @@
 #   请按实测校准,别套通用阈值。
 #
 # 模型:**不自动恢复**。触发后写一个 state 文件并保持,只有显式清除/重跑
-#   (make memwatch-reset)才会解除 —— 引擎只会在你 `make v4flash-run` 时回来,
+#   (make memwatch-reset)才会解除 —— 引擎只会在你 `make run STACK=v4flash` 时回来,
 #   避免"scale 0 → 内存松动 → 又拉起 → 又掉"的抖动。
 #
 # 位置:跑在这台操作机(有 kubectl + SSH)。局限:操作机要在线;
@@ -34,44 +34,65 @@
 # ============================================================
 set -u
 
-WATCH_NODES="${WATCH_NODES:-100.97.87.120 100.67.164.92}"   # S1 head, S2 worker(tailnet)
-SSH_USER="${WATCH_SSH_USER:-admin}"
-SSH_KEY="${WATCH_SSH_KEY:-$HOME/.ssh/vgio}"
+
+# ============================================================
+# 身份从**注册表**推导,不再是这里的一组默认值
+# ============================================================
+# 旧版在这里写死 WATCH_NS / WATCH_DEPLOYS / WATCH_DOCKER_* 的默认值,Makefile 那边
+# 还有一段 ifeq 阶梯逐栈拼环境变量。换栈时漏改的后果是这道防线**静默失效**:
+# 巡检照跑、日志照记,真要动手时 scale 一组不存在的对象。
+# 现在只读 stacks/<id>/stack.env(不给 id 就是 stacks/PRIMARY)。
+#
+#   scripts/mem-watch.sh                 # 守当前主力栈
+#   scripts/mem-watch.sh --once glm53    # 只看 glm53 那套节点的 available%
+#
+# 所有 WATCH_* 环境变量仍然优先于注册表 —— 回归测试(test-mem-watch.sh)靠这条打桩。
+MW_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MW_STACK_ARG=""; MW_FLAGS=""
+for _a in "$@"; do case "$_a" in --*) MW_FLAGS="$MW_FLAGS $_a" ;; *) MW_STACK_ARG="$_a" ;; esac; done
+# shellcheck disable=SC2086  # flags only, 有意分词
+set -- $MW_FLAGS
+
+if [ -z "${MEMWATCH_LIB_ONLY:-}" ]; then
+  # shellcheck source=/dev/null
+  . "$MW_HERE/../stacks/_lib/common.sh"
+  set +o pipefail          # common.sh 带 pipefail,本脚本的管道不按那个语义写
+  load_stack "$MW_STACK_ARG"
+fi
+
+# 注册表值 → 本脚本变量的映射。注册表没加载(lib-only)时落到历史默认值。
+WATCH_NODES="${WATCH_NODES:-${STACK_MEMWATCH_NODES:-${STACK_NODES_IPS:-${STACK_HEAD:-100.97.87.120}}}}"
+SSH_USER="${WATCH_SSH_USER:-${STACK_SSH_USER:-admin}}"
+SSH_KEY="${WATCH_SSH_KEY:-${STACK_SSH_KEY:-$HOME/.ssh/vgio}}"
 INTERVAL="${WATCH_INTERVAL:-10}"            # 两次轮询间隔(秒)
 WARN_PCT="${WATCH_WARN_PCT:-8}"
 CRIT_PCT="${WATCH_CRIT_PCT:-5}"
 CRIT_CONSEC="${WATCH_CRIT_CONSEC:-2}"       # 连续多少次低于临界才动作
 KUBECONFIG="${KUBECONFIG:-$HOME/.kube/dgx-spark.yaml}"
-# ⚠️ 看门狗必须知道**当前主力栈**是哪一个,否则它会静默地什么都不保护:
-# 巡检照跑、日志照记,但 scale 的是一组不存在的 deploy。切换主力栈时,这三个
-# 值(NS / DEPLOYS / STACK)必须一起改 —— Makefile 的 memwatch 目标已按
-# MEMWATCH_STACK 统一注入,正常情况下改 Makefile 顶部那一个变量即可。
-STACK="${WATCH_STACK:-v4flash}"                                  # 仅用于日志与提示文案
-NS="${WATCH_NS:-$STACK}"
-DEPLOYS="${WATCH_DEPLOYS:-v4flash-worker v4flash-leader}"        # ⚠️ 两个 rank 必须一起
+
+STACK="${WATCH_STACK:-${STACK_ID:-unknown}}"
+MODE="${WATCH_MODE:-${STACK_RUNTIME:-k8s}}"              # k8s | docker
+[ "$MODE" = k3s ] && MODE=k8s                            # 注册表说 k3s,本脚本一直叫 k8s
+NS="${WATCH_NS:-${STACK_NS:-$STACK}}"
+DEPLOYS="${WATCH_DEPLOYS:-${STACK_DEPLOYS:-}}"           # ⚠️ 两个 rank 必须一起
 STATE="${WATCH_STATE:-/tmp/.${STACK}-memwatch-fired}"
 LOGFILE="${WATCH_LOG:-${TMPDIR:-/tmp}/${STACK}-memwatch.log}"
 NOTIFY="${WATCH_NOTIFY:-0}"
 
-# --- 运行时形态:k8s(默认)还是 docker ---------------------------------------
-# 新增于 2026-09-19。起因:GLM-5.3-Flash EXL3 栈按上游配方跑在 **docker** 上,
-# 不在 k3s 里。而在此之前本脚本唯一的动作是 `kubectl scale` —— 对 docker 栈
-# 它会**巡检照跑、日志照记、真要动手时什么也没停**。
+# --- docker 形态的"拆机"动作 -------------------------------------------------
+# 新增于 2026-09-19。起因:GLM-5.3-Flash EXL3 按上游配方跑在 **docker** 上,不在
+# k3s 里,而在此之前本脚本唯一的动作是 `kubectl scale` —— 对 docker 栈它会
+# **巡检照跑、日志照记、真要动手时什么也没停**。这正是本仓库最贵的那一类 bug:
+# 防线看起来在,实际是哑的。而这两台**没有 BMC**,整机 OOM 要有人到机器跟前。
 #
-# 这正是本仓库最贵的那一类 bug(换栈清单 §0):防线看起来在,实际是哑的。
-# 而 GLM 栈按上游默认跑 gpu_memory_utilization=0.85 —— 恰恰是 2026-06-29
-# OOM 过 head 节点的那个值,且这两台**没有 BMC**。所以这道防线尤其不能是哑的。
-#
-# docker 模式下的"拆机"动作是上游的 `./start.sh stop`,它会**成对**停掉
-# head 与 worker 两个容器 —— 与 k8s 模式下两个 rank 一起 scale 0 同理,
-# 都是为了不留下 zombie TP 组(gotcha #1)。
-MODE="${WATCH_MODE:-k8s}"                                        # k8s | docker
-DOCKER_HOST_IP="${WATCH_DOCKER_HOST:-100.97.87.120}"             # 跑 start.sh 的 head
-DOCKER_DIR="${WATCH_DOCKER_DIR:-/home/admin/glm53-exl3}"         # 上游 repo 所在目录
-DOCKER_CONTAINERS="${WATCH_DOCKER_CONTAINERS:-glm53-exl3-head}"  # 判"在跑"看它
-DOCKER_STOP="${WATCH_DOCKER_STOP:-./start.sh stop}"              # 逐栈不同的成对停机命令
-SSH_KEY_W="${WATCH_SSH_KEY:-$HOME/.ssh/vgio}"
-SSH_USER_W="${WATCH_SSH_USER:-admin}"
+# 停机命令逐栈不同(`./start.sh stop` / `./stop.sh` / `docker rm -f`),
+# 但都必须是**成对**停 head+worker 的那一个,理由同 gotcha #1。
+DOCKER_HOST_IP="${WATCH_DOCKER_HOST:-${STACK_HEAD:-100.97.87.120}}"
+DOCKER_DIR="${WATCH_DOCKER_DIR:-${STACK_DIR:-/home/admin}}"
+DOCKER_CONTAINERS="${WATCH_DOCKER_CONTAINERS:-${STACK_CONTAINERS:-}}"
+DOCKER_STOP="${WATCH_DOCKER_STOP:-${STACK_MEMWATCH_STOP:-${STACK_STOP_CMD:-}}}"
+SSH_KEY_W="$SSH_KEY"
+SSH_USER_W="$SSH_USER"
 ssh_head(){ ssh -i "$SSH_KEY_W" -o StrictHostKeyChecking=no -o BatchMode=yes \
                 -o ConnectTimeout=15 "$SSH_USER_W@$DOCKER_HOST_IP" "$@"; }
 
@@ -194,6 +215,14 @@ case "${1:-loop}" in
     ;;
   --reset)
     rm -f "$STATE" && log "state cleared; watchdog re-armed"
+    exit 0
+    ;;
+  --config)
+    # 打印从注册表推导出来的身份(不出网)。用途:排查"看门狗到底在守谁",
+    # 以及让 test-mem-watch.sh 能在不碰集群的情况下钉住这套映射。
+    printf 'STACK=%s\nMODE=%s\nNODES=%s\nNS=%s\nDEPLOYS=%s\nDOCKER_HOST=%s\nDOCKER_DIR=%s\nDOCKER_CONTAINERS=%s\nDOCKER_STOP=%s\nSTATE=%s\n' \
+      "$STACK" "$MODE" "$WATCH_NODES" "$NS" "$DEPLOYS" \
+      "$DOCKER_HOST_IP" "$DOCKER_DIR" "$DOCKER_CONTAINERS" "$DOCKER_STOP" "$STATE"
     exit 0
     ;;
   --help|-h)

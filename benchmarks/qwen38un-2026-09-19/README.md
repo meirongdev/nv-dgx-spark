@@ -14,7 +14,7 @@
 
 ## 被测配置
 
-见 `config/qwen38-uncensored-sglang.yaml`（含四个上线时踩的坑）。要点：
+见 `stacks/qwen38un/recipe.yaml`（含四个上线时踩的坑）。要点：
 
 | | |
 |---|---|
@@ -136,7 +136,7 @@ not comparable to the ndec/stream/table rows"*。所以**别把我们的 +93% �
 
 ## 3. 冒烟 + abliteration 验证
 
-`scripts/qwen38un-test.sh`（`make` 未挂；直接跑）：
+`stacks/qwen38un/test.sh`（`make` 未挂；直接跑）：
 
 ```
 out=150 tok  finish=stop  content=520 字符  reasoning_content=空     ← enable_thinking 生效

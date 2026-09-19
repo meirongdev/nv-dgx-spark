@@ -1,0 +1,166 @@
+recipe_version: "1"
+name: GLM-5.3-Flash-EXL3
+description: GLM-5.3-Flash EXL3 4bpw on dual DGX Spark TP=2(上游 MiaAI-Lab 配方,docker 部署)
+model: Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw
+served_model_name: GLM-5.3-Flash-EXL3
+container: glm53-exl3-head / glm53-exl3-worker
+status: 阶段 A —— docker 跑通中,**尚未验证能启动**
+
+# ⚠️ 本栈与其它三个栈的根本差异:**它不是本仓库自己写的部署,而是跑上游的
+# start.sh**(121 KB bash 编排器)。所以「真相源」不是本文件,而是:
+#
+#   上游 repo  : /home/admin/glm53-exl3   (钉在 commit 8f29c6dd)
+#   实际参数   : /home/admin/glm53-exl3/.env
+#
+# **本文件记录的是「我们相对上游默认值改了什么、以及为什么」**,不是全量参数。
+# 全量看 .env.example —— 我们只动了 6 行,其余一律上游默认(2026-09-19 的决定:
+# 「所有部署方式参照那个 github repo 的建议处理」)。
+#
+# 路线:阶段 A 先用 docker 按上游方式跑通;跑通后再做阶段 B(迁 k3s)。
+# 阶段 B 的映射分析见 docs/glm53-k3s-migration-cn.md(待写)。
+
+upstream:
+  repo: https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks
+  commit: 8f29c6dd42da           # 2026-09-16T08:25Z
+  license: AGPL-3.0              # 网络服务需提供源码;DFlash2 另为 CC BY-NC-ND 4.0(禁商用)
+  path_on_s1: /home/admin/glm53-exl3
+  # ⚠️ **为什么钉 8f29c6dd 而不是 HEAD**:镜像 :exl3-instanttensor 构建于
+  # 2026-09-16T10:12,对应的就是这个 commit(也是上游 issue #204 里写的
+  # "main @ 8f29c6d")。而 overlay/*.py 是**在容器启动时 bind-mount 盖进去的**
+  # —— 用 HEAD(ca855766,晚 3 天)会让新 overlay 盖在旧配方构建的镜像上。
+  # 升级上游时:先确认新镜像的构建时间,再同步挪动这个 commit。
+
+image:
+  ref: ghcr.nju.edu.cn/miaai-lab/glm-5.3-flash-2x-dgx-sparks:exl3-instanttensor
+  image_id: sha256:ef9f5013c41adf93a5171abb809283be0f202b88fd14098e4434337715614c62
+  repo_digest: sha256:447114ee77d14c9b4732ee23978ada2a0ee9027868a231d6fd42700a8b25be1d
+  size: 20.9GB
+  arch: linux/arm64, CUDA 13.0.1, TORCH_CUDA_ARCH_LIST=12.1a   # sm_121a,对 GB10 正确
+  # **为什么是南大源而不是 daocloud**(gotcha #8 的新一例):
+  #   ghcr.m.daocloud.io 有白名单,miaai-lab/* 不在里面 → pull access denied
+  #   (提示指向 DaoCloud/public-image-mirror#2328)。ghcr.nju.edu.cn 无白名单,通。
+  #   已试且不通:ghcr.dockerproxy.net / ghcr.chenby.cn / ghcr.geekery.cn(均 curl 000)。
+  # **镜像真实性已核**:两节点 ImageID 均为 ef9f5013…,而该值 == 从 ghcr.io 直连
+  #   读到的 config blob 摘要 → 南大源服务的是与上游逐字节相同的镜像,不是重打包。
+  #   (对照 qwen38-flash-next.yaml 里那三个互不相等的摘要的教训。)
+
+# ---------------------------------------------------------------------------
+# .env:相对上游 .env.example 的**全部** 6 行差异。其余一律上游默认。
+# ---------------------------------------------------------------------------
+env_delta:
+  # --- 本 kit 的硬事实 ---
+  HEAD_IP: 192.168.200.101          # 上游默认 10.0.0.1;本仓库的 200G CX7 内网线
+  WORKER_IP: 192.168.200.102        # 上游默认 10.0.0.2
+  WORKER_USER: admin                # 上游留空回落 $USER(其 issue #197:set -u 下会炸)
+  HEAD_CX7_IF: enp1s0f0np0          # ⚠️ 上游默认 enp1s0f1np1 —— **对本 kit 是错的**
+  HEAD_CX7_IB: rocep1s0f0           # ⚠️ 上游默认 rocep1s0f1 —— 同上
+  IMAGE: ghcr.nju.edu.cn/...        # 见上
+
+  # --- 内存三件套(2026-09-19 实测得出,顺序就是踩坑顺序)---
+  LOAD_FORMAT: ""                   # 上游默认 instanttensor。关掉换回 KV(见下)
+  GPU_MEM_UTIL: "0.84"              # 上游 .env 默认 0.85
+  MAX_MODEL_LEN: "850000"           # = 上游默认
+  EXTRA_ARGS: "--kv-cache-memory-bytes 15032385536"   # 14 GiB,上游 .env.example
+                                                      # 第 163 行原本就有(注释态)
+
+# ---------------------------------------------------------------------------
+# 启动实测账(2026-09-19,三次失败 → 成功)
+# ---------------------------------------------------------------------------
+# 1) 上游默认(0.85 / 850000 / instanttensor)—— **两步都起不来**
+#    a. 先撞主机内存:S2 的 polkitd 涨到 6.27 GiB RSS →
+#         ValueError: Free memory on device cuda:0 (103.09/121.69 GiB) ...
+#         less than desired GPU memory utilization (0.85, 103.44 GiB)
+#       **只差 0.35 GiB**。`systemctl restart polkit` 后 S2 109→116 GiB。
+#       上游 issue #193 跟帖报过同一个 polkitd 膨胀(他们 3.3 GiB)。
+#       → 已做成 make preflight STACK=glm53 的内存闸门,不再等 3 分钟后才在 CUDA 层报。
+#    b. 再撞 KV 地板(= 上游 issue #204,仍 open,本 kit 是第三台独立确认):
+#         13.46 GiB KV needed > 10.63 GiB available;estimated max len 451584
+# 2) LOAD_FORMAT= (关 InstantTensor) → KV 10.63 → **12.92 GiB**,仍差 0.54。
+#    ⚠️ 上游 #204 测得关它换回 **4.43 GiB**,本 kit 只换回 **2.29 GiB** —— 逐 kit 不同。
+# 3) 0.86 / 800000 → 起来了,但 **S1 空载 MemAvailable 仅 1.15 GiB (0.9%)**。
+# 4) **采纳**:0.84 / 850000 / KV 上限 14 GiB(= 上游 issue #193 跟帖里被压测
+#    验证过的那组)。启动数字与上游**逐字匹配**:
+#         Model loading took 82.05 GiB            (上游同值)
+#         reserved 14.0 GiB as specified by kv_cache_memory_bytes
+#         GPU KV cache size: 883,552 tokens       (上游同值)
+#         Maximum concurrency for 850,000: 1.04x  (上游同值)
+#         attention block size 3584;EXL3 MCG trellis bits=4 experts_local=288
+#         effective_tier=grouped (E3);DFlash2DraftModel 已解析
+#
+# ⚠️ **但主机 headroom 对不上:S1 空载 2.1-2.5 GiB (1.8-2.0%),上游 README 称同
+#    配置 "~5 GiB free"。** 差异不在 k3s(实测完全停掉 k3s 只给 head +0.11 GiB),
+#    而在 head 上多跑的东西:S1 全部非 vLLM 进程 2.79 GiB,其中 zcode 系列 ~1.07 GiB、
+#    桌面 ~0.4 GiB。另外 head 天然比 worker 重 1.71 GiB(API server/tokenizer/
+#    MM 处理器缓存)。
+#    上游 README 对这个区间的原话:"0.8-2.2 GiB free under load, which is
+#    **not enough margin on this UMA**"。**此状态下 make memwatch 启不了**
+#    (1.8% < CRIT 5%,启动即触发)—— 即当前没有 OOM 防线,而这两台没有 BMC。
+#    上下文与 headroom 是 1:1 换的(KV 上限每降 1 GiB,主机多 1 GiB):
+#      850K/14.0GiB → 2.1 GiB   760K/12.0 → ~4.2   700K/11.1 → ~5.0   600K/9.5 → ~6.6(>CRIT)
+
+# 上游默认值里**已经**与本 kit 相符、因此没动的:
+#   WORKER_CX7_IF=enp1s0f0np0  WORKER_CX7_IB=rocep1s0f0  NCCL_IB_GID_INDEX=3
+#
+# GID(2026-09-19 实测,/sys/class/infiniband/rocep1s0f0/ports/1/gids):
+#   两台都是 gid[3] = RoCE v2 且携带各自 IPv4(c0a8:c865=.101 / c0a8:c866=.102)
+#   → 单一 NCCL_IB_GID_INDEX=3 双机通用,**不需要** HEAD_GID / WORKER_GID 分设。
+#   (上游 README 说 GID index 是 per-NIC 的、有的 kit 要分设 —— 本 kit 不用。)
+#
+# 本 kit 两个 QSFP 口都接着,四个 IB 设备(rocep1s0f0/f1, roceP2p1s0f0/f1);
+# 承载 NCCL 的是 192.168.200.x 所在的 enp1s0f0np0 → rocep1s0f0。
+# 第二条线的测试结论见 CLAUDE.md「第二根 QSFP 线」—— 保持两根都插着。
+
+# ---------------------------------------------------------------------------
+# 启动方式 —— ⚠️ **必须带 SKIP_BUILD=1**
+# ---------------------------------------------------------------------------
+launch: |
+  cd /home/admin/glm53-exl3 && SKIP_BUILD=1 ./start.sh
+
+# ⚠️⚠️ **SKIP_BUILD=1 不是可选项,漏了会在 S1 上跑源码构建。**
+#
+# start.sh 的 ensure_image() 在「镜像里烤的 glm53.recipe.stamp 标签」与
+# 「本地 repo 现算的 overlay_recipe_hash()」不一致时,**默认 BUILD=1 重新构建镜像**。
+# 而 CLAUDE.md「统一内存约束」明令:**决不在 S1 上构建而不先停栈** ——
+# 2026-07-04 连"轻量预编译 wheel"路径都把 head 节点 OOM 了,连带干掉整个 tmux server。
+#
+# 而这两个戳**永远不可能相等**,因为 overlay_recipe_hash() 是这么算的:
+#
+#     { printf '%s\n' "$SCRIPT_DIR/Dockerfile"; find "$SCRIPT_DIR/overlay" ... }
+#       | LC_ALL=C sort | xargs -d '\n' -r sha256sum | sha256sum
+#
+# `sha256sum` 的输出里**包含文件名,而文件名是绝对路径** → 哈希依赖 $SCRIPT_DIR。
+# 2026-09-19 实测(同样内容、两个目录):
+#     /home/admin/glm53-exl3 -> 2c2acfca0dd05431c1b1a9f5a18f58644d9428a2219997a84bf710bdfb4b55f0
+#     /tmp/pathtest-xyz      -> 63003e0d62c8394aa14d73ea5d6ce9ee611eec5ee30367f78f58a9d92544d3d5
+#     镜像里烤的            =  5fd1b44ac47e04e8c72497752bf83b3c4b48e8e6cd20e8e0ece4ef6001161aea
+# 除非我们的 checkout 恰好落在上游构建者的绝对路径上,否则对不上。
+# 同族问题上游自己也有:issue #209 / #226(cooperative_moe.so 的 BINARY_SHA 门
+# 拒绝一切本地重建)。
+#
+# → 所以 start.sh 那条 `SKIP_BUILD=1 — not rebuilding; stamp X != repo Y` 警告
+#   是**恒定噪声,不是信号**。看到它不要"修",更不要放它去 build。
+#   真正防漂移的手段是上面 upstream.commit 那条钉子。
+
+# ---------------------------------------------------------------------------
+# 与本仓库既有约束的冲突(记录在案,2026-09-19 由用户决定照上游默认值走)
+# ---------------------------------------------------------------------------
+# - GPU_MEM_UTIL=0.85(上游默认):本仓库 0.85 在 2026-06-29 OOM 过 head 节点;
+#   0.80 实测只剩 4.1% 可用(scripts/mem-floor.sh)。现役 Flash-Next 用 0.75。
+#   GB10 上 OOM 会冻住 sshd,而这两台**没有 BMC** —— 2026-08-15 为此付过 6.5 小时。
+#   ⚠️ 上游 issue #204(2026-09-16,仍 open):换 InstantTensor 镜像后,
+#      GPU_MEM_UTIL=0.85 在 MAX_MODEL_LEN=850000 下**已经起不来**(KV 池掉到
+#      ~10.1-10.6 GiB,低于单条满长请求的 ~13 GiB 硬地板),需要 ~0.88。
+#      两条已记录的解法:① LOAD_FORMAT= 关掉 InstantTensor(换回 4.43 GiB KV,
+#      代价是加载 37s → 305s);② 抬 util。首次启动若如期失败,按此处理。
+# - 端口 8888:与单机 fallback qwen38-27b 冲突(两者本就互斥)。客户端配置需更新。
+# - 三栈互斥仍然成立,现在是四栈。启动前必须先停 Flash-Next。
+
+# ---------------------------------------------------------------------------
+# 上游未决问题中与本 kit 直接相关的(换栈前应知)
+# ---------------------------------------------------------------------------
+# #152 worker 在 120-shard 加载时**整机硬复位,复现两次**。其环境栏写的内核
+#      6.17.0-1031-nvidia、驱动 580.173.02 —— **与本仓库两台的 baseline 完全相同**。
+# #193 持续推理中 head 节点 hard lockup(后续用新版重装后稳定;需正确的 per-node GID)
+# #214 TP=2 + DFlash2 跑到 21,637 token 后 cudaErrorNotPermitted 致命
+# #163 TP=2 decode 每步慢 ~2×,定位在跨节点 all-reduce 走了 PYNCCL fallback
+# #204 见上

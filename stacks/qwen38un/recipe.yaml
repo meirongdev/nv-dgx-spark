@@ -1,0 +1,140 @@
+recipe_version: "1"
+name: Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2
+description: 无审核 27B,SGLang 引擎,**单节点(只用 S1)**
+model: orcarouter/Qwen3.8-27B-Uncensored-NVFP4
+served_model_name: qwen3.8-27b-sglang
+container: qwen3.8-27b-sglang
+port: 8888
+status: 2026-09-19 起为主力栈
+
+# ⚠️ 本栈是四个 TP 栈之外的**第五个**,也是**第一个单节点的主力栈**。
+# 只用 S1,S2 完全空闲 —— 但仍与其它栈互斥:Flash-Next / V4 的 rank0 也在 S1,
+# 且 glm53 / qwen38-27b 同占 :8888。`make preflight STACK=qwen38un` 会全部检查。
+#
+# 真相源:上游 repo 的 start-dflash.sh + .env,我们只通过三个环境变量定制
+# (见 stacks/qwen38un/launch.sh)。本文件记录**为什么**,不是全量参数。
+
+upstream:
+  repo: https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark
+  commit: 9fb18ed        # 2026-09-09
+  license: MIT           # 比 GLM 那套的 AGPL-3.0 宽松
+  path_on_s1: /home/admin/qwen38-sglang
+  # 相对 GLM 那套配方的质量信号:start.sh 17.8 KB(GLM 121 KB),
+  # open issues 7(GLM 70)。上游自己的 A/B 方法学也更严谨
+  # (交错 A/B/A、丢弃每次 boot 的首轮、明说 <15% 是噪声)。
+
+weights:
+  main:
+    repo: orcarouter/Qwen3.8-27B-Uncensored-NVFP4
+    revision: 96d4d0b66d943149
+    size: 23.02 GiB / 6 分片 / compressed-tensors
+    gated: auto          # 账号需先在模型页点 "Agree and access repository"
+    host_path: /home/admin/qwen38-sglang/.cache/huggingface/local/Qwen3.8-27B-Uncensored-NVFP4
+    container_path: /root/.cache/huggingface/local/Qwen3.8-27B-Uncensored-NVFP4
+    abliteration: 拒答 64-99% → 0-6%,良性过度拒答 5.6% → 0.4%(模型方自报,本仓库未独立验证)
+  draft:
+    repo: z-lab/Qwen3.8-27B-DFlash2
+    revision: 50307d4c4cde6860d4eee73e2547cd786fe8e8a4
+    size: 3.58 GiB
+    host_path: /home/admin/qwen38-sglang/.cache/huggingface/hub  (HF cache 布局,上游脚本按此查)
+
+image:
+  ref: lmsysorg/sglang:nightly-cu134-20260909-708f51e
+  digest: sha256:00205b89f74691f76a0ffbd6846376d9323971930a5d59bf63a65dadc7d67927
+  image_id: sha256:13a4e669443216d9869fef3639b1cb0f48db436acb4fb8a4fe1a8b41522d5696
+  arch: linux/arm64, 30.9 GB
+  # 从 docker.m.daocloud.io 按 digest 拉后 `docker tag` 成规范名 —— daocloud
+  # **放行** lmsysorg/*(热门官方组织),不像 ghcr 的个人仓库要走南大源。
+  # 上游选这个 tag 的理由:第一条带 sglang #35255(僵尸请求修复)的 arm64 线。
+
+defaults:            # 来自上游 .env.sample,未改
+  QUANT: nvfp4
+  YARN: 0
+  CONTEXT_LENGTH: 262144
+  MAX_CONCURRENT_REQUESTS: 16
+  mem_fraction_static: 0.80    # ← **本仓库的值**,不是上游的 0.90。0.85 试过,不够。理由见下
+
+# ---------------------------------------------------------------------------
+# mem-fraction-static:0.95 是红线,0.90 是上游默认,**0.85 是本仓库采用值**
+# ---------------------------------------------------------------------------
+# 覆盖链(argparse last-wins):start.sh 0.95 → start-dflash.sh 0.90 →
+# 我们的 DF_EXTRA 0.85。三个值都会出现在容器命令行里,最后一个生效。
+#
+# ⚠️ **0.95 是红线,别碰** —— 上游脚本注释原文:0.95 hard-rebooted the box。
+#    这两台没有 BMC,硬重启要有人到机器跟前。
+#
+# 为什么从上游的 0.90 再降到 0.85(2026-09-19 实测):
+#
+#   | mem-fraction | 开机 headroom | 稳态(服务 2h 后) | memwatch | KV 池 | max_run_req |
+#   |---|---|---|---|---|---|
+#   | 0.90(上游) | 6.10 GiB (5.0%) | — | ❌ 启动即触发 | — | 16 |
+#   | 0.85(试过,**不够**) | 11.4 GiB (9.4%) | **7.4 → 5.0%** | ❌ **2h10m 后触发,栈被停** | 1,368,663 | 12 |
+#   | **0.80(采用)** | **17.4 GiB (14.3%)** | ~11% | ✅ 稳定 | 1,220,951 | 12 |
+#
+# ⚠️ **headroom 会漂,开机读数不能当稳态** —— 这是 2026-09-19 付过代价的一条。
+#    0.85 开机 9.4% 看着很安全,服务 + 压测 2 小时后降到 5.0%,memwatch 如实触发、
+#    把栈停了(它做得对)。掉的不是页缓存(drop_caches 只回收 137 MiB),是**引擎
+#    自己的主机侧 RSS**:sglang::scheduler 4.4 GiB + detokenizer 1.4 + python3 1.7,
+#    随请求历史 / radix cache 元数据增长,约 2 小时涨 4-5 GiB。
+#    0.80 留出 14.3% 开机余量来吸收这段漂移。**调这个值时必须按稳态判断,不是开机值。**
+#    ⚠️ 0.80 下的吞吐**未复测**(KV 从 137 万降到 122 万,但 max_running_requests
+#    仍是 12,预计无影响 —— 预计不是实测)。
+#
+#   0.90 划走 ~112 GiB,而权重只占 24 GB —— 其余全是 KV 池,**远超 262144×16 所需**。
+#   拿用不上的 KV 换回主机 headroom 是划算的:0.85 下 KV 仍有 136 万 token,
+#   是 262144 上下文的 5.2 倍。代价是 SGLang 按内存把 max_running_requests
+#   自动从 16 降到 12。吞吐影响见 benchmarks/qwen38un-2026-09-19/README.md。
+#
+#   决定性的一条:0.90 下 `make memwatch` **启动第一拍就报 crit 1/2**(实测),
+#   即没有 OOM 防线;0.85 把防线装了回来。
+#
+# ⚠️ 改这个值后必须**同时**重测 headroom 和吞吐 —— KV 变小会影响并发档。
+# S2 完全空闲(116 GiB),因为本栈是单节点。
+
+# ---------------------------------------------------------------------------
+# 思考语义 —— **第五套,与前四个栈全都不同**
+# ---------------------------------------------------------------------------
+#   kwarg    : chat_template_kwargs {"enable_thinking": false}   ← **可以关**
+#   CoT 字段 : reasoning_content    (--reasoning-parser qwen3)
+#   默认     : ON
+#   深度     : reasoning_effort=xhigh|medium|low(xhigh 默认)
+#
+#   | 栈 | 关思考的 kwarg | CoT 字段 |
+#   |---|---|---|
+#   | V4-Flash | thinking:false | reasoning_content |
+#   | Flash-Next | enable_thinking:false | reasoning_content |
+#   | GLM-5.3 EXL3 | **关不掉**,最低 reasoning_effort:low | **reasoning** |
+#   | **本栈** | **enable_thinking:false** | reasoning_content |
+#
+# 本栈能真正关掉 thinking,所以基准数字与上游那张 "thinking off" 的表条件一致
+# (GLM 那份做不到,只能用 effort=low 近似)。
+
+# ---------------------------------------------------------------------------
+# 启动:**必须走 stacks/qwen38un/launch.sh**(make run STACK=qwen38un)
+# ---------------------------------------------------------------------------
+# 2026-09-19 首次上线连踩四个坑,每一个的错误信息都**不指向真因**,全部固化在
+# 那个包装脚本和 Makefile 里:
+#
+# 1. **权重放在挂载树之外** → `OSError: Repo id must be in the form
+#    'namespace/repo_name': '/home/admin/models/…'`
+#    上游 start.sh 只挂两样:$DIR/.cache/huggingface 和 triton 缓存。容器看不见
+#    的路径会被 transformers 当成 HF repo id。→ 权重移进 .cache/huggingface/local/。
+#
+# 2. **DF_EXTRA 被引号吃掉** → 日志里 EXTRA_ARGS 仍是上游硬编码的 RadixArk 路径,
+#    引擎去联网下一个我们没有的模型然后失败,**错误信息只说连不上 HF**。
+#    根因:make → ssh → tmux → bash 四层,带空格的变量在中途断掉。
+#    → 所有定制固定在 qwen38un-launch.sh 里,不再穿越四层引号。
+#
+# 3. **没开离线模式** → 草稿模型是按 repo id 传的,即便已缓存,HF hub 仍发 HEAD
+#    探更新 → 容器内 "Network is unreachable" 重试 5 轮。
+#    → DOCKER_ENV="HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1"(另两个栈本来就带)。
+#
+# 4. **缺 refs/main** → 离线模式下报 "couldn't connect to huggingface.co ...
+#    and couldn't find them in the cached files",**完全不提缺的是 refs/main**。
+#    根因:snapshot_download 按 **commit SHA** 下载时不写 refs/,而 transformers
+#    解析的是 `main`。→ stacks/qwen38un/fetch-weights.sh 现在显式补写。
+#
+# 共同形状:四个里有三个的报错都指向"网络/repo id",真因却是挂载、引号、缓存布局。
+# 与 docs/stack-switch-cn.md §0 记的那一类同源 —— 失败路径长得不像真因。
+launch: |
+  make run STACK=qwen38un     # = scp 包装脚本 + tmux 里跑 qwen38un-launch.sh

@@ -243,7 +243,7 @@ if __name__ == "__main__":
         print("⚠️ 读不到 /metrics —— 无法确认引擎独占,结果可能被外部流量污染。")
     elif run0 > 0 or (wait0 or 0) > 0:
         print(f"❌ 引擎不空闲(running={run0:.0f} waiting={wait0:.0f})—— 有别的客户端在用。")
-        print("   现在测出来的数字会被静默拉低。等它空闲,或 make qwen38fn-load 看是谁。")
+        print("   现在测出来的数字会被静默拉低。等它空闲,或 make load STACK=qwen38fn 看是谁。")
         raise SystemExit(3)
 
     warm()

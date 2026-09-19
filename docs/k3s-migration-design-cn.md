@@ -211,7 +211,7 @@ pod 与 vxlan 设备拿到同一个数,区间顶部 50 字节的包被静默丢�
 
 ### 4.7 vLLM 工作负载
 
-`k8s/v4flash/`:1 个 Namespace + 1 个 ConfigMap(rank0.sh / rank1.sh,内容
+`stacks/v4flash/k8s/`:1 个 Namespace + 1 个 ConfigMap(rank0.sh / rank1.sh,内容
 即现网 `/workspace/exec-script.sh` 原文)+ 2 个单副本 Deployment
 (`strategy: Recreate`)。leader 骨架(worker 同构,差异见后):
 
@@ -291,7 +291,7 @@ kubectl delete pod)都会走到同一状态。老 systemd 方案没有这个问�
 
 修正后的机制 = **进度探针 + 共同命运**(无需引入 LWS/新镜像):
 
-- **leader `livenessProbe` 判「有活但零进展」**(`k8s/v4flash/configmap-launch.yaml`
+- **leader `livenessProbe` 判「有活但零进展」**(`stacks/v4flash/k8s/configmap-launch.yaml`
   里的 `liveness.py`):读 `/metrics`,
   `demand = num_requests_running + num_requests_waiting`,
   `steps = vllm:iteration_tokens_total_count`(每个 engine iteration +1,分块
@@ -348,7 +348,7 @@ kubectl delete pod)都会走到同一状态。老 systemd 方案没有这个问�
 后续可选项:dcgm-exporter 实验、Hubble 观测、LWS 评估、§6 的 homelab 对接。
 
 **回滚**(仍然可用,两条命令):
-`make v4flash-stop` → `ssh <head> sudo systemctl enable --now deepseek-v4-flash`。
+`make stop STACK=v4flash` → `ssh <head> sudo systemctl enable --now deepseek-v4-flash`。
 观察期结束前不删 systemd unit、不删 eugr harness。
 
 ## 6. ClusterMesh 对接设计(homelab ⇄ dgx-spark)—— ⚠️ 已被取代,不要执行
@@ -441,13 +441,13 @@ netmap 里——放宽 ACL 也无效。oracle 侧若要消费本集群,需要在
 
 1. **必须用真实生成请求判活,不能用 `/v1/models` 或 `/health`**(它们在 TP 组
    挂死时照常 200,见 §4.7 的僵尸状态);
-2. `make v4flash-test` 通过;
+2. `make test STACK=v4flash` 通过;
 3. `/metrics` 两次快照差分算接受率——**注意指标名要精确匹配 `..._total{`**,
    用前缀匹配会把 `..._created`(unix 时间戳)也算进去,得出荒谬的数;
 4. 解码速度**按内容分档比**,别拿不同内容的数对比:
    count-to-N ≈ 84 / 混合 ≈ 60 / 散文 ≈ 32 tok/s;
 5. 并发比**放大比**而不是绝对值(基线 c1→c6 为 2.78x);
-6. 重启演练:`make v4flash-restart` → 服务恢复(**单 rank 演练见 §4.7,
+6. 重启演练:`make restart STACK=v4flash` → 服务恢复(**单 rank 演练见 §4.7,
    会造成僵尸组**)。
 
 ## 8. 风险与缓解
@@ -486,7 +486,7 @@ netmap 里——放宽 ACL 也无效。oracle 侧若要消费本集群,需要在
 
 均已落库,见 `k8s/README.md`(版本记录 + 操作速查)。目录结构:
 `k8s/{registries,cilium-values}.yaml`、`k8s/gpu/{runtimeclass,nvidia-device-plugin}.yaml`、
-`k8s/v4flash/{namespace,configmap-launch,leader,worker,service}.yaml`;
+`stacks/v4flash/k8s/{namespace,configmap-launch,leader,worker,service}.yaml`;
 `Makefile` 的 `v4flash-*` 已改指 kubectl。~~ClusterMesh 的执行手册待对接时再写~~
 —— **不会再写**,该方案已否决(§6)。
 

@@ -29,7 +29,7 @@ MiaAI-Lab 配方，**docker 部署,不在 k3s 里**）。这是换栈当天的�
 
 主机侧（测试期间）:图形会话、sparkDash 已停;**k3s 两节点均已停**（并发档之后）。
 
-完整配方与全部决策账:`config/glm53-flash-exl3.yaml`。
+完整配方与全部决策账:`stacks/glm53/recipe.yaml`。
 
 ---
 

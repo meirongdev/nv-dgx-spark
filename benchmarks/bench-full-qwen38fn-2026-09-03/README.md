@@ -27,7 +27,7 @@ python3 bench_full.py
 引擎配置差异(有意为之，非对照噪声)：V4-Flash `gmu 0.80` / fp8 KV；
 Flash-Next `gmu 0.75` / bf16 KV / `--enforce-eager`。**Flash-Next 是在更小的
 KV 池(20.9 vs ~27 GiB)上取得下面这些数的** —— 0.75 的实测依据见
-`config/qwen38-flash-next.yaml` 与 `scripts/mem-floor.sh`。
+`stacks/qwen38fn/recipe.yaml` 与 `scripts/mem-floor.sh`。
 
 ## Decode（按内容，tok/s）
 

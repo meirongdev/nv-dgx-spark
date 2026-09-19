@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """issue #55 复现 / 验收:max_tokens 在 tool call 中途截断时服务端怎么报。
 
-背景与热修见 k8s/v4flash/configmap-launch.yaml 里 hotfix-issue55.py 上方的注释。
+背景与热修见 stacks/v4flash/k8s/configmap-launch.yaml 里 hotfix-issue55.py 上方的注释。
 
 三个用例:
   1. streaming 截断    —— 这是我们唯一在用的路径(codex / qwen 都流式)

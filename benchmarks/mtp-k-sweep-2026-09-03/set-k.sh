@@ -6,8 +6,8 @@
 # 两侧参数不一致的引擎。这正是 docs/stack-switch-cn.md 反复讲的那类静默失败,
 # 所以这里 sed 完立刻数出现次数,数不对就退出、绝不 apply。
 #
-# 同时遵守本仓库的成对修改约定:config/qwen38-flash-next.yaml(真相源)
-# 和 k8s/qwen38fn/configmap-launch.yaml(线上执行的)一起改,不留仓库/线上分叉
+# 同时遵守本仓库的成对修改约定:stacks/qwen38fn/recipe.yaml(真相源)
+# 和 stacks/qwen38fn/k8s/configmap-launch.yaml(线上执行的)一起改,不留仓库/线上分叉
 # (5148382 收编过一次这种分叉)。
 #
 # 用法:  bash set-k.sh 4
@@ -17,8 +17,8 @@ K="${1:?用法: set-k.sh <num_speculative_tokens>}"
 [[ "$K" =~ ^[0-9]+$ ]] || { echo "k 必须是整数"; exit 2; }
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-RECIPE="$REPO/config/qwen38-flash-next.yaml"
-CM="$REPO/k8s/qwen38fn/configmap-launch.yaml"
+RECIPE="$REPO/stacks/qwen38fn/recipe.yaml"
+CM="$REPO/stacks/qwen38fn/k8s/configmap-launch.yaml"
 K8S="kubectl --kubeconfig $HOME/.kube/dgx-spark.yaml"
 NS=qwen38fn
 HEAD=100.97.87.120
@@ -62,5 +62,5 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     exit 0
   fi
 done
-echo; echo "❌ 20 分钟内没能服务 —— 去看 make qwen38fn-logs"
+echo; echo "❌ 20 分钟内没能服务 —— 去看 make logs STACK=qwen38fn"
 exit 4

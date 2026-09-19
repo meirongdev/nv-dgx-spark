@@ -6,7 +6,7 @@
 | 铁律 | 为什么 |
 |---|---|
 | 先 `sudo apt-get -s upgrade`,逐行看 `Inst` | CUDA 源和 Ubuntu 官方源**同优先级 500**,能赢驱动决策 |
-| 动 apt 前先 `make v4flash-stop` | `network-manager` 的 postinst 重启 NM,会抖断 200G 的 NCCL 链路 |
+| 动 apt 前先 `make stop STACK=v4flash` | `network-manager` 的 postinst 重启 NM,会抖断 200G 的 NCCL 链路 |
 | 升级放进 tmux,带 `--force-confold` | Tailscale 骑在 NM 托管的上联口上,SSH 一断 `dpkg` 就吃 SIGHUP;静态 DNS 也靠它保住 |
 | 删任何 nvidia 包前看 `apt-mark showmanual \| grep nvidia` | 一个 `auto` 的驱动栈,离 `autoremove` 掉整块 GPU 只差一步 |
 | `dkms` 一律显式 `-a arm64` | 裸 `dkms` 默认 `aarch64`,会**静默空转** |
@@ -45,7 +45,7 @@ vLLM 跟着死。
 所以这个故障极易被误判成「vLLM 自己崩了」而不是「我升了 NetworkManager」。
 
 ```bash
-make v4flash-stop
+make stop STACK=v4flash
 ssh … 'tmux new-session -d -s aptup "sudo DEBIAN_FRONTEND=noninteractive \
   apt-get upgrade -y -o Dpkg::Options::=--force-confold \
   -o Dpkg::Options::=--force-confdef > /tmp/aptup.log 2>&1; echo EXIT=\$? >> /tmp/aptup.log"'
