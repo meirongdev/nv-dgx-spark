@@ -14,13 +14,21 @@ Blackwell) servers. Three stacks live here — one primary, two ways back:
 
 | Stack | Nodes | Endpoint | Runtime | Status |
 |---|---|---|---|---|
-| **Qwen3.8-Flash-Next NVFP4** | **2** (TP=2) | `:8000` `qwen38-flash-next` | k3s | **primary** (since 2026-09-02) |
-| DeepSeek-V4-Flash-0731 | 2 (TP=2) | `:8000` `deepseek-v4-flash` | k3s | rollback target |
+| **GLM-5.3-Flash EXL3 4bpw** | **2** (TP=2) | `:8888` `GLM-5.3-Flash-EXL3` | **plain docker** (upstream `start.sh`) | **primary** (since 2026-09-19) |
+| Qwen3.8-Flash-Next NVFP4 | 2 (TP=2) | `:8000` `qwen38-flash-next` | k3s | rollback target #1 |
+| DeepSeek-V4-Flash-0731 | 2 (TP=2) | `:8000` `deepseek-v4-flash` | k3s | rollback target #2 |
 | Qwen3.8-27B-NVFP4 | 1 (S1) | `:8888` `qwen38-27b` | plain docker | single-node fallback |
 
-⚠️ **All three are mutually exclusive** — same GPU memory. Stop the running one
-before starting another (`make qwen38fn-stop` / `v4flash-stop` / `qwen38-stop`).
-The two TP=2 stacks additionally both claim `:8000`.
+⚠️ **All four are mutually exclusive** — same GPU memory. Stop the running one
+before starting another (`make glm53-stop` / `qwen38fn-stop` / `v4flash-stop` /
+`qwen38-stop`). The two k3s TP=2 stacks both claim `:8000`; **GLM and the
+single-node fallback both claim `:8888`**. `make glm53-preflight` checks all four.
+
+⚠️ **GLM is the first primary that does NOT run in k3s.** It runs the upstream
+MiaAI-Lab `start.sh` under plain docker, so: `kubectl` shows nothing, the k3s
+liveness probes do not apply, and `make memwatch` needed a **docker mode**
+(`WATCH_MODE=docker`, wired via `MEMWATCH_STACK=glm53`) because `kubectl scale`
+cannot stop it. Recipe + full decision log: `config/glm53-flash-exl3.yaml`.
 
 ⚠️ **When you switch the primary stack, work `docs/stack-switch-cn.md`** — the
 identity of "the current stack" is hardcoded in ~8 places across scripts, the
@@ -51,26 +59,83 @@ Three separate wrong-number/wrong-verdict incidents have come from skipping this
 - `192.168.200.101/102` — the internal 200G CX7 link. Carries the TP=2 NCCL
   traffic (bypassing the CNI) and inter-node file copies.
 
-## Current state (2026-09-03) — Flash-Next primary, speed gate passed
+## Current state (2026-09-19) — GLM-5.3-Flash EXL3 primary, speed passed, **memory tight**
 
-**Primary stack switched V4-Flash → Qwen3.8-Flash-Next on 2026-09-02** and the
-benchmark gate passed on the speed half: mean −12.8% vs V4, but **real code
-generation is a wash** (62.1 vs 63.8) and concurrency/prefill are clearly better.
-Full comparison: `benchmarks/bench-full-qwen38fn-2026-09-03/README.md`.
+**Primary stack switched Flash-Next → GLM-5.3-Flash EXL3 4bpw on 2026-09-19**,
+running the upstream MiaAI-Lab `start.sh` under plain docker. Speed is a clear
+win; the open problem is host memory, not throughput.
 
-⏳ **The quality half of the gate is still open.** RadixArk's NVFP4 is
-uncalibrated RTN weight quantization and its GSM8K/AIME scores are self-reported;
-this repo has **not** independently verified them. aider-polyglot against
-Flash-Next is the outstanding task. V4-Flash baseline:
-`benchmarks/aider-polyglot-deepseek-v4-flash-2026-08-01/` (pass_rate_2 82.4%).
+✅ **Speed: meets or beats upstream on all three axes**
+(`benchmarks/glm53-2026-09-19/README.md`):
+decode structured **64.3** tok/s (upstream lab 62.9), concurrency **179.8** agg
+at c4 (upstream 146.5, **+22.7%**), prefill flat at **1627–1653** tok/s from 22K
+to 178K (above upstream at every comparable point). Boot invariants match
+upstream *exactly* — weights 82.05 GiB, KV pool 883,552 tokens, 1.04×.
+Our kit does **not** reproduce upstream issue #163's 2× decode slowdown, even
+though it is on the same `PYNCCL` cross-node all-reduce path.
 
-Both CLIs default to `qwen38-flash-next`. Earlier state (S2's 2026-08-15 power
-death and the 6.5 h recovery — no BMC/IPMI, WoL failed, needed someone at the
-box) is post-mortem'd in `docs/qwen38-27b-fallback-cn.md` §1 and §7.
+⚠️ **Host headroom is 2.1–2.5 GiB (1.8–2.0%) — upstream reports ~5 GiB for the
+same config, and calls this band "not enough margin on this UMA".**
+Consequences, both live:
+- **`make memwatch` cannot run** (1.8% < CRIT 5%, it fires on startup) → there
+  is currently **no OOM guard**, and these boxes have no BMC.
+- **`MAX_MODEL_LEN=850000` is nominal, not reachable.** Prefill host memory is
+  superlinear (89K ≈ 0.2 GiB, 178K ≈ 1.4 GiB); one cold prompt tops out around
+  **180–220K**. 256K was deliberately not attempted.
+Context trades 1:1 against headroom via `--kv-cache-memory-bytes`: 850K→2.1 GiB,
+700K→~5.0, 600K→~6.6 (the first point where memwatch works). **Not yet decided.**
+The gap vs upstream is *not* docker-vs-k3s — stopping k3s entirely was measured
+at **+0.11 GiB** on the head. It is `zcode` (~1.07 GiB) + desktop (~0.4) on S1,
+plus the head being 1.71 GiB heavier than the worker by nature.
+
+⏳ **Quality is unverified — and this debt is now two stacks deep.** EXL3 4bpw's
+KLD 0.0246 (≈ official FP8) is malaiwah's independent panel, not ours.
+aider-polyglot has been run against *neither* GLM nor Flash-Next. V4-Flash
+baseline: `benchmarks/aider-polyglot-deepseek-v4-flash-2026-08-01/` (82.4%).
+
+🔧 **Transient host state (restore when done):** k3s is **stopped on both nodes**
+(`sudo systemctl start k3s` on S2, `k3s-agent` on S1) — until then the two k3s
+rollback stacks cannot start. Graphical session and `sparkDash` also stopped.
+**Clients have NOT been switched** — codex/qwen still point at `:8000`
+`qwen38-flash-next`, which is down. `docs/stack-switch-cn.md` layer 3 is open.
+
+Earlier state (S2's 2026-08-15 power death and the 6.5 h recovery — no BMC/IPMI,
+WoL failed, needed someone at the box) is post-mortem'd in
+`docs/qwen38-27b-fallback-cn.md` §1 and §7.
 
 ## Common Commands
 
-### Qwen3.8-Flash-Next (primary, k3s)
+### GLM-5.3-Flash EXL3 (primary, plain docker — NOT k3s)
+
+Runs the upstream `start.sh` on S1 at `/home/admin/glm53-exl3` (pinned to
+commit `8f29c6dd`, which matches the shipped image). `.env` there is the live
+parameter source; `config/glm53-flash-exl3.yaml` records our 6-line delta and why.
+
+```bash
+make glm53-run        # preflight (4-way mutual exclusion + weights + image +
+                      #   HOST MEMORY GATE) then start.sh inside tmux. ~5 min.
+make glm53-status     # containers + /v1/models + free -h
+make glm53-boot-log   # this boot's start.sh output (glm53-logs is the engine)
+make glm53-logs       # head;  glm53-logs-worker for rank1 (over the 200G link)
+make glm53-stop       # ./start.sh stop — stops BOTH ranks
+make glm53-restart    # stop + run
+```
+
+⚠️ **Never run `./start.sh` by hand — always `make glm53-run`.** Without
+`SKIP_BUILD=1` the launcher decides the image recipe stamp is stale and
+**rebuilds the image on S1**, which is the thing that OOM'd the head on
+2026-07-04. And that stamp can *never* match: `overlay_recipe_hash()` feeds
+absolute paths to `sha256sum`, so it depends on where the repo is checked out
+(measured: same content at two paths → two different hashes). Its
+`stamp X != repo Y` warning is permanent noise, not a signal.
+
+⚠️ **The host-memory gate exists because the first boot failed on it.** S2's
+`polkitd` had grown to 6.27 GiB RSS, leaving 103.09 GiB free vs the 103.44 GiB
+that `gpu-memory-utilization` wanted — short by 0.35 GiB, and it only surfaced
+3 minutes in as a CUDA-layer `ValueError`. Fix: `sudo systemctl restart polkit`.
+Upstream hit the same polkitd growth (their issue #193).
+
+### Qwen3.8-Flash-Next (rollback target #1, k3s)
 
 kubectl runs from **this machine** — `~/.kube/dgx-spark.yaml`.
 
@@ -331,11 +396,23 @@ as the cluster (31→84 tok/s on the same config). Three traps have each produce
 wrong numbers in this repo's own docs: streaming counts *steps/s* not tok/s;
 cold **and idle** decay ≈30% silently; short replies are overhead-capped.
 
-Current baseline: `benchmarks/bench-full-qwen38fn-2026-09-03/` (Flash-Next, and
-the V4 comparison). Harness + V4 baseline: `benchmarks/bench-full-2026-08-05/`.
-⚠️ The harness defaults to **V4-Flash's** model name and CoT kwarg — running it
-against Flash-Next without `MODEL=` and `THINK_KEY=enable_thinking` measures
-tok/s *with CoT still on* and nothing warns you. See `docs/stack-switch-cn.md`.
+Current baseline: **`benchmarks/glm53-2026-09-19/`** (GLM, with the upstream
+comparison and its own three scripts). Previous: `benchmarks/bench-full-qwen38fn-2026-09-03/`
+(Flash-Next vs V4). Harness + V4 baseline: `benchmarks/bench-full-2026-08-05/`.
+
+⚠️ **`bench_full.py` does not work on GLM at all** — it hardcodes V4-Flash's
+model name *and* a `thinking` kwarg, while GLM is a **third** semantics:
+`chat_template_kwargs.reasoning_effort` (`low`/`high`/`max`; `medium` rejected),
+**no way to turn thinking off**, unset renders **Max**, and the CoT comes back
+in `reasoning`, not `reasoning_content`. Use the scripts in
+`benchmarks/glm53-2026-09-19/`. See `docs/stack-switch-cn.md` layer 2.
+
+Two traps this stack added to the pile, both measured on 2026-09-19:
+- **First request at a new prompt shape is ~43% slow** *and* costs one-time host
+  memory (22K prefill: 1141 tok/s first, 1630 warm). Always say which you quote.
+- **Prefill host memory is superlinear** (89K ≈ 0.2 GiB, 178K ≈ 1.4 GiB) while
+  throughput stays flat — so a prefill ladder must guard memory *in flight*,
+  not just between levels.
 
 ## Connecting from clients
 

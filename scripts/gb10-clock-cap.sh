@@ -33,14 +33,23 @@ set -uo pipefail
 
 HOSTS="${CAP_HOSTS:-100.97.87.120 100.67.164.92}"
 HEAD="${CAP_HEAD:-100.97.87.120}"          # 只有 head 暴露 OpenAI API
-PORT="${CAP_PORT:-8000}"
+PORT="${CAP_PORT:-8888}"          # ⚠️ 逐栈不同:k3s 两栈是 8000,GLM(docker)是 8888
 SSH_USER="${CAP_SSH_USER:-admin}"
 SSH_KEY="${CAP_SSH_KEY:-$HOME/.ssh/vgio}"
 MHZ="${CAP_MHZ:-2200}"
-# ⚠️ 换主力栈时**改这一个变量**。2026-09-02 切到 qwen38-flash-next 后这里仍写着
-#    deepseek-v4-flash,导致 verify 的生成 404 —— 而旧版脚本照样打印判据行,
-#    读起来像"通过"。锁的唯一判据因此静默失效过一次。
-MODEL="${CAP_MODEL:-qwen38-flash-next}"
+# ⚠️ 换主力栈时**改这三个变量**(MODEL / PORT / CHAT_KWARGS)。
+#    2026-09-02 切到 qwen38-flash-next 后这里仍写着 deepseek-v4-flash,导致
+#    verify 的生成 404 —— 而旧版脚本照样打印判据行,读起来像"通过"。
+#    锁的唯一判据因此静默失效过一次(约 24h)。
+# 2026-09-19 切到 GLM-5.3-Flash EXL3:model 名、端口(8000→8888)**和**思考 kwarg
+#    三者同时变了。前两个写错会 404/连不上(会响);第三个写错只是白烧 token
+#    在 CoT 上 —— min_tokens=300 仍然满足,判据仍成立,但那是运气不是设计。
+MODEL="${CAP_MODEL:-GLM-5.3-Flash-EXL3}"
+# 本栈没有"关思考",最低档是 reasoning_effort=low(见 scripts/glm53-test.sh 的表)。
+# 回滚到 k3s 两栈时置空: CAP_CHAT_KWARGS='' CAP_PORT=8000 CAP_MODEL=qwen38-flash-next
+CHAT_KWARGS_DEFAULT='{"reasoning_effort":"low"}'
+CHAT_KWARGS="${CAP_CHAT_KWARGS-$CHAT_KWARGS_DEFAULT}"   # 用 ${x-y} 而非 ${x:-y},
+                                                        # 这样 CAP_CHAT_KWARGS='' 能显式置空(回滚 k3s 栈时用)
 UNIT=gb10-clock-cap.service
 
 sshx(){ ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 "$SSH_USER@$1" "${@:2}"; }
@@ -80,17 +89,23 @@ cmd_verify(){
   cat > /tmp/.gb10_cap_verify.local <<'SH'
 #!/bin/bash
 set +e
-PEER="${PEER:-192.168.200.102}"; PORT="${PORT:-8000}"; MODEL="${MODEL:-qwen38-flash-next}"
+PEER="${PEER:-192.168.200.102}"; PORT="${PORT:-8888}"; MODEL="${MODEL:-GLM-5.3-Flash-EXL3}"
+CHAT_KWARGS="${CHAT_KWARGS:-}"
 nvidia-smi --query-gpu=clocks.current.sm --format=csv,noheader,nounits -lms 400 > /tmp/.cap_v1 2>/dev/null &
 P=$!
 ssh -o BatchMode=yes -o StrictHostKeyChecking=no "admin@$PEER" \
   'nohup nvidia-smi --query-gpu=clocks.current.sm --format=csv,noheader,nounits -lms 400 > /tmp/.cap_v2 2>/dev/null & echo $! > /tmp/.cap_v2.pid'
 python3 - <<PY_PL > /tmp/.cap_pl.json || { echo "  !! payload 构造失败"; exit 3; }
 import json, os
-print(json.dumps({'model': "$MODEL",
-                  'messages': [{'role': 'user',
-                                'content': 'Explain tensor parallelism in distributed inference.'}],
-                  'max_tokens': 300, 'min_tokens': 300, 'temperature': 0}))
+payload = {'model': "$MODEL",
+           'messages': [{'role': 'user',
+                         'content': 'Explain tensor parallelism in distributed inference.'}],
+           'max_tokens': 300, 'min_tokens': 300, 'temperature': 0}
+# 逐栈不同的思考 kwarg。空 = 不发(k3s 两栈)。
+ck = r'''$CHAT_KWARGS'''.strip()
+if ck:
+    payload['chat_template_kwargs'] = json.loads(ck)
+print(json.dumps(payload))
 PY_PL
 curl -s -m 120 "http://localhost:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
   -d @/tmp/.cap_pl.json > /tmp/.cap_resp.json
@@ -124,7 +139,7 @@ SH
   scp -q -i "$SSH_KEY" -o StrictHostKeyChecking=no /tmp/.gb10_cap_verify.local "$SSH_USER@$HEAD:$script"
   # ⚠️ 判据行只在远端**真的采到负载期样本**时才打印。远端失败(exit 3)时若照常
   # 打印,读者就会把上面那两行空载数字当成结论 —— 那正是本脚本 2026-09-02 犯的错。
-  if sshx "$HEAD" "PORT=$PORT MODEL=$MODEL bash $script"; then
+  if sshx "$HEAD" "PORT=$PORT MODEL=$MODEL CHAT_KWARGS='$CHAT_KWARGS' bash $script"; then
     echo "→ 判据:负载期 mean/max 若明显低于 ~2400 且贴住你设的上限,锁生效。"
     echo "  (GB10 按离散档位吸附,设 2200 实测约落在 2177-2190。)"
   else

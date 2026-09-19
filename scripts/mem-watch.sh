@@ -53,6 +53,27 @@ STATE="${WATCH_STATE:-/tmp/.${STACK}-memwatch-fired}"
 LOGFILE="${WATCH_LOG:-${TMPDIR:-/tmp}/${STACK}-memwatch.log}"
 NOTIFY="${WATCH_NOTIFY:-0}"
 
+# --- 运行时形态:k8s(默认)还是 docker ---------------------------------------
+# 新增于 2026-09-19。起因:GLM-5.3-Flash EXL3 栈按上游配方跑在 **docker** 上,
+# 不在 k3s 里。而在此之前本脚本唯一的动作是 `kubectl scale` —— 对 docker 栈
+# 它会**巡检照跑、日志照记、真要动手时什么也没停**。
+#
+# 这正是本仓库最贵的那一类 bug(换栈清单 §0):防线看起来在,实际是哑的。
+# 而 GLM 栈按上游默认跑 gpu_memory_utilization=0.85 —— 恰恰是 2026-06-29
+# OOM 过 head 节点的那个值,且这两台**没有 BMC**。所以这道防线尤其不能是哑的。
+#
+# docker 模式下的"拆机"动作是上游的 `./start.sh stop`,它会**成对**停掉
+# head 与 worker 两个容器 —— 与 k8s 模式下两个 rank 一起 scale 0 同理,
+# 都是为了不留下 zombie TP 组(gotcha #1)。
+MODE="${WATCH_MODE:-k8s}"                                        # k8s | docker
+DOCKER_HOST_IP="${WATCH_DOCKER_HOST:-100.97.87.120}"             # 跑 start.sh 的 head
+DOCKER_DIR="${WATCH_DOCKER_DIR:-/home/admin/glm53-exl3}"         # 上游 repo 所在目录
+DOCKER_CONTAINERS="${WATCH_DOCKER_CONTAINERS:-glm53-exl3-head}"  # 判"在跑"看它
+SSH_KEY_W="${WATCH_SSH_KEY:-$HOME/.ssh/vgio}"
+SSH_USER_W="${WATCH_SSH_USER:-admin}"
+ssh_head(){ ssh -i "$SSH_KEY_W" -o StrictHostKeyChecking=no -o BatchMode=yes \
+                -o ConnectTimeout=15 "$SSH_USER_W@$DOCKER_HOST_IP" "$@"; }
+
 # 每节点各自的连续临界计数(仅单次循环内累计)+ 上次报告状态(warn 时不刷屏)
 #
 # ⚠️ 这里**不能用关联数组**。macOS 自带的是 bash 3.2(本机实测 3.2.57),
@@ -95,21 +116,34 @@ node_avail_pct(){
 
 # --- 检查 vLLM 当前有没有在跑(replicas 求和),返回>0 表示在跑 ---
 engine_running(){
+  if [ "$MODE" = docker ]; then
+    # 探不到(ssh 挂了)时回 0 = 本轮不巡检,与 k8s 分支探不到时同样 fail-open。
+    ssh_head "docker ps --filter name=$DOCKER_CONTAINERS --format '{{.Names}}' 2>/dev/null | wc -l" \
+      2>/dev/null | tr -d '[:space:]' | awk '{print $1+0}'
+    return
+  fi
   kubectl --kubeconfig "$KUBECONFIG" -n "$NS" get deploy \
       -o jsonpath='{.items[*].spec.replicas}' 2>/dev/null \
     | tr ' ' '\n' | awk '{s+=$1} END{print s+0}'
 }
 
-# --- 触发自救:两个 rank 一起 scale 到 0 ---
+# --- 触发自救:两个 rank 一起停掉 ---
 scale_down(){
   local who="$1" pct="$2"
-  log "CRITICAL: $who available=${pct}% < ${CRIT_PCT}% sustained — scaling $STACK to 0"
-  # shellcheck disable=SC2086  # DEPLOYS 是有意分词的 deploy 名列表
-  kubectl --kubeconfig "$KUBECONFIG" -n "$NS" scale deploy $DEPLOYS --replicas=0 \
-    && { log "scaled both ranks to 0 (no zombie TP group). engine down."; }
+  log "CRITICAL: $who available=${pct}% < ${CRIT_PCT}% sustained — stopping $STACK"
+  if [ "$MODE" = docker ]; then
+    # ./start.sh stop 成对停 head+worker(stop_containers),不留 zombie TP 组。
+    ssh_head "cd '$DOCKER_DIR' && ./start.sh stop" \
+      && { log "start.sh stop done — both containers down. engine down."; } \
+      || err "start.sh stop 失败 —— 手动介入: make glm53-stop"
+  else
+    # shellcheck disable=SC2086  # DEPLOYS 是有意分词的 deploy 名列表
+    kubectl --kubeconfig "$KUBECONFIG" -n "$NS" scale deploy $DEPLOYS --replicas=0 \
+      && { log "scaled both ranks to 0 (no zombie TP group). engine down."; }
+  fi
   printf 'fired=%s at=%s node=%s avail_pct=%s\n' "$who" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$who" "$pct" > "$STATE"
   log "state written: $STATE  (reset with: make memwatch-reset)"
-  notify "dgx mem-watch fired: $who avail=${pct}% — $STACK scaled to 0"
+  notify "dgx mem-watch fired: $who avail=${pct}% — $STACK stopped"
 }
 
 # 单次巡检全部节点;返回 0 表示健康,1 表示触发过动作
@@ -168,18 +202,35 @@ case "${1:-loop}" in
   *) err "unknown arg: $1"; exit 2 ;;
 esac
 
-log "=== mem-watch starting: stack=$STACK ns=$NS deploys=[$DEPLOYS] nodes=[$WATCH_NODES] interval=${INTERVAL}s warn=${WARN_PCT}% crit=${CRIT_PCT}% x${CRIT_CONSEC} ==="
+if [ "$MODE" = docker ]; then
+  log "=== mem-watch starting: mode=docker stack=$STACK head=$DOCKER_HOST_IP dir=$DOCKER_DIR containers=[$DOCKER_CONTAINERS] nodes=[$WATCH_NODES] interval=${INTERVAL}s warn=${WARN_PCT}% crit=${CRIT_PCT}% x${CRIT_CONSEC} ==="
+else
+  log "=== mem-watch starting: mode=k8s stack=$STACK ns=$NS deploys=[$DEPLOYS] nodes=[$WATCH_NODES] interval=${INTERVAL}s warn=${WARN_PCT}% crit=${CRIT_PCT}% x${CRIT_CONSEC} ==="
+fi
 
-# ⚠️ 最重要的一条自检:确认要 scale 的 deploy **真的存在**。指错栈的后果是
-# 看门狗照常巡检、照常记日志,却在真要动手时 scale 一组不存在的对象 —— 一道
+# ⚠️ 最重要的一条自检:确认**真要动手时动得了**。指错栈/指错形态的后果是
+# 看门狗照常巡检、照常记日志,却在真要动手时对着一组不存在的对象使劲 —— 一道
 # 静默失效的防线比没有防线更危险。宁可现在就不启动。
-for d in $DEPLOYS; do
-  kubectl --kubeconfig "$KUBECONFIG" -n "$NS" get deploy "$d" >/dev/null 2>&1 || {
-    err "deploy '$d' 不存在于 namespace '$NS' —— 看门狗会保护不到任何东西。"
-    err "切换主力栈后请同步 Makefile 顶部的 MEMWATCH_STACK(或设 WATCH_STACK/WATCH_NS/WATCH_DEPLOYS)。"
+if [ "$MODE" = docker ]; then
+  # docker 模式:ssh 必须通,且 start.sh 必须在、可执行。两者缺一,动手时就是空转。
+  ssh_head true 2>/dev/null || {
+    err "ssh 不通:$SSH_USER_W@$DOCKER_HOST_IP(key=$SSH_KEY_W) —— 看门狗动不了手。"
     exit 3
   }
-done
+  ssh_head "test -x '$DOCKER_DIR/start.sh'" 2>/dev/null || {
+    err "'$DOCKER_DIR/start.sh' 不存在或不可执行 —— 看门狗会保护不到任何东西。"
+    err "确认 WATCH_DOCKER_DIR 指向上游 repo(或改 Makefile 顶部的 MEMWATCH_STACK)。"
+    exit 3
+  }
+else
+  for d in $DEPLOYS; do
+    kubectl --kubeconfig "$KUBECONFIG" -n "$NS" get deploy "$d" >/dev/null 2>&1 || {
+      err "deploy '$d' 不存在于 namespace '$NS' —— 看门狗会保护不到任何东西。"
+      err "切换主力栈后请同步 Makefile 顶部的 MEMWATCH_STACK(或设 WATCH_STACK/WATCH_NS/WATCH_DEPLOYS)。"
+      exit 3
+    }
+  done
+fi
 
 [ -f "$STATE" ] && log "note: state present (previously armed) — will hold; reset with: make memwatch-reset"
 if [ "$(engine_running)" -eq 0 ]; then log "note: $STACK currently scaled to 0; nothing to guard until you start it"; fi

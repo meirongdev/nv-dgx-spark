@@ -1,4 +1,4 @@
-.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-warmer-logs v4flash-drift v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify v4flash-hotfix-status v4flash-hotfix-test qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop qwen38fn-preflight qwen38fn-run qwen38fn-status qwen38fn-logs qwen38fn-logs-worker qwen38fn-test qwen38fn-load qwen38fn-stop qwen38fn-restart qwen38fn-rollback ple-test memwatch-check memwatch memwatch-reset memwatch-test node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall
+.PHONY: venv install test ping all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download v4flash-run v4flash-status v4flash-logs v4flash-logs-worker v4flash-warmer-logs v4flash-drift v4flash-test v4flash-load v4flash-stop v4flash-restart probe-test probe-apply probe-verify v4flash-hotfix-status v4flash-hotfix-test qwen38-run qwen38-status qwen38-test qwen38-logs qwen38-stop qwen38fn-preflight qwen38fn-run qwen38fn-status qwen38fn-logs qwen38fn-logs-worker qwen38fn-test qwen38fn-load qwen38fn-stop qwen38fn-restart qwen38fn-rollback ple-test memwatch-check memwatch memwatch-reset memwatch-test node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall glm53-preflight glm53-run glm53-status glm53-logs glm53-logs-worker glm53-stop glm53-restart glm53-boot-log
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -471,9 +471,19 @@ MEMWATCH ?= scripts/mem-watch.sh
 # 2026-09-02 主力栈切到 qwen38fn;回滚 V4 时改回 v4flash。
 # ⚠️ 注释另起一行 —— 写成行尾注释会让变量带上尾随空格,
 #    WATCH_DEPLOYS 会变成 "qwen38fn   -worker" 这种拼不出来的名字。
-MEMWATCH_STACK ?= qwen38fn
+MEMWATCH_STACK ?= glm53
+# ⚠️ glm53 是**唯一跑在 docker 上**的 TP=2 栈(上游 start.sh),k8s 那套
+# `kubectl scale` 对它完全无效 —— 所以这里必须整体切到 docker 形态,
+# 否则看门狗会变成一道哑的防线。脚本启动时会自检 ssh + start.sh 并拒绝启动。
+ifeq ($(MEMWATCH_STACK),glm53)
+MEMWATCH_ENV = WATCH_STACK=glm53 WATCH_MODE=docker \
+               WATCH_DOCKER_HOST=$(GLM53_HEAD) WATCH_DOCKER_DIR=$(GLM53_DIR) \
+               WATCH_DOCKER_CONTAINERS=glm53-exl3-head \
+               WATCH_SSH_KEY=$(SSH_KEY) WATCH_SSH_USER=$(SSH_USER)
+else
 MEMWATCH_ENV = WATCH_STACK=$(MEMWATCH_STACK) WATCH_NS=$(MEMWATCH_STACK) \
                WATCH_DEPLOYS="$(MEMWATCH_STACK)-worker $(MEMWATCH_STACK)-leader"
+endif
 
 memwatch-check:            # 单次打印两节点 available%(只读)
 	$(MEMWATCH_ENV) $(MEMWATCH) --once
@@ -557,3 +567,118 @@ qwen38-logs:
 qwen38-stop:
 	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=no $(SSH_USER)@$(Q38_HOST) \
 		"docker rm -f $(Q38_CONTAINER) 2>/dev/null; echo 'stopped'; free -h | head -2"
+
+# ===========================================================================
+# GLM-5.3-Flash EXL3 (4bpw) —— 阶段 A:按上游 MiaAI-Lab 配方用 **docker** 部署
+# ===========================================================================
+# ⚠️ 本栈与其它三个栈不同:**不是本仓库写的部署,而是跑上游的 start.sh**。
+#    参数真相源是 $(GLM53_DIR)/.env;我们相对上游只改了 6 行,账记在
+#    config/glm53-flash-exl3.yaml。上游 repo 钉在 commit 8f29c6dd(与镜像配套)。
+# 阶段 B(迁 k3s)未开始。
+GLM53_HEAD   ?= 100.97.87.120
+GLM53_PORT   ?= 8888
+GLM53_DIR    ?= /home/admin/glm53-exl3
+GLM53_MODEL  ?= GLM-5.3-Flash-EXL3
+GLM53_SNAP   ?= /home/admin/.cache/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-TR3-4bpw/snapshots/25a44fdbf16862a46b7cc9921142c6c81350af2f
+GLM53_IMAGE  ?= ghcr.nju.edu.cn/miaai-lab/glm-5.3-flash-2x-dgx-sparks:exl3-instanttensor
+
+# 起栈前自检:四栈互斥(gotcha #2)+ 两节点的权重/镜像就位。
+# start.sh 自己也有 preflight,但它看不见我们的 k3s 栈 —— 这一段补的就是那个盲区。
+glm53-preflight:
+	@for ns in $(Q38FN_NS) $(DSV4_NS); do \
+		n=$$($(K8S) -n $$ns get deploy -o jsonpath='{.items[*].spec.replicas}' 2>/dev/null \
+			| tr ' ' '\n' | awk '{s+=$$1} END{print s+0}'); \
+		if [ "$$n" -gt 0 ]; then \
+			echo "ABORT: k3s 栈 $$ns 还有 $$n 个副本在跑 —— 会抢同一份 GPU 内存(gotcha #2)。"; \
+			echo "       先执行: make $$ns-stop"; exit 1; \
+		fi; \
+	done
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
+		"docker ps --filter name=$(Q38_CONTAINER) --format '{{.Names}}' | grep -q . \
+		 && { echo 'ABORT: fallback 栈 $(Q38_CONTAINER) 在跑(且同占 :8888),先 make qwen38-stop'; exit 1; } || true"
+	@for h in $(HOSTS); do \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
+			"n=\$$(find $(GLM53_SNAP) -maxdepth 1 -name '*.safetensors' 2>/dev/null | wc -l); \
+			 [ \"\$$n\" -eq 120 ] || { echo \"ABORT: $$h 权重只有 \$$n/120 分片\"; exit 1; }; \
+			 docker image inspect $(GLM53_IMAGE) >/dev/null 2>&1 \
+			 || { echo \"ABORT: $$h 上没有镜像 $(GLM53_IMAGE)\"; exit 1; }" \
+		|| exit 1; \
+	done
+	@echo "  互斥/权重/镜像 OK"
+# --- 主机内存闸门 -----------------------------------------------------------
+# 2026-09-19 首次启动就栽在这里:S2 的 polkitd 涨到 **6.27 GiB RSS**,于是
+# 可用内存 103.09 GiB < gmu 0.85 要的 103.44 GiB —— **只差 0.35 GiB**,
+# 但要等到容器起来、权重开始加载、3 分钟后才在 worker 里报:
+#   ValueError: Free memory on device cuda:0 (103.09/121.69 GiB) on startup is
+#   less than desired GPU memory utilization (0.85, 103.44 GiB).
+# 上游 README「Running on a different 2×Spark kit」写明过这条(“resident services
+# 会让你差不到 1 GiB 而过不了启动内存检查”),其 issue #193 跟帖也报过同一个
+# polkitd 膨胀(他们 3.3 GiB)。上游自己的 preflight_memory() 看不住(其 #205
+# 称之为 blind spot),所以这道闸门放在我们这边。
+#
+# 解法(按顺序试):sudo systemctl restart polkit → drop_caches → 仍不够再降 gmu。
+	@for h in $(HOSTS); do \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
+			"sync && sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'" >/dev/null \
+			&& echo "  $$h: page cache dropped"; \
+	done
+	@util=$$(ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
+		"grep -E '^GPU_MEM_UTIL=' $(GLM53_DIR)/.env | tail -1 | cut -d= -f2"); \
+	for h in $(HOSTS); do \
+		ssh -i $(SSH_KEY) $(SSH_USER)@$$h \
+			"awk -v u=$$util -v host=$$h '/^MemTotal:/{t=\$$2} /^MemAvailable:/{a=\$$2} \
+			 END{ tg=t/1048576; ag=a/1048576; need=tg*u; \
+			      printf \"  %s: avail %.1f GiB / need %.1f GiB (gmu %s of %.1f)\", host, ag, need, u, tg; \
+			      if (ag < need) { printf \"  <-- 不足 %.2f GiB\n\", need-ag; exit 1 } print \"\" }' /proc/meminfo; \
+			 rc=\$$?; \
+			 p=\$$(ps -eo rss,comm | awk '/polkitd/{print \$$1}'); \
+			 if [ -n \"\$$p\" ] && [ \"\$$p\" -gt 1048576 ]; then \
+			   echo \"  !! $$h polkitd 占 \$$((p/1048576)) GiB —— sudo systemctl restart polkit\"; fi; \
+			 exit \$$rc" \
+		|| { echo "ABORT: $$h 可用内存不足以满足 GPU_MEM_UTIL=$${util} 。"; \
+		     echo "       先试: ssh $$h 'sudo systemctl restart polkit'(见上面注释),再重跑 preflight。"; exit 1; }; \
+	done
+	@echo "preflight OK: 四栈互斥、权重(120 分片)、镜像、主机内存闸门全部通过"
+
+# ⚠️⚠️ **SKIP_BUILD=1 是硬性的,不要手敲 ./start.sh。**
+# 漏掉它 → ensure_image() 认为配方戳不符 → 在 S1 上跑源码构建 → head 节点 OOM
+# (CLAUDE.md「统一内存约束」;2026-07-04 实际发生过,连 tmux server 一起带走)。
+# 而那两个戳**永远不可能相等**——overlay_recipe_hash() 把绝对路径喂给了 sha256sum,
+# 哈希因此依赖 checkout 的位置。完整证据见 config/glm53-flash-exl3.yaml。
+# 它打印的 `stamp X != repo Y` 警告是恒定噪声,不是信号。
+#
+# ⚠️ 跑在 tmux 里:start.sh 是长时编排器(镜像自检 → 起两容器 → wait_for_health
+#    → 24 条 boot-shape warmup),SSH 走 DERP 中继会掉线,掉一次就把它打断在半路,
+#    可能留下半启动的容器。CLAUDE.md「tmux(SSH drop protection)」同理。
+glm53-run: glm53-preflight
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
+		"tmux kill-session -t glm53-start 2>/dev/null; \
+		 tmux new-session -d -s glm53-start \
+		   'cd $(GLM53_DIR) && SKIP_BUILD=1 ./start.sh 2>&1 | tee /home/$(SSH_USER)/glm53-start.log'"
+	@echo "started in tmux session 'glm53-start' on $(GLM53_HEAD)"
+	@echo "  跟进: make glm53-boot-log     (或 make tmux-attach HOST=$(GLM53_HEAD) SESSION=glm53-start)"
+	@echo "  状态: make glm53-status"
+
+glm53-boot-log:            # 本次启动的 start.sh 输出(不是引擎日志,那是 glm53-logs)
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
+		"tail -40 /home/$(SSH_USER)/glm53-start.log 2>/dev/null | tr -d '\r' || echo 'no boot log yet'"
+
+glm53-status:
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
+		"cd $(GLM53_DIR) && ./start.sh status; \
+		 echo '--- /v1/models ---'; \
+		 curl -s http://localhost:$(GLM53_PORT)/v1/models | python3 -m json.tool 2>/dev/null || echo 'not serving yet'; \
+		 echo '--- host mem ---'; free -h | head -2"
+
+glm53-logs:
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) "docker logs --tail=80 glm53-exl3-head"
+
+glm53-logs-worker:
+	@ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) \
+		"ssh -o BatchMode=yes 192.168.200.102 'docker logs --tail=80 glm53-exl3-worker'"
+
+glm53-stop:
+	ssh -i $(SSH_KEY) $(SSH_USER)@$(GLM53_HEAD) "cd $(GLM53_DIR) && ./start.sh stop"
+
+# 成对重启。⚠️ 绝不单独重建一个 rank —— 这是 TP=2 的固有性质,与引擎无关(gotcha #1)。
+glm53-restart: glm53-stop glm53-run

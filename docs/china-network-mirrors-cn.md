@@ -27,6 +27,36 @@ docker tag  docker.m.daocloud.io/lmsysorg/sglang:v0.5.12  lmsysorg/sglang:v0.5.1
   ```
 - 在 **非 DGX 机器**(如 x86 笔记本)上拉给 GB10 用时,必须 `--platform linux/arm64`(GB10 是 aarch64),否则拿到 x86 镜像跑不了。
 
+### ghcr.io 的个人/组织镜像:daocloud 挡,用南大源
+
+daocloud 的 `ghcr.m.daocloud.io` 同样有白名单,**个人/小组织仓库一律拒绝**:
+
+```
+denied: 🚫 这镜像不在白名单. this image is not in the allowlist.
+        (提示指向 DaoCloud/public-image-mirror#2328)
+```
+
+**可用替代:`ghcr.nju.edu.cn`(南京大学镜像,无白名单)。**
+
+```bash
+docker pull ghcr.nju.edu.cn/<org>/<img>:<tag>
+```
+
+2026-09-19 实测(拉 `miaai-lab/glm-5.3-flash-2x-dgx-sparks:exl3-instanttensor`,20.9 GB):
+
+| 源 | 结果 |
+|---|---|
+| `ghcr.m.daocloud.io` | ❌ 白名单拒绝 |
+| **`ghcr.nju.edu.cn`** | ✅ 通,两台并行各拉一份 |
+| `ghcr.dockerproxy.net` / `ghcr.chenby.cn` / `ghcr.geekery.cn` | ❌ curl 000(不通) |
+| `ghcr.io` 直连 | ❌ 401/不可用(但**控制机 Mac 可直连**) |
+
+⚠️ **换非官方镜像源时要核真实性,别只看"拉下来了"。** 核法:从控制机直连 ghcr.io
+读 manifest → 取 config blob 摘要,与节点上 `docker image inspect --format '{{.Id}}'`
+比对。上例两值均为 `ef9f5013…`,证明南大源服务的是**与上游逐字节相同**的镜像,
+不是重打包。(`docker save | k3s ctr images import` 会重新打包 → 那条路上的摘要
+不可用于此比对,见 `config/qwen38-flash-next.yaml` 里三个互不相等摘要的教训。)
+
 ## 模型权重:用 ModelScope
 
 ```bash
