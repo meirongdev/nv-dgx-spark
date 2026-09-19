@@ -28,7 +28,7 @@ export DF_EXTRA="--model-path ${MODEL_CT:-/root/.cache/huggingface/local/Qwen3.8
 #
 # 追加在 DF_EXTRA 末尾即可生效:EXTRA_ARGS 里 DF_EXTRA 在最后,argparse last-wins。
 # ⚠️ 改这个值之后必须重测 headroom **和**吞吐(KV 变小可能影响并发档)。
-MEM_FRACTION="${MEM_FRACTION:-0.85}"
+MEM_FRACTION="${MEM_FRACTION:-0.80}"
 export DF_EXTRA="$DF_EXTRA --mem-fraction-static ${MEM_FRACTION}"
 
 # 草稿模型是按 **repo id** 传给 SGLang 的(--speculative-draft-model-path

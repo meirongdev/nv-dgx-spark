@@ -8,7 +8,7 @@
 - 并发峰值 **472.7 tok/s @ c12，只用一台机器**（Flash-Next 304 用两台，GLM 179.8 用两台）
 - 单流代码 45.4 tok/s：比 GLM 的 38.8 **快 17%**，比 Flash-Next 的 62.1 **慢 27%**
 - ⚠️ 比上游自己的同配方数字**低 17%**（54.6），有假说但未证实
-- ✅ 主机 headroom **11.4 GiB (9.4%)**（`mem-fraction 0.85`），**memwatch 已装回**
+- ✅ 主机 headroom **17.4 GiB (14.3%)** 开机 / ~11% 稳态（`mem-fraction 0.80`），**memwatch 常驻中**
 
 ---
 
@@ -24,7 +24,7 @@
 | 镜像 | `lmsysorg/sglang:nightly-cu134-20260909-708f51e`（digest `00205b89…`，arm64） |
 | 引擎 | SGLang，`--speculative-algorithm DFLASH`，8 个草稿 token |
 | 节点 | **1 台（S1）**。S2 全程空闲（116 GiB 可用） |
-| 内存 | `--mem-fraction-static` **0.85**（本仓库值；上游 0.90，0.95 是硬重启红线） |
+| 内存 | `--mem-fraction-static` **0.80**（本仓库值；0.85 试过被漂移击穿，上游 0.90，0.95 是硬重启红线） |
 | 上下文 | 262144；`.env` 里 `MAX_CONCURRENT_REQUESTS=16`，但 0.85 下 SGLang 按内存自动降到 **`max_running_requests=12`** |
 | 时钟 | 2200 MHz 上限生效（本机 `clock-cap-verify` 当天复验：rank0 2178 / rank1 2185） |
 
@@ -87,7 +87,8 @@ checkpoint 在同一台上跑同一个 prompt —— 未做。**
 
 ## 2. 并发梯度（structured，各 400 token）
 
-**采用值 `mem-fraction-static=0.85`**（见 §4：0.90 下 memwatch 启不了）。
+⚠️ 下表是在 **`mem-fraction-static=0.85`** 下测的；采用值后来改成 **0.80**（见 §4），
+**0.80 下的吞吐未复测**——KV 池从 137 万降到 122 万但 `max_running_requests` 仍是 12，预计无影响，但那是预计不是实测。
 
 | 并发 | 聚合 tok/s | 单流 tok/s | 完成 | 内存最低 |
 |---|---:|---:|---:|---:|
@@ -157,7 +158,8 @@ PASS: 3/3 正常作答 —— abliteration 生效
 | mem-fraction | S1 空载 headroom | memwatch | KV 池 | max_running_requests |
 |---|---:|---|---:|---:|
 | 0.90（上游默认） | 6.10 GiB (**5.0%**) | ❌ **启动第一拍就 `crit 1/2`** | — | 16 |
-| **0.85（本仓库采用）** | **11.4 GiB (9.4%)** 刚启动<br>**7.4 GiB (6.1%)** 服务 2h 后 | ✅ 常驻 40s 无触发 | 1,368,663 tok | 12 |
+| 0.85（试过，**不够**） | 11.4 GiB (9.4%) 开机<br>7.4 → **5.0%** 服务 2h 后 | ❌ **2h10m 后真的触发，栈被停** | 1,368,663 tok | 12 |
+| **0.80（采用）** | **17.4 GiB (14.3%)** 开机<br>~11% warmup 后 | ✅ 稳定 | 1,220,951 tok | 12 |
 
 ⚠️ **上面两个 headroom 数字都要看 —— 它会漂。** 11.4 GiB 是**刚启动**测的;
 服务 + 压测约 2 小时后实测降到 **7.4 GiB (6.1%)**,且 `drop_caches` 只回收

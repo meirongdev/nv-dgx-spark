@@ -476,7 +476,13 @@ MEMWATCH_STACK ?= qwen38un
 #    docker 模式,否则看门狗会变成一道哑的防线。脚本启动时自检 ssh + 停机脚本。
 #    k3s 栈(qwen38fn / v4flash)走 else 分支。
 ifeq ($(MEMWATCH_STACK),qwen38un)
+# ⚠️ **WATCH_NODES 只给 S1** —— 本栈是单节点,引擎只在 S1 上。
+#    默认值是两台(为 TP=2 栈写的),而 tick() 是「**任一**节点跌破 CRIT 就动手」,
+#    动作却是「停掉 S1 的 qwen38un」。于是一旦有人在 **S2** 上跑别的模型,
+#    S2 的内存下降会把 **S1 的主力栈**停掉 —— 两件毫不相干的事。
+#    2026-09-19 S2 空出来后立刻发现这条(还没被咬,但一部署就会)。
 MEMWATCH_ENV = WATCH_STACK=qwen38un WATCH_MODE=docker \
+               WATCH_NODES=$(Q38UN_HOST) \
                WATCH_DOCKER_HOST=$(Q38UN_HOST) WATCH_DOCKER_DIR=$(Q38UN_DIR) \
                WATCH_DOCKER_CONTAINERS=$(Q38UN_CONT) \
                WATCH_DOCKER_STOP=./stop.sh \
