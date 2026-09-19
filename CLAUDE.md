@@ -92,7 +92,11 @@ independently verified here, and capability regression was not measured.
 — but it is **not currently running**; start it in tmux to actually be guarded.
 `mem-fraction-static` is **0.85**, not upstream's 0.90: at 0.90 S1 idled at
 exactly **5.0%** and memwatch fired on its first tick (measured), i.e. no guard
-at all. 0.85 gives **11.4 GiB (9.4%)** and cost **nothing measurable** — decode
+at all. 0.85 gives **11.4 GiB (9.4%) at boot** — but it **drifts**: after ~2 h of serving
+plus benchmarking it measured **7.4 GiB (6.1%)**, and `drop_caches` reclaimed only
+137 MiB, so it is the engine's own host RSS growing (`sglang::scheduler` 4.4 GiB +
+detokenizer 1.4 + python3 1.7), not page cache. Still above CRIT 5%, but the
+margin is ~1 point, not 4 — **watch this**. The switch cost **nothing measurable** — decode
 is bit-identical (58.5 / 45.4 / 24.0) and matched concurrency levels are within
 noise. The KV pool is still 1,368,663 tokens, 5.2× the 262144 context; 0.90 was
 handing SGLang ~112 GiB when the weights are 24 GB. **Never 0.95** — upstream
