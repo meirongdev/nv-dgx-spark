@@ -19,6 +19,7 @@ kwarg 名、deploy 名)。换栈后它不报错、不崩溃 —— 它照常返�
 | 2026-08-15 | CoT 响应字段 `reasoning_content` vs `reasoning` | 读到 `None`,与"thinking 没生效"完全同形 | 误判成 "parser 不匹配、未解决",**错误结论写进了文档** |
 | 2026-09-02 | `bench_full.py` 的 kwarg 名 `thinking` vs `enable_thinking` | 服务端照常 200,CoT 一个字没关掉 | 跨栈对照**整个不成立**,测到的是带 CoT 的 tok/s(c96fcf3) |
 | 2026-09-03 | `gb10-clock-cap.sh` 的 model 名 | 服务端 400、`curl` 仍 rc=0 → 脚本拿**空载**采样打印判据行 | 时钟锁的**唯一判据**静默失效约 24h |
+| 2026-09-19 | `~/.codex/dgx.config.toml` 的 `base_url`;`docs/clients-cn.md` 和切换脚本里手抄的 `modelProviders` 名单 | 文档说"已切换";codex 指着停机的 `:8000`,qwen 的 `/model` 跳不到新主力 —— 而 `status` 报一切正常 | 两个 CLI 都连不上主力栈,直到有人真发一次请求才发现 |
 
 三次都不是"忘了改配置"这种会当场报错的错误。三次都是**沉默的**。
 
@@ -66,17 +67,47 @@ make switch TO=<stack-id>
 
 | 文件 | 字段 |
 |---|---|
-| `~/.codex/<profile>.config.toml` | provider 的 model 名 |
-| `~/.codex/models.json` | catalog 条目的 `context_window`(**不是** `model_context_window`) |
+| `~/.codex/<profile>.config.toml` | 顶层 `model` |
+| `~/.codex/<profile>.config.toml` | `[model_providers.<name>] base_url` ⚠️ **换栈时端点也会变** |
+| `~/.codex/<profile>.config.toml` | `model_reasoning_effort`(枚举逐栈不同,要实测) |
+| `~/.codex/<profile>-models.json` | 该 slug 的 catalog 条目 + `context_window`(**不是** `model_context_window`) |
 
-⚠️ 这两处静默不一致过:旧的 `deepseek-v4-flash` catalog 写 65536、config 写
-1000000,于是一直按 64K 在跑,没有任何提示。细节见 `docs/clients-cn.md`。
+⚠️ **上一版这张表只列了 model 名和窗口,于是 2026-09-19 漏了 `base_url`。**
+那次是 k3s `:8000` → docker `:8888`,只改模型名等于把 codex 指向一个空端口;
+而 `docs/clients-cn.md` 当时已经写着"已切换"。**端口还区分不了后端**
+(`:8888` 被三个栈轮流用过),所以改之前先 `curl :<port>/v1/models` 看 served name。
+
+⚠️ config 和 catalog 也静默不一致过:旧的 `deepseek-v4-flash` catalog 写 65536、
+config 写 1000000,于是一直按 64K 在跑,没有任何提示。细节见 `docs/clients-cn.md`。
+
+### 3.1b Qwen Code 的 `modelProviders`(脚本也够不着)
+
+`qwen-model-switch.sh` 只翻**启动默认**(全局 + repo + `.env`)。会话内 `/model`
+走的是 `~/.qwen/settings.json` 的 `modelProviders.openai`,**脚本不写那一块** ——
+新栈要手工加一条,四项写全:`id` / `baseUrl` / `envKey` /
+`generationConfig.contextWindowSize`(= 该栈的 `STACK_CTXWIN`)。
+
+漏了不会报错:启动照常能用,只是 `/model` 里没有这个栈。切换路径现在会在目标
+缺条目时告警,`... status` 也会把这一块一起印出来 —— 2026-09-19 之前两者都不会。
 
 ### 3.2 实际发一个请求
 
-**不要只看配置文件写对没有。** 2026-09-19 那次切换是这么验的:qwen 真的发了
-请求、引擎日志里看到了命中;codex 的 CLI `--version` 会 hang(既有问题,它根本
-不读 profile),所以是把 codex 会发的那个请求**原样重放**到 `/v1/responses` → 200。
+**不要只看配置文件写对没有。** 两个 CLI 都能非交互实跑:
+
+```bash
+qwen -p "Reply with exactly one line: PONG"
+codex exec --profile dgx --skip-git-repo-check "Reply with exactly one line: PONG"
+```
+
+再到引擎侧确认请求真落到了那台(docker 栈 `docker logs --since 10m <container> |
+grep -E 'Prefill batch'`;k3s 栈 `kubectl -n <ns> logs deploy/<leader> | grep POST`)。
+
+> ⚠️ **本节上一版写着「codex 的 CLI `--version` 会 hang、它根本不读 profile,所以
+> 只能把请求**原样重放**到 `/v1/responses`」——0.154.0 实测两条都不成立**:
+> `--version` 秒回,`codex exec` 也能跑完并把 `model:` / `provider:` /
+> `reasoning effort:` 打在抬头上。这不只是省事:重放只证明服务端收得下那个 JSON,
+> `codex exec` 才顺带证明 **catalog 命中**(抬头下没有
+> `Model metadata for <slug> not found` 警告)——而 catalog 正是窗口的唯一来源。
 
 ### 3.3 `CLAUDE.md` 的 `## Current state`
 

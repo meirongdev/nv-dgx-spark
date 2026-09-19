@@ -17,8 +17,11 @@
 # latter is only picker-disambiguation metadata; getting this wrong makes the
 # CLI fall through to Alibaba DashScope and 401).
 #
-# Switching *within* a running session needs none of this — both models are in
-# modelProviders, so `/model` flips them live.
+# Switching *within* a running session needs none of this — IF the stack has an
+# entry in `modelProviders`. This script does NOT write that block, so a freshly
+# switched boot default can be unreachable from `/model` (2026-09-19: exactly
+# that). `status` prints the live list; the switch path warns when the target is
+# missing. Never enumerate those ids in a comment — they go stale silently.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -73,6 +76,22 @@ ctx=(m.get('generationConfig') or {}).get('contextWindowSize','-')
 print('%-46s model=%-20s ctx=%-9s auth.baseUrl=%s' % ('$f'.replace('$HOME','~'), m.get('name','-'), ctx, a.get('baseUrl','(inherits)')))"
     done
     [ -f "$REPO_ENV" ] && grep -E '^OPENAI_(MODEL|BASE_URL)=' "$REPO_ENV" | sed 's/^/  .env  /'
+    # 启动默认之外的第二条路径。漏了它,status 会对一个 `/model` 跳不过去的
+    # 配置报"一切正常" —— 2026-09-19 就是这样:三处启动字段全对,modelProviders
+    # 里却没有新主力。
+    python3 - "$GLOBAL" <<'PROV'
+import json, os, sys
+path = sys.argv[1]
+d = json.load(open(path))
+prov = (d.get("modelProviders") or {}).get("openai") or []
+boot = (d.get("model") or {}).get("name")
+print("  modelProviders.openai(会话内 /model 能跳到的):")
+for e in prov:
+    mark = " <- 启动默认" if e.get("id") == boot else ""
+    print("    %-42s %-30s%s" % (e.get("id"), e.get("baseUrl"), mark))
+if boot not in [e.get("id") for e in prov]:
+    print("  ⚠️ 启动默认 '%s' 不在上面 —— /model 跳不到它,要手工加一条。" % boot)
+PROV
     exit 0 ;;
   "" | -h | --help) usage; exit 1 ;;
   *)
@@ -127,5 +146,25 @@ fi
 
 echo
 echo "Boot default is now '$MODEL'. Restart any running qwen session to pick it up."
-echo "(In-session switching needs no restart: use /model — modelProviders 里有"
-echo " qwen38-flash-next / Qwen3.6-35B / Gemma-4 三个,DGX 和本地都能实时跳。)"
+echo
+
+# 会话内切换走 `modelProviders`,而**本脚本不写那一块**(启动路径根本不读它,
+# 它只在交互式 /model 里可达)。所以这里不能印一张写死的名单 —— 2026-09-19 就是
+# 这么错的:名单上写着"三个",而新主力 qwen3.8-27b-sglang 压根没进去,启动默认
+# 切过去了、`/model` 却跳不到它。名单现读 settings.json,不可能再过期。
+python3 - "$GLOBAL" "$MODEL" <<'PROV'
+import json, os, sys
+path, model = sys.argv[1], sys.argv[2]
+prov = (json.load(open(path)).get("modelProviders") or {}).get("openai") or []
+shown = path.replace(os.path.expanduser("~"), "~")
+print("会话内 /model 可跳的 provider(现读 %s,不用重启):" % shown)
+for e in prov:
+    ctx = (e.get("generationConfig") or {}).get("contextWindowSize", "-")
+    print("   %-42s %-30s ctx=%s" % (e.get("id"), e.get("baseUrl"), ctx))
+if model not in [e.get("id") for e in prov]:
+    print()
+    print("⚠️  '%s' **不在 modelProviders 里**。启动默认已经切过去了,但会话内" % model)
+    print("    /model 跳不到它 —— 本脚本不碰这一块,要手工往 %s 的" % shown)
+    print("    modelProviders.openai 加一条(id / baseUrl / envKey /")
+    print("    generationConfig.contextWindowSize,四项都要,ctx 见 STACK_CTXWIN)。")
+PROV

@@ -72,7 +72,7 @@ codex                        # 默认不变:ChatGPT 免费额度 gpt-5.5
 > `medium` 18.6s/2574、`xhigh` 15.8s/**仅782**(72% 的 token 花在思考上)。
 > 故 `dgx.config.toml` 默认 `medium`。
 >
-> ⚠️ 窗口靠 `~/.codex/models.json` 的 catalog 条目(`context_window`),
+> ⚠️ 窗口靠 `~/.codex/<profile>-models.json` 的 catalog 条目(`context_window`),
 > **不是** `model_context_window`。新增 `qwen38-flash-next` 条目时写的是 262144
 > = 服务端 `--max-model-len`。(顺带发现旧的 `deepseek-v4-flash` catalog 写的是
 > 65536,而 config 写 1000000 —— 一直按 64K 在跑。)
@@ -146,22 +146,26 @@ base_instructions),生成方法见 `stacks/qwen38/runbook-cn.md` §6.3。
 ## Qwen Code CLI
 
 ```bash
-qwen                                          # 用当前启动默认
-./scripts/qwen-model-switch.sh sglang         # → DGX :8888 qwen3.8-27b-sglang [主力]
-./scripts/qwen-model-switch.sh flashnext      # → DGX :8000 qwen38-flash-next  [回滚]
-./scripts/qwen-model-switch.sh v4flash        # → DGX :8000 deepseek-v4-flash  [仅回滚]
-./scripts/qwen-model-switch.sh qwen38         # → DGX :8888 qwen38-27b         [降级]
-./scripts/qwen-model-switch.sh omlx           # → Mac 本地 Qwen3.6-35B-A3B
-./scripts/qwen-model-switch.sh gemma          # → Mac 本地 Gemma-4 26B
-./scripts/qwen-model-switch.sh status         # 看各文件现在指向哪
+qwen                                     # 用当前启动默认
+./scripts/qwen-model-switch.sh --help    # 列出所有可选目标(现读 stacks/ 注册表)
+./scripts/qwen-model-switch.sh <target>  # 切启动默认(别名 = STACK_CLIENT_ALIAS)
+./scripts/qwen-model-switch.sh status    # 三处启动字段 + modelProviders 各指向哪
 ```
 
-`modelProviders` 里现在有 **qwen38-flash-next(DGX)/ Qwen3.6-35B(本地)/ Gemma-4(本地)**
-三个,所以**会话内 `/model` 可以在 DGX 和本地之间实时跳**,不用脚本、不用重启。
-脚本只管**启动默认**(那条路径不读 modelProviders)。
+> ⚠️ **这里不再手抄目标名单。** 名单住在 `stacks/*/stack.env` 的 `STACK_CLIENT_ALIAS`,
+> `--help` 现场生成。本文上一版手抄了 6 个,而注册表当时已有 7 个 —— 漏掉的
+> `glm53` 在文档上等于不存在。同理下面也不列 `modelProviders` 里有哪几条。
 
-**会话内切换不用脚本** —— 两个模型都在 `modelProviders` 里,`/model` 可实时跳
-provider(这点比 codex 强)。
+会话内 `/model` **可以实时跳 provider**(这点比 codex 强,不用脚本、不用重启),
+前提是那个栈在 `modelProviders` 里**有一条**。脚本只管**启动默认**(那条路径根本
+不读 `modelProviders`)。
+
+⚠️ **`qwen-model-switch.sh` 不写 `modelProviders`,所以这两条路径会各切各的。**
+2026-09-19 实例:三处启动字段全部指向 `qwen3.8-27b-sglang`,而 `modelProviders`
+里压根没有这一条 —— 启动能用,会话内 `/model` 跳不过去,且当时的 `status`
+**看不出来**。现在 `status` 会把这一块一起印出来,切换路径在目标缺条目时也会告警。
+手工补一条要写全四项:`id` / `baseUrl` / `envKey` /
+`generationConfig.contextWindowSize`(ctx 取该栈的 `STACK_CTXWIN`)。
 
 ### 为什么切换必须用脚本
 
