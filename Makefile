@@ -29,10 +29,6 @@ SMARTCTL_EXPORTER_ARCH ?= linux-arm64
 SMARTCTL_EXPORTER_PORT ?= 9633
 SMARTCTL_EXPORTER_LOG_HOST ?= 100.97.87.120
 
-# k3s 集群(kubeconfig 在这台操作机上)。栈级的 namespace / deploy 名不在这里 ——
-# 那些住在 stacks/<id>/stack.env,由 stacks/_lib/adapter-k3s.sh 读取。
-K8S ?= kubectl --kubeconfig $(HOME)/.kube/dgx-spark.yaml
-
 # Create virtual environment and install Ansible
 venv:
 	uv venv .venv

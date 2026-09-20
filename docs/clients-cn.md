@@ -10,12 +10,11 @@
 | 栈 | 端点 | served name | 关思考的 kwarg | CoT 字段 | ctxWindow |
 |---|---|---|---|---|---|
 | **qwen38un(主)** | `100.97.87.120:8888` | `qwen3.8-27b-sglang` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| fndgx | `100.67.164.92:18300` | `qwen3.8-flash-next` | `{"enable_thinking": false}` | `reasoning` | 262144 |
 | gemma | `127.0.0.1:8000` | `mlx-community__gemma-4-26B-A4B-it-qat-nvfp4` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
 | glm53 | `100.97.87.120:8888` | `GLM-5.3-Flash-EXL3` | `{"reasoning_effort":"low"}` ⚠️ **关不掉**,这是最低档 | `reasoning` | 850000 |
 | omlx | `127.0.0.1:8000` | `mlx-community__Qwen3.6-35B-A3B-nvfp4` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
 | qwen38 | `100.97.87.120:8888` | `qwen38-27b` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
-| qwen38fn | `100.97.87.120:8000` | `qwen38-flash-next` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
-| v4flash | `100.97.87.120:8000` | `deepseek-v4-flash` | `{"thinking": false}` | `reasoning_content` | 1000000 |
 
 > ⚠️ **关思考的 kwarg 和 CoT 字段逐栈都不同,而且写错都是静默的**(gotcha #9)。
 > 上表由 `make stack-table` 从 `stacks/*/stack.env` 生成 —— 不要手改这里,改注册表。
@@ -24,6 +23,29 @@
 ⚠️ **端口已经区分不了后端** —— `:8888` 有三个栈共用,`:8000` 两个。
 **只能看 served name。** `make info STACK=<id>` 打印某个栈的完整身份,
 `make stacks` 打印全表。
+
+⚠️ **历史上最容易搞混的一对是 `fndgx` 和 `qwen38fn`**(后者已于 2026-09-20 随 k3s
+删除,所以不再出现在上表里 —— 但它的 served name 可能还留在别人的旧配置里):
+
+| | `qwen38fn` | `fndgx` |
+|---|---|---|
+| served name | `qwen38-flash-next` | `qwen3.8-flash-next` ← 只差一个点 |
+| 端点 | `100.97.87.120:8000` | `100.67.164.92:18300` |
+| CoT 字段 | `reasoning_content` | **`reasoning`** |
+
+它们是**同一个模型的两种装法**(TP=2 两台 / 单机 PLE-mmap),但 CoT 字段不同 ——
+差别来自引擎构建,不是模型。读错字段的表现是「一个字都没有」,与「思考没生效」
+完全同形(gotcha #9)。`fndgx` 那一格是 2026-09-20 对着活端点实测的:
+`reasoning_content` 恒为 `None`。
+⚠️ **`qwen38fn` 已于 2026-09-20 随 k3s 一起删除**,那一格再也无法复验,只能当作
+历史记录。留着它是因为教训比栈活得久:**同一个模型换个引擎构建,CoT 字段就可能
+变,而且不会报错。**
+
+✅ `fndgx` 另有一个**本表没有**的旋钮:`reasoning_effort`(模板档位 `low`/`medium`/
+`xhigh`,不传即 `xhigh`)。它同时接受顶层 `reasoning_effort` —— 包括 codex /
+Claude Code 发的 `high` 和 `max` —— 因为上游 `serve.sh` 的 `EFFORT_ALIAS=1` 会把
+它们改写成 `xhigh`。**没有这层改写,那些请求会 400**,而它只是启动期一行 warning。
+`make test STACK=fndgx` 第 3 项专门守这条。
 
 > ⚠️ **端口 8000 在两处都用**:`100.97.87.120:8000` 是 DGX,`127.0.0.1:8000` 是 Mac
 > 本地的 omlx。2026-09-02 发现全局 qwen 配置曾处于
@@ -37,7 +59,8 @@
 ## codex CLI
 
 ```bash
-codex --profile dgx          # → :8888  qwen3.8-27b-sglang(2026-09-19 起,主力)
+codex --profile dgx          # → :8888  qwen3.8-27b-sglang(2026-09-19 起,主力,S1)
+codex --profile fndgx        # → :18300 qwen3.8-flash-next(2026-09-20 起,单机,S2)
 codex --profile qwen38       # → :8888  qwen38-27b(原版降级栈)
 codex                        # 默认不变:ChatGPT 免费额度 gpt-5.5
 ```
@@ -72,7 +95,9 @@ codex                        # 默认不变:ChatGPT 免费额度 gpt-5.5
 > `medium` 18.6s/2574、`xhigh` 15.8s/**仅782**(72% 的 token 花在思考上)。
 > 故 `dgx.config.toml` 默认 `medium`。
 >
-> ⚠️ 窗口靠 `~/.codex/<profile>-models.json` 的 catalog 条目(`context_window`),
+> ⚠️ 窗口靠 **`~/.codex/models.json`**(**一个**共享 catalog,不是每 profile 一个;
+> 本文 2026-09-20 之前写成 `<profile>-models.json`,现场从来没有过那个文件)
+> 的 catalog 条目(`context_window`),
 > **不是** `model_context_window`。新增 `qwen38-flash-next` 条目时写的是 262144
 > = 服务端 `--max-model-len`。(顺带发现旧的 `deepseek-v4-flash` catalog 写的是
 > 65536,而 config 写 1000000 —— 一直按 64K 在跑。)
@@ -165,6 +190,39 @@ base_instructions),生成方法见 `stacks/qwen38/runbook-cn.md` §6.3。
 **漏了 `high` 和 `none`**,但这两个实测都返回 200。**以实测为准。**
 
 `xhigh` 花 4.6 倍时间、答案长度却几乎一样,在这台 ~25 tok/s 的引擎上不划算。
+
+---
+
+### `--profile fndgx` —— 单机 Flash-Next(S2 `:18300`)
+
+⚠️⚠️ **它和 `qwen38-flash-next` 是同一个模型,不是同一个栈。** served name 只差
+一个点,base_url 完全不同。抄错一边不报错,只是连到另一个(当前停着的)端点:
+
+| | `qwen38-flash-next` | `qwen3.8-flash-next` |
+|---|---|---|
+| 机器 | S1+S2,TP=2,k3s(**已删除**) | **只有 S2**,docker |
+| base_url | `100.97.87.120:8000` | **`100.67.164.92:18300`** |
+| codex profile | (无) | `--profile fndgx` |
+
+**2026-09-20 实测 effort 枚举(vLLM + EFFORT_ALIAS=1)—— 七个值全是 200:**
+
+| 值 | 结果 | 思考长度(n=1,琐碎题) |
+|---|---|---|
+| `none` | ✅ 200 | **0 字**,输出 4 token |
+| `minimal` `low` `medium` `high` `xhigh` `max` | ✅ 200 | 70 / 82 / 126 / 116 / 122 字 |
+
+⚠️ **这一栈没有「错值会被拒」这道闸门。** 服务端 `EFFORT_ALIAS=1` 把
+`high`/`max`→`xhigh`、`minimal`→`low` 改写进了模板副本,所以什么都收 ——
+**与 qwen38un 正相反**(那边 `high`/`max`/`minimal` 是 400)。后果是
+gotcha #10 的形状:**状态码验不出你发的档位是不是生效的档位**。
+唯一能从响应里分辨出来的是 `none`(思考 0 字);其余六个在琐碎题上落在
+70–126 字,n=1 分不开。
+
+`fndgx.config.toml` 取 `medium`,理由与 `dgx` profile 同形(xhigh 把大半预算
+花在思考上)—— 但**这一栈没有实测支撑这个选择**,只是沿用同族结论。
+
+catalog 条目 `qwen3.8-flash-next` 的 `context_window` = **262144**
+= 服务端 `--max-model-len`(`native` profile,不是 YaRN 的 500k)。
 
 ---
 

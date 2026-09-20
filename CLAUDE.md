@@ -17,30 +17,47 @@ one is primary, the rest are ways back:
 | 栈 | 节点 | 端点 | 引擎 / 运行时 | 状态 |
 |---|---|---|---|---|
 | **Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2**<br>`STACK=qwen38un` | 1 | `:8888` `qwen3.8-27b-sglang` | sglang / docker | **primary (2026-09-19 起)** |
-| GLM-5.3-Flash EXL3 4bpw<br>`STACK=glm53` | 2 | `:8888` `GLM-5.3-Flash-EXL3` | vllm-exl3 / docker | rollback #2 —— 850K ctx |
+| Qwen3.8-Flash-Next NVFP4 单机 (PLE mmap + hybrid)<br>`STACK=fndgx` | 1 | `:18300` `qwen3.8-flash-next` | vllm-ple-mmap / docker | S2 常驻 —— 与主力栈并跑 |
+| GLM-5.3-Flash EXL3 4bpw<br>`STACK=glm53` | 2 | `:8888` `GLM-5.3-Flash-EXL3` | vllm-exl3 / docker | 唯一 rollback —— 850K ctx |
 | Qwen3.8-27B-NVFP4 (censored, no speculator)<br>`STACK=qwen38` | 1 | `:8888` `qwen38-27b` | vllm / docker | retired-ish —— 24.9 tok/s |
-| Qwen3.8-Flash-Next NVFP4 (MTP k=3)<br>`STACK=qwen38fn` | 2 | `:8000` `qwen38-flash-next` | vllm / k3s | rollback #1 —— 单流代码最快 62.1 |
-| DeepSeek-V4-Flash-0731 (DSpark n=5)<br>`STACK=v4flash` | 2 | `:8000` `deepseek-v4-flash` | vllm / k3s | rollback #3 |
 <!-- END generated:stacks -->
 
 > The table above is generated from `stacks/*/stack.env` by `make stack-table`
 > and verified by `make stack-check`. **Do not hand-edit it** — edit the registry.
 
-⚠️ **All of them are mutually exclusive** — same GPU memory. Even the single-node
-ones: the TP=2 stacks' **rank0 also lives on S1**. Several claim `:8888`.
-Stop the running one first — `make run STACK=<id>` refuses to start otherwise,
-and its preflight walks **the whole registry**, so a newly added stack is checked
-by every existing one without anyone editing a list.
+⚠️ **Mutual exclusion is now per-node, not registry-wide** (changed 2026-09-20).
+Two stacks conflict when their **GPU node sets intersect** — `STACK_GPU_NODES` in
+each `stack.env`, enforced by `stacks/_lib/preflight.sh`. So `qwen38un` (S1) and
+`fndgx` (S2) run **at the same time**, which is what makes the idle box usable at
+all; `glm53` still collides with both, because a TP=2 stack's **rank1 also eats
+S2's GPU** and its **rank0 eats S1's**. Several stacks claim `:8888`.
+`make run STACK=<id>` refuses to start against an overlapping stack, and its
+preflight still walks **the whole registry**, so a newly added stack is checked by
+every existing one without anyone editing a list. It prints which stacks it checked
+**and which it skipped**, so "not checked" can't read as "checked and fine".
+⚠️ Judging overlap by `STACK_HEAD` alone would call `glm53` (head=S1) unrelated
+to an S2 stack and let both onto S2's GPU — that is gotcha #2 on a box with no BMC.
+⚠️ **`glm53` is now the registry's only multi-node stack** (the two k3s TP=2 stacks
+were deleted 2026-09-20), so it is the only thing keeping that code path exercised.
+`scripts/test-preflight.sh` says so at the assertion that depends on it — delete
+`glm53` and you must add a synthetic two-node fixture there, or the most expensive
+case in gotcha #2 stops being tested.
 
-⚠️ **The primary is currently single-node.** S2 sits idle, which removes the whole
-TP=2 failure class (gotcha #1's zombie collectives, cross-node NCCL/RoCE, the
-lockstep restart rule).
+⚠️ **Two stacks are running right now** — `qwen38un` on S1 (primary) and `fndgx`
+on S2. The primary being single-node removes the whole TP=2 failure class
+(gotcha #1's zombie collectives, cross-node NCCL/RoCE, the lockstep restart rule),
+but it also means **`make memwatch` alone only guards the primary** — `fndgx`
+needs its own `make memwatch STACK=fndgx` instance, in its own tmux session.
 
-⚠️ **Three different engines are in play** (vLLM / vLLM+EXL3 overlay / SGLang) and
-**five different thinking-kwarg semantics**. There is no shared default. They live
-in each stack's `STACK_THINK_KWARG` / `STACK_THINK_OFF` / `STACK_COT_FIELD`, and
-`docs/clients-cn.md` carries the generated cross-stack table. Getting this wrong
-is silent — gotcha #9.
+⚠️ **Four different engines are in play** (vLLM / vLLM+EXL3 overlay / SGLang /
+vLLM+PLE-mmap) and **six different thinking-kwarg semantics**. There is no shared
+default. They live in each stack's `STACK_THINK_KWARG` / `STACK_THINK_OFF` /
+`STACK_COT_FIELD`, and `docs/clients-cn.md` carries the generated cross-stack
+table. Getting this wrong is silent — gotcha #9. ⚠️ **The same model can have two
+different CoT fields on two different engine builds**: the now-deleted `qwen38fn`
+recorded `reasoning_content`, while `fndgx` — same checkpoint family, newer preview
+image — measurably returns `reasoning` and `reasoning_content` is always `None`.
+The lesson outlives the stack: **never infer the CoT field from the model name.**
 
 ✅ **Switching the primary stack is `make switch TO=<id>`.** "Which stack is
 current" used to be hardcoded in ~8 places that each failed *silently*; it is now
@@ -48,31 +65,191 @@ one file (`stacks/PRIMARY`) that every tool reads. What is still manual — code
 own config files, and the prose in `## Current state` below — is printed by that
 command and listed in `docs/stack-switch-cn.md`.
 
-- **Flash-Next** (primary): NVFP4, native 262144 ctx, **MTP** speculative decoding
-  (`num_speculative_tokens=3`), official vLLM image (no fork). Warm single-stream
-  **35–66 tok/s depending on content** (mean 58.6, real code 62.1); concurrency
-  peaks at **~304 tok/s aggregate at c8** (`max_num_seqs=8` is the binding limit,
-  not KV). See `docs/benchmarking-cn.md` before quoting any number.
-  ⚠️ **MTP `k` is not a free knob here:** k=4 measured **+12.2%** over the live k=3
-  (adoption undecided), but **k=5–8 cannot start at all** — an upstream QSA assert
-  demands `capacity | block_size 1616`, and block_size is engine-chosen, not tunable.
-  Next feasible segment jumps to 9–12. `benchmarks/mtp-k-sweep-2026-09-03/`.
-- **V4-Flash** (rollback target): 284B/13B-active, official FP8, 1M ctx, **DSpark**
-  speculative decoding, jasl fork image. Mean 67.2 tok/s but **2.7× spread across
-  content** (31–84) because DSpark acceptance is content-driven; Flash-Next beats
-  it on concurrency (+29% at c6) and prefill (+100% at 100K). `make switch TO=v4flash`.
-- **Qwen3.8-27B** (single-node fallback): exists because both TP=2 stacks are
-  indivisible — when one node dies the whole service dies (2026-08-15 S2 hardware
-  death). **Slower and weaker, not an upgrade**: 24.9 tok/s mean.
+- **Qwen3.8-27B-Uncensored + SGLang** (`qwen38un`, primary, S1): NVFP4 + DFlash2
+  speculator, single node. Code **45.4** tok/s single-stream; concurrency **472.7
+  tok/s aggregate @ c12**, the best this repo has measured. Also multimodal.
+- **Flash-Next single-node** (`fndgx`, S2): same model family as the retired
+  `qwen38fn`, but `mmap`s the 48 GiB PLE table off NVMe so it fits one box.
+  48.0 tok/s code; aggregate flatlines at **113 tok/s @ c8** because `SEQS=8`.
+- **GLM-5.3-Flash EXL3** (`glm53`, rollback, **TP=2 across both nodes**): 64.3 tok/s
+  structured, 850K nominal ctx. ⚠️ Starting it requires stopping **both** live
+  stacks, and its host headroom (1.8–2.0%) is too low for `make memwatch` to run.
+- **Qwen3.8-27B stock** (`qwen38`, S1): no speculator, 24.9 tok/s.
+  **Slower and weaker, not an upgrade** — it exists as a single-node floor.
+
+⚠️ **Two stacks were deleted on 2026-09-20 together with k3s**: `qwen38fn`
+(TP=2 Flash-Next, the repo's fastest single-stream code stack at **62.1 tok/s**)
+and `v4flash` (DeepSeek-V4-Flash, the **only** stack with a measured quality
+baseline — aider-polyglot 82.4%). Their recipes and manifests are in git history,
+not in the tree; their benchmark records are kept under `benchmarks/`. Nothing in
+the registry can run them any more, and rebuilding either means rebuilding a
+cluster. **Numbers below that compare against them are history, not options.**
 
 **Target hosts** (edit `HOSTS` in Makefile to change):
-- `100.97.87.120` — server 1 / `spark-ccf3` (TP=2 head / rank0 + the single-node fallback)
-- `100.67.164.92` — server 2 / `spark-2435` (TP=2 worker / rank1; k3s server)
+- `100.97.87.120` — server 1 / `spark-ccf3` (primary `qwen38un`; glm53's rank0)
+- `100.67.164.92` — server 2 / `spark-2435` (`fndgx`; glm53's rank1)
 - SSH: `admin` + `~/.ssh/vgio`
 - `192.168.200.101/102` — the internal 200G CX7 link. Carries the TP=2 NCCL
   traffic (bypassing the CNI) and inter-node file copies.
 
-## Current state (2026-09-19) — Qwen3.8-27B-Uncensored + SGLang primary, single-node
+## Current state (2026-09-20) — k3s removed; two docker stacks: qwen38un on S1, fndgx on S2
+
+### k3s is gone from both nodes (2026-09-20)
+
+✅ **The cluster is uninstalled, not stopped.** Both stacks that lived on it
+(`qwen38fn`, `v4flash`) are deleted from the registry; `adapter-k3s.sh`, `k8s/` and
+the per-stack manifests are gone with them. **`docker` is now the only runtime.**
+What that bought, measured before and after: **80 GB of disk per node**
+(`/var/lib/rancher`, a pure duplicate — every image was still in docker on both
+nodes) and **~0.5 GiB host RSS on S1 / ~1.0 GiB on S2**. On S2 that is ~0.8 points
+of the headroom that `fndgx` only has 2.7 points of.
+
+⚠️ **The dangerous part was not k3s, it was Cilium.** `k3s-killall.sh` strips only
+`KUBE-`/`CNI-`/flannel iptables rules (docker's chains survive — that part is safe),
+but it does **not** touch Cilium: tcx BPF programs (`cil_from_netdev`/`cil_to_netdev`)
+were attached to both physical NICs **and to `tailscale0`, the only remote path into
+these boxes**, pinned in bpffs so they outlive the agent by design. Uninstalling k3s
+and walking away would have left them attached with no agent behind them.
+The removal therefore ran, per node, as one detached script: uninstall k3s → detach
+tcx → `rm -rf /sys/fs/bpf/cilium /sys/fs/bpf/tc` → delete `cilium_*`/`lxc*` links →
+strip `CILIUM_*` iptables → self-test with an automatic `tailscaled` restart on
+failure. **Order matters**: Cilium's datapath keeps working correctly after its agent
+dies, so removing k3s first is safe, while detaching BPF first just makes the live
+agent re-attach it.
+Verified after, on both nodes: `bpftool net show` empty, bpffs down to `snap`,
+`iptables-save | grep -c CILIUM` = 0 while the DOCKER chains are intact (S1 18 /
+S2 20), no k3s units or binaries, routes clean — and **both endpoints answered a
+real generation**, not just `/v1/models` (gotcha #1's lesson).
+
+⚠️ **What was given up, deliberately:** `qwen38fn` was the fastest single-stream
+code stack this repo ever measured (62.1 tok/s) and `v4flash` held its only quality
+baseline (aider-polyglot 82.4%). `glm53` is now the **only** rollback, and starting
+it requires stopping both live stacks.
+
+### fndgx on S2
+
+**S2 is no longer idle.** `stacks/fndgx` — Qwen3.8-Flash-Next NVFP4 served from
+**one** node via blazux/qwen3.8-Flash-DGX, which `mmap`s the 48 GiB PLE n-gram
+table off NVMe instead of holding it in GPU memory. That is the whole trick: same
+model as the retired `qwen38fn`, one box instead of two. `:18300`
+`qwen3.8-flash-next`. Full account: `stacks/fndgx/recipe.yaml` + `runbook-cn.md`.
+
+✅ **Zero download.** S2 already had the 126 GiB RadixArk checkpoint (fetched for
+`qwen38fn`, 2026-09-02) and the exact base image digest the Dockerfile pins. The
+HF-cache layout upstream expects is a view built out of **relative** symlinks over
+the existing flat directory — which is also why deleting `qwen38fn` cost no weights.
+⚠️ **NVIDIA's checkpoint was not a choice**: `huggingface.co` is unreachable from
+the nodes, so RadixArk is forced (upstream's own numbers: −2.7 quality points,
++2.6 tok/s, −15-22% KV).
+
+⚖️ **Single-stream: 48.0 tok/s code / 46.6 structured / 35.3 prose** (warm median
+of 3, non-streaming, thinking off, `native` profile, clock cap off). That is ~77%
+of the retired `qwen38fn`'s 62.1 on half the hardware, and nominally above the primary's 45.4
+— ⚠️ **but those were measured by different harnesses; the same-harness comparison
+has not been run**, so treat it as an order of magnitude, not a ranking.
+
+✅ **It hits upstream's published RadixArk numbers on every axis they publish.**
+Full data + scripts: `benchmarks/fndgx-2026-09-20/`.
+Numbers below are **after the 2026-09-20 clock-cap removal** (capped values in
+parentheses):
+- **Single stream, prose: 35.3** (34.7) vs upstream's RadixArk **37.1** → −4.9%.
+- **c4, per stream: 23.0** (21.0) vs upstream's RadixArk **21.6** → **+6.5%, ahead**.
+- **Prefill, warm, cache-defeating prompts: 2,385 @ ~13.0K** (2,297) **and 3,050 @
+  ~51.7K** (2,810) — upstream reports 2,400–2,900 at 8K and 2,500–3,000 at 32K, so
+  the 51.7K figure is now **above** its band at a 60% *longer* prompt.
+- `./flash setup` reports all four stages already satisfied — the manual install
+  landed in exactly the state upstream's own installer produces.
+
+⚠️ **Aggregate throughput flatlines at c8 = 113 tok/s, and `SEQS=8` is what caps
+it — not the hardware, and not the clock.** c8 112.4 → c12 111.1 → c16 113.1,
+while worst-case latency goes 24.0 s → 43.8 s: the shape of requests queueing
+behind `max_num_seqs`. Removing the clock cap moved this peak by **+1.2%**
+(111.1 → 112.4) while it moved c4 by +9.5% — further evidence the ceiling is the
+sequence limit, not the silicon. Upstream states this trap outright ("a low `--max-num-seqs` is
+indistinguishable from saturation if you only look at tok/s") and the sweep it
+cites keeps scaling to **c48 = 266.8 tok/s** with page-fault cost per token
+*falling* 4.4× — the paged table is an argument *for* concurrency. ⏳ **`SEQS` has
+never been tuned here**; the KV pool (496,770 tokens) is nowhere near binding for
+short requests. Raising it should buy a lot, at the cost of upstream's other
+finding (decode starves during concurrent prefills; mitigation
+`--long-prefill-token-threshold 1024`), and needs a re-measure.
+⚠️ The retired `qwen38fn` — same model, TP=2, same `max_num_seqs=8` — was recorded
+at **~304 tok/s @ c8** against our 112.4. Two nodes → one explains 2×, not 2.7×; the
+rest is unexplained (likely the mmap'd PLE table's page-fault cost under batch).
+**But the two numbers come from different harnesses — not a ranking, and now not
+re-runnable either: that stack was deleted with k3s on 2026-09-20.**
+⚠️ **The KV pool is ~15% below upstream's own RadixArk figure, and that part is
+still unexplained.** Upstream publishes a RadixArk-vs-NVIDIA table: RadixArk
+**589K tokens** @ `GPU_MEM=0.80`, ctx 500K, weights 77.3 GiB; NVIDIA 679K (+15%).
+We get **500,000 tokens**, consumed 81.85 GiB. Two separate deltas, do not
+conflate them:
+- **679K → 589K is RadixArk's own documented cost**, and the boot log names it:
+  `modelopt block-moe: experts mtp.layers.48.mlp.experts -> checkpoint algo None`
+  — RadixArk leaves the MTP draft experts in bf16 where NVIDIA quantizes them
+  ("~3.4 GB less on the card", "+22% KV"). Both fixes need `huggingface.co`,
+  which the nodes cannot reach.
+- **589K → 500K is ours and is not accounted for.** Likeliest mechanism, untested:
+  `GPU_MEM` is a fraction of **total** device memory, not free memory — upstream's
+  own words — and S2 had only 113.24/121.69 GiB free at startup (k3s server,
+  Cilium, desktop, node-exporter). ⚠️ Don't assume it was k3s: stopping k3s
+  entirely once bought glm53 just **+0.11 GiB**.
+  ✅ **The experiment got cheaper on 2026-09-20** — k3s is now uninstalled, worth a
+  measured **~1.0 GiB** of S2 host RSS. So the next `fndgx` restart reads
+  `Available KV cache memory` under strictly more free memory, for free, with no
+  setup. ⏳ **Not yet done** — the stack has not been restarted since. If the pool
+  is still 500,000 tokens, k3s was never the mechanism and the delta is elsewhere.
+⚠️ **Lowering the context does not buy KV pool** (tested 2026-09-20): 500K+YaRN →
+13.54 GiB / 500,000 tokens / 1.00x, versus 262144 native → 14.03 GiB / **496,770
+tokens / 1.90x**. The pool is set by what is left after weights and activations,
+**not** by `max-model-len`; only the concurrency ratio moves. Decode is unchanged
+within noise. The stack now runs the `native` profile — `STACK_CTXWIN=262144`.
+⚠️ **Do not take vLLM's `--kv-cache-memory=…29.29 GiB "to fully utilize gpu
+memory"` at face value on GB10.** GPU and host memory are one pool, and the
+leftover is the page cache the mmap'd 48 GiB PLE table runs on; upstream's own
+words are "claiming it trades prefill for KV". Host headroom is ~13%.
+⚠️ **A wrong conclusion was published here for about an hour**: "prefill 1,482
+tok/s, gap to upstream unexplained". That was a **cold, first-of-its-shape**
+request compared against upstream's warm table — the exact trap
+`docs/benchmarking-cn.md` documents ("first request at a new prompt shape is ~43%
+slow"; 1,482 × 1.43 ≈ 2,120). **Upstream perf tables are warm; quoting a cold
+number against one compares two different things.**
+
+⚠️ **Host headroom on S2 is 10.7% steady, against memwatch warn=8% / crit=5%.**
+Only 2.7 points of margin — and this repo learned on `qwen38un` that **boot
+headroom is not steady headroom** (0.85 there looked fine at 9.4% and decayed to
+5.0% in two hours). fndgx has only been watched for tens of minutes. Part of the
+low figure is by design: the mmap'd PLE table *wants* page cache.
+**Never raise `GPU_MEM` above 0.80** — upstream reports 0.85 drifting into swap
+after a day and 0.875 OOM-killed on a 300K prefill; swap is off here and there is
+no BMC. To buy margin, lower it.
+
+✅ **Its own watchdog is resident** (tmux `memwatch-fndgx`, `nodes=[100.67.164.92]`,
+startup banner read). Two watchdog instances now run, one per stack; state and log
+files are per-stack so they don't collide.
+
+⚠️ **The rollback is now one stack, and it is blocked by both live ones.** `glm53`
+is TP=2 across both nodes, so `make run STACK=glm53` aborts naming `qwen38un` *and*
+`fndgx`; both have to stop first. Until 2026-09-20 there were three rollback
+targets and the S2 one could be freed with a single `make stop STACK=fndgx` —
+deleting `qwen38fn` and `v4flash` with k3s spent that margin. **`qwen38` (S1,
+24.9 tok/s, no speculator) is the only thing that can come up without stopping
+`fndgx`.**
+
+🔧 **One local deviation from upstream**, and only one: 7 `ADD` lines in the
+Dockerfile fetch from `raw.githubusercontent.com`, which times out from the nodes;
+they now point at `cdn.jsdelivr.net/gh/…@<same commit>`. The `--checksum=sha256:`
+pins are untouched and all 7 files were verified byte-identical first, so BuildKit
+still validates exactly what upstream intended. Re-apply after any upstream pull.
+
+⏳ **Still unmeasured on this stack:** quality (aider-polyglot is now **four
+stacks** behind — and with `v4flash` deleted, the 82.4% baseline it was measured
+against can no longer be re-run, only read out of
+`benchmarks/aider-polyglot-deepseek-v4-flash-2026-08-01/`), long context (262K
+configured, ~52K is the longest prompt actually sent), a `SEQS` sweep, MTP=3,
+hybrid-mtp, and fp8-KV 1M. ❌ The same-harness concurrency comparison against
+`qwen38fn` is **no longer possible** — that stack is deleted.
+
+### Previous state (2026-09-19) — Qwen3.8-27B-Uncensored + SGLang primary, single-node
 
 **Two stack switches happened on 2026-09-19.** Flash-Next → GLM-5.3-Flash EXL3
 (memory-tight, slower on code than the stack it replaced), then GLM → **Qwen3.8-27B
@@ -87,7 +264,8 @@ c16 falls back to 356 — that is `max_running_requests=12` making ragged batche
 
 ⚖️ **Single-stream is a mixed result.** Code **45.4** tok/s: +17% vs GLM's 38.8,
 but **−27% vs Flash-Next's 62.1**. So "GLM is too slow" is only partly fixed —
-**Flash-Next remains the fastest single-stream code stack in the repo.**
+Flash-Next was, at the time, the fastest single-stream code stack in the repo.
+⚠️ **It was deleted with k3s on 2026-09-20; 45.4 is now the best measured.**
 Also **−17% vs upstream's own 54.6** for the same recipe; partially explained
 (compressed-tensors −3%, acceptance 6.12 vs upstream 6.71), plausibly the rest is
 the DFlash2 draft being trained against the *stock* target while ours is
@@ -171,9 +349,13 @@ start.sh 0.95 → start-dflash.sh 0.90 → our `DF_EXTRA` 0.80, argparse last-wi
 is "no change" — **but that is an expectation, not a measurement.**
 
 ✅ **The TP=2 failure class is gone** with a single-node primary: no zombie
-collectives (gotcha #1), no cross-node NCCL/RoCE, no lockstep restart rule. S2 is
-idle at 116 GiB. k3s is running with all four k3s deployments at 0 replicas, so
-`make run STACK=qwen38fn` is a one-command rollback to the 62.1 tok/s stack.
+collectives (gotcha #1), no cross-node NCCL/RoCE, no lockstep restart rule. S2 was
+idle at 116 GiB, and k3s ran with all four k3s deployments at 0 replicas, so
+`make run STACK=qwen38fn` was a one-command rollback to the 62.1 tok/s stack.
+⚠️ **Superseded twice:** S2 got `fndgx` on 2026-09-20, and later the same day k3s
+was uninstalled and `qwen38fn` deleted — **that rollback no longer exists.**
+⚠️ **Superseded 2026-09-20:** S2 now runs `fndgx`, so that rollback first needs
+`make stop STACK=fndgx`. See `## Current state`.
 
 ⏳ **Quality debt is now three stacks deep** — aider-polyglot has been run against
 V4-Flash only (`benchmarks/aider-polyglot-deepseek-v4-flash-2026-08-01/`, 82.4%).
@@ -232,17 +414,22 @@ Context trades 1:1 against headroom via `--kv-cache-memory-bytes`: 850K→2.1 Gi
 The gap vs upstream is *not* docker-vs-k3s — stopping k3s entirely was measured
 at **+0.11 GiB** on the head. It is `zcode` (~1.07 GiB) + desktop (~0.4) on S1,
 plus the head being 1.71 GiB heavier than the worker by nature.
+⚠️ **Re-check before trusting these figures**: k3s was *uninstalled* on 2026-09-20
+(worth ~0.5 GiB RSS on S1, ~1.0 on S2 — more than the +0.11 GiB that merely
+*stopping* it bought), so glm53's headroom numbers above are all pre-removal.
 
 ⏳ **Quality is unverified — and this debt is now two stacks deep.** EXL3 4bpw's
 KLD 0.0246 (≈ official FP8) is malaiwah's independent panel, not ours.
 aider-polyglot has been run against *neither* GLM nor Flash-Next. V4-Flash
 baseline: `benchmarks/aider-polyglot-deepseek-v4-flash-2026-08-01/` (82.4%).
 
-🔧 **Transient host state (restore when done):** k3s is **stopped on both nodes**
-(`sudo systemctl start k3s` on S2, `k3s-agent` on S1) — until then the two k3s
-rollback stacks cannot start. Graphical session and `sparkDash` also stopped.
-**Clients have NOT been switched** — codex/qwen still point at `:8000`
-`qwen38-flash-next`, which is down. `docs/stack-switch-cn.md` layer 3 is open.
+🔧 **Transient host state (restore when done):** k3s was **stopped on both nodes**,
+so the two k3s rollback stacks could not start. Graphical session and `sparkDash`
+also stopped. **Clients had NOT been switched** — codex/qwen still pointed at
+`:8000` `qwen38-flash-next`, which was down.
+⚠️ **Both halves are now moot, in opposite directions:** clients were switched and
+verified on 2026-09-19 (see above), and k3s was **uninstalled** on 2026-09-20 —
+there is nothing left to restart, and `sudo systemctl start k3s` will simply fail.
 
 Earlier state (S2's 2026-08-15 power death and the 6.5 h recovery — no BMC/IPMI,
 WoL failed, needed someone at the box) is post-mortem'd in
@@ -260,14 +447,14 @@ make info                       # the current primary in detail (thinking kwarg,
 
 make run                        # preflight (whole-registry mutual exclusion) then start
 make run     STACK=glm53        # …a specific stack
-make status  STACK=qwen38fn     # pods/containers + /v1/models + free -h
+make status  STACK=fndgx        # containers + /v1/models + free -h
 make test    STACK=qwen38un     # smoke test — gated on /v1/models matching the registry
-make logs    STACK=qwen38fn WORKER=1   # rank1 (dual-node stacks only)
+make logs    STACK=glm53 WORKER=1      # rank1 (dual-node stacks only — glm53 is the last one)
 make boot-log STACK=glm53       # this boot's launcher output (not the engine log)
 make load                       # who is using the engine right now
 make stop / make restart        # restart always moves BOTH ranks (gotcha #1)
 
-make switch  TO=qwen38fn        # change the primary stack, with acceptance checks
+make switch  TO=glm53           # change the primary stack, with acceptance checks
 make stack-check                # registry self-consistent + doc tables not stale
 ```
 
@@ -284,21 +471,21 @@ Per-stack notes that the verbs don't carry:
   103.09 GiB free vs the 103.44 GiB `gpu-memory-utilization` wanted — short by
   0.35 GiB, surfacing only 3 minutes in as a CUDA-layer `ValueError`.
   Fix: `sudo systemctl restart polkit`. Upstream hit the same growth (their #193).
-- **qwen38fn** — `make ple-test` is a regression for the PLE FP8 patch.
-  ⚠️ **Run it before touching `patch-ple-fp8.py` / `ple-preflight.py`** — they
-  guard a SILENT quality degradation (51 GiB PLE table upcast to bf16 with no
-  scale: the model still serves, quality quietly drops).
-- **v4flash** — `make probe-test` / `probe-apply` / `probe-verify` for the
-  liveness probes, `make v4flash-drift` before any `kubectl apply`, and
-  `make v4flash-hotfix-{status,test}` for the issue #55 streaming tool-call patch.
-  These live in `stacks/v4flash/Makefile.mk`.
-- **k3s stacks** (`qwen38fn`, `v4flash`) — kubectl runs from **this machine**,
-  `~/.kube/dgx-spark.yaml`.
+- **fndgx** — the only stack whose head is **S2**, and the only one wrapping a
+  third-party orchestrator (`./flash`, from blazux/qwen3.8-Flash-DGX).
+  ⚠️ It needs its **own** watchdog: `make memwatch STACK=fndgx`.
+  ⚠️ Its container carries `--restart unless-stopped`, so **it comes back by itself
+  after a host reboot** — no other docker stack here does.
+  ⚠️ Its Dockerfile carries a 7-line local patch (GitHub → jsDelivr); re-apply it
+  after any upstream pull, or the build cannot fetch its kernel sources.
+  `stacks/fndgx/runbook-cn.md` has the from-zero procedure.
 
 ⚠️ **Never restart a single rank of a TP=2 stack** — it leaves the survivor hung
 in collectives while `/health` and `/v1/models` still return 200. This is a
 property of TP=2, not of any one engine, and `make restart` is the only safe
-path. Gotcha #1 in `docs/gotchas-cn.md`.
+path. Gotcha #1 in `docs/gotchas-cn.md`. **`glm53` is the only stack this still
+applies to** — but it applies in full, so do not let the rule fade with the two
+TP=2 stacks that were deleted on 2026-09-20.
 
 ### Misc
 
@@ -343,45 +530,48 @@ and read every `Inst` line (the CUDA repo sits at Ubuntu's priority and can win 
 driver decision); `dkms` always with `-a arm64` (bare `dkms` silently no-ops —
 this nearly bricked a node on 2026-08-08).
 
-## Architecture (both TP=2 stacks)
+## Architecture (plain docker on both nodes since 2026-09-20)
+
+**There is no orchestrator.** Every stack is `docker run` on one or both hosts,
+driven from this machine over SSH. k3s and Cilium were uninstalled on 2026-09-20.
+
+Normal shape — two independent single-node stacks, one per box:
 
 ```
-┌─ k3s cluster "dgx-spark" (cluster.id=1, Cilium CNI) ─────────┐
-│  ┌──────────────────┐  200G CX7  ┌──────────────────┐        │
-│  │ S1 spark-ccf3     │ ◄────────► │ S2 spark-2435     │       │
-│  │ 192.168.200.101   │ RoCE/NCCL  │ 192.168.200.102   │       │
-│  │ k3s agent         │   TP=2     │ k3s server        │       │
-│  │ Pod <stack>-leader│ (bypasses  │ Pod <stack>-worker│       │
-│  │ rank0, vLLM :8000 │   the CNI) │ rank1 --headless  │       │
-│  └──────────────────┘            └──────────────────┘        │
-└──────────────────────────┬───────────────────────────────────┘
-                           │ Tailscale VPN (100.x)
-                  ┌────────▼──────────┐
-                  │   Mac (client)    │  kubectl → S2:6443
-                  │ codex --profile dgx → 100.97.87.120:8000
-                  └───────────────────┘
+   ┌──────────────────┐   200G CX7   ┌──────────────────┐
+   │ S1 spark-ccf3     │ ◄──────────► │ S2 spark-2435     │
+   │ 192.168.200.101   │  RoCE/NCCL   │ 192.168.200.102   │
+   │ docker            │  (idle when  │ docker            │
+   │ qwen38un  :8888   │   no TP=2)   │ fndgx    :18300   │
+   └──────────────────┘              └──────────────────┘
+              │ Tailscale VPN (100.x)         │
+              └───────────┬───────────────────┘
+                 ┌────────▼──────────┐
+                 │   Mac (client)    │  ssh admin@100.x
+                 │ codex --profile dgx → 100.97.87.120:8888
+                 └───────────────────┘
 ```
 
-The two nodes form **one** TP=2 vLLM instance; only server 1 exposes the OpenAI
-API. Server 2 is a pure TP worker — there is no separate endpoint on it. Both
-Pods are `hostNetwork` + `privileged`, so NCCL/RoCE and the API behave exactly as
-they did under docker; the CNI carries only system traffic.
-
-Both TP=2 stacks have this exact shape — only the namespace and Pod prefix differ
-(`qwen38fn-*` in ns `qwen38fn`, `v4flash-*` in ns `v4flash`). The single-node
-fallback is a plain-docker container on S1 `:8888`, outside k3s.
+The TP=2 shape still exists, but **only `glm53` uses it**: one container per node,
+rank0 on S1 exposing the OpenAI API and rank1 on S2 headless with no endpoint of
+its own, NCCL/RoCE over the 200G link. It needs **both** boxes, so it cannot run
+while `qwen38un` or `fndgx` is up. Everything gotcha #1 says about never touching
+a single rank applies to it and nothing else.
 
 ## Unified memory constraints (GB10) — read before changing any launch flag
 
 - 128 GB LPDDR5X coherent memory shared between CPU and GPU, per node.
 - **Don't over-allocate `gpu-memory-utilization`** — too high risks OOM freezes
-  of sshd itself. **Flash-Next uses 0.75**, V4-Flash **0.80** (0.85 caused a full
-  head-node OOM on 2026-06-29), the single-node fallback **0.75**, the retired
-  Qwen/Gemma stack **0.70**. Flash-Next went 0.80 → 0.75 on 2026-09-02 because
-  `scripts/mem-floor.sh` measured 8-way × 8K prompt leaving only 5 GiB host
-  available (4.1%, below the memwatch CRIT line) at 0.80 — and the KV it bought
-  cannot be used anyway under `max_num_seqs=8`. **Re-run mem-floor before raising
-  it, and keep both nodes symmetric.**
+  of sshd itself. Live values: `qwen38un` **0.80** (`mem-fraction-static`; 0.85
+  was tried and rejected — see the table in `## Previous state (2026-09-19)`),
+  `fndgx` **0.80** (`GPU_MEM`; **never raise it**, upstream reports 0.85 drifting
+  into swap and 0.875 OOM-killed), `qwen38` **0.75**.
+  Retired but still instructive: V4-Flash ran **0.80** because 0.85 caused a full
+  head-node OOM on 2026-06-29, and Flash-Next went 0.80 → 0.75 on 2026-09-02
+  because `scripts/mem-floor.sh` measured 8-way × 8K prompt leaving only 5 GiB
+  host available (4.1%, below the memwatch CRIT line) at 0.80 — and the KV it
+  bought could not be used anyway under `max_num_seqs=8`.
+  **Re-run mem-floor before raising any of these, and keep both nodes symmetric.**
 - Swap **must** be disabled (`swapoff -a`).
 - `nvidia-smi` reports `[N/A]` for per-process memory on GB10; watch `free -h`.
 - **Never build on S1 without stopping the running stack first** — even the
@@ -394,22 +584,45 @@ fallback is a plain-docker container on S1 `:8888`, outside k3s.
   `stacks/PRIMARY` — there is nothing to change when the primary moves, and it
   refuses to start (exit 3) if it cannot actually stop that stack. A k8s cgroup
   memory limit was tried and **rejected** — `docs/auto-mitigation-cn.md`.
+  ⚠️ **One instance guards one stack.** With two stacks live you need two:
+  `make memwatch` (primary) **and** `make memwatch STACK=fndgx`, each in its own
+  tmux session. State/log files are per-stack, so they don't collide.
+  ⚠️ `STACK_MEMWATCH_STOP`'s first word must be either a path under `STACK_DIR`
+  (`./stop.sh`) or a bare command name — the startup self-check validates each
+  form differently. Until 2026-09-20 it only understood the path form, so
+  `qwen38`'s bare `docker rm -f …` made its watchdog `exit 3` — **that stack never
+  had a working guard**, while `make memwatch-test` reported PASS because it only
+  checked the field was non-empty. Both are fixed; the test now checks the shape.
 
 ## GB10 host tuning (clock cap adopted 2026-08-25)
 
 Full A/B data + the do-not-touch list: `docs/gb10-tuning-cn.md`.
 
-- **GPU clock cap 2200 MHz is live on both nodes** via `gb10-clock-cap.service`
-  (installed + enabled 2026-08-25; the unlock → `systemctl restart` → re-locked
-  path is verified). Decode paired diff +0.9%, 95% CI [-1.9%, +3.7%] (n=11
-  interleaved, `min_tokens` fixed) → indistinguishable from zero; prefill -3.7%;
-  dual-node GPU-rail power 86.2 W → 55.2 W (wall-socket saving is much smaller:
-  `nvidia-smi` sees only 12-27% of real draw). Drive it with
-  `make clock-cap-{apply,verify,status,install,reset,uninstall}`.
-- ⚠️ **Both nodes must match** (TP=2 is lockstep), **`-lgc` dies on reboot**
-  (hence `clock-cap-install`), and **no nvidia-smi field reports an active lock**
-  (`Applications Clocks Setting` stays `Not Active`, `clocks.max.sm` stays 3003) —
-  the only check is `clocks.current.sm` *under load* = `make clock-cap-verify`.
+- 🔶 **THE CAP IS OFF ON BOTH NODES (2026-09-20, on request).** Units uninstalled,
+  clocks reset, **verified under load**: S1 mean 2471 / max 2476 MHz, S2 mean 2490
+  / max 2528 MHz — against ~2183/2184 while capped, so about **+14%**. The two
+  nodes **match**, so TP=2 lockstep is satisfied. Idle readings now sit ~2470–2509.
+  ⚠️ Whoever re-caps must do **both** nodes: `make clock-cap-install`.
+  A one-node cap silently drags a TP=2 pair to the slower rank — nothing warns you.
+  ⚠️ Power goes back up: the 2026-08-25 A/B measured dual-node GPU rail
+  86.2 W → 55.2 W *from* the cap, so removing it gives that back (wall-socket
+  effect is much smaller — `nvidia-smi` sees only 12–27% of real draw).
+- **The cap itself** (2200 MHz via `gb10-clock-cap.service`, adopted 2026-08-25;
+  the unlock → `systemctl restart` → re-locked path is verified). Decode paired
+  diff +0.9%, 95% CI [-1.9%, +3.7%] (n=11 interleaved, `min_tokens` fixed) →
+  indistinguishable from zero; prefill -3.7%; dual-node GPU-rail power 86.2 W →
+  55.2 W (wall-socket saving is much smaller: `nvidia-smi` sees only 12-27% of
+  real draw). Drive it with
+  `make clock-cap-{apply,verify,status,install,reset,uninstall}`; scope it to one
+  box with `CAP_HOSTS=<ip>`, since every verb walks **both** nodes by default.
+- ⚠️ **`reset` is not "remove the cap".** It runs `-rgc` only; the systemd unit
+  stays `enabled` and re-applies the cap on the next reboot. `uninstall` is the
+  one that disables the unit, deletes it and unlocks. `install` puts it back.
+- ⚠️ **`-lgc` dies on reboot** (hence `clock-cap-install`), and **no nvidia-smi
+  field reports an active lock** (`Applications Clocks Setting` stays
+  `Not Active`, `clocks.max.sm` stays 3003) — the only check is
+  `clocks.current.sm` *under load* = `make clock-cap-verify`. Idle readings lie in
+  both directions: S2 idled at 2190 while capped and 2398 the moment it was not.
 - ⚠️ **That check itself was silently broken from 2026-09-02 to 2026-09-03** — it
   had the old stack's model name hardcoded, so its generation 400'd, `curl` still
   exited 0, and it printed a verdict line computed from **idle** samples (which
@@ -428,61 +641,37 @@ Full A/B data + the do-not-touch list: `docs/gb10-tuning-cn.md`.
   three times, and the standing lesson is: someone else's GB10 perf result is a
   hypothesis until it reproduces on these boxes.
 
-## V4-Flash engine notes
+## Retired 2026-09-20: the k3s runtime and the V4-Flash engine
 
-Full build/prep runbook: `stacks/v4flash/runbook-cn.md`. DSpark specifics:
-`stacks/v4flash/dspark-upgrade-cn.md`. Recipe: `stacks/v4flash/recipe.yaml`.
+Both are **gone from the tree and from the hosts**, not merely stopped. Read this
+section before proposing either of them again.
 
-- **Why two nodes:** official FP8 weights are ~167GB / 48 shards — they don't fit
-  one GB10's 128GB. TP=2 splits them (~83GB/node), leaving room for KV cache.
-- **Engine = jasl/vllm `codex/ds4-sm120-min-enable`.** GB10 is `sm_121`; stock
-  builds lack a kernel for V4's sparse MLA, so the fork swaps in a Triton
-  implementation via `VLLM_TRITON_MLA_SPARSE=1` (the load-bearing env).
-  **SGLang is a dead end here** — its V4 attention needs a FlashMLA kernel with
-  no `sm_121` build. Don't retry it.
-- **The fork is needed for DSpark only.** Stock upstream vLLM can serve plain
-  V4-Flash TP=2 on GB10 given `DG_JIT_USE_NVRTC=0` + `DG_JIT_NVCC_COMPILER=...`
-  (missing these looks like an architecture-support failure but isn't).
-- **Serve from the local model PATH**, not the HF repo id — the worker node has
-  no proxy, and HF-cache symlinks must be relative (gotcha #6).
-- **DSpark tuning:** `num_speculative_tokens=5` is the GB10-tuned value
-  (`dspark_block_size` is 5, so acceptance craters past draft position 4;
-  n=3 ≈ 53.9, n=5 ≈ 56.6, n=7 ≈ 52.4 on the same prompt).
-  **`max_num_seqs=6` / `max_num_batched_tokens=8192` is the validated ceiling** —
-  `max_num_seqs=16` fails the KV preflight and CrashLoops until reverted.
-- **torch-CPU build trap:** the from-source build leaves the runner image with
-  torch CPU → `vllm._C: libtorch_cuda.so missing`. Fix: `scripts/vllm-fix-torch.sh`.
-- **Watch item, not a to-do:** eugr's `b12x` ships DSpark with prebuilt images,
-  but [eugr#331](https://github.com/eugr/spark-vllm-docker/issues/331) reports it
-  crashing after 1–2 h, it quotes ~50 t/s (below our mean 67.2), and its recipe
-  uses the `gpu_memory_utilization: 0.85` that OOM'd this head node.
-
-## k3s runtime
-
-Design + execution record: `docs/k3s-migration-design-cn.md`. Manifests + ops:
-`k8s/README.md`.
-
-- **Cluster:** k3s v1.36.3, server on **S2** / agent on **S1** (the head OOM'd
-  once, so it carries the lighter role), node IPs on the 200G link. Cilium 1.19.6
-  kube-proxy-less, tunnel/vxlan, Pod/Svc CIDR `10.44`/`10.45`.
-- ⚠️ **ClusterMesh with homelab was evaluated and REJECTED 2026-08-13** — the
-  Sparks are *shared* nodes from another tailnet, so subnet routes (and the
-  cross-cluster node plane) cannot exist. Also: `cluster.id=1` **collides** with
-  homelab's, and the `mtu: 1200` in `k8s/cilium-values.yaml` **never took effect**
-  (the chart key is `MTU` — do **NOT** "fix" the casing). Design doc §6 is
-  superseded; §6.4 has the adopted alternative.
-- **Boot autostart is k3s's own service** — Pods stay Pending until the node is
-  Ready and the device plugin has registered the GPU. Verified 2026-08-13 by
-  rebooting both nodes at once: Ready +34 s, Pods scheduled +47 s, real inference
-  **+5 m29 s**, no intervention. NVIDIA device plugin must be **≥ v0.17.4** on
-  GB10 (older ones crash on unified memory).
-- **The image is local-only.** After any rebuild, on **both** nodes:
-  `docker save vllm-node-dsv4:latest | sudo k3s ctr -n k8s.io images import -`,
-  then re-pin (`io.cri-containerd.pinned=pinned`) — Pods use
-  `imagePullPolicy: Never` and nothing can re-pull it. Skipping this looks like
-  "I rebuilt and nothing changed".
-- **`kubectl apply` converges replicas to the manifest value (1)** — don't apply
-  while you mean to stay stopped.
+- **k3s + Cilium are uninstalled on both nodes.** `docker` is the only runtime;
+  `adapter-k3s.sh`, `k8s/`, and the per-stack manifests were deleted with the two
+  stacks that used them. The removal procedure — and specifically why Cilium's
+  BPF on `tailscale0` is the part that can strand a box with no BMC — is in
+  `## Current state`. Design/execution history: `docs/k3s-migration-design-cn.md`
+  (kept as a record; ⚠️ its §6 was already superseded before any of this).
+- **Bringing k8s back is a project, not a flag.** The old cluster was k3s v1.36.3
+  + Cilium 1.19.6 kube-proxy-less with the NVIDIA device plugin ≥ v0.17.4 (older
+  ones crash on GB10's unified memory), images side-loaded with
+  `k3s ctr images import` because nothing could pull them. None of that survives.
+- ⚠️ **ClusterMesh with homelab was evaluated and REJECTED 2026-08-13**, and that
+  verdict outlives the cluster: the Sparks are *shared* nodes from another
+  tailnet, so subnet routes and a cross-cluster node plane cannot exist. Don't
+  re-open it on the assumption that a fresh cluster would behave differently.
+- **V4-Flash's hard-won engine facts, so they are not rediscovered the hard way:**
+  its official FP8 weights are ~167 GB / 48 shards and **do not fit one GB10**, so
+  it was always TP=2; it needed the jasl/vllm fork only for DSpark (stock vLLM can
+  serve it given `DG_JIT_USE_NVRTC=0` + `DG_JIT_NVCC_COMPILER=…`, whose absence
+  looks like an architecture-support failure but isn't); and **SGLang is a dead
+  end for it** — its V4 attention wants a FlashMLA kernel with no `sm_121` build.
+  Full detail is in git history (`stacks/v4flash/`), and the measurements stay in
+  `benchmarks/`.
+- **Still live and still useful:** `scripts/vllm-fix-torch.sh` fixes the
+  from-source build trap that leaves a runner image on torch-CPU
+  (`vllm._C: libtorch_cuda.so missing`). That is a vLLM-build problem, not a
+  V4-Flash one — keep it.
 
 ## Known gotchas — index
 
@@ -490,8 +679,8 @@ Full detail with reproductions and dates: **`docs/gotchas-cn.md`**.
 
 | # | Symptom | Where it bites |
 |---|---|---|
-| 1 | Single-rank restart → zombie TP group; `/health` still 200, all generations time out | V4-Flash ops ⚠️ most expensive |
-| 2 | Primary and fallback both want the GPU → OOMs the whole node | switching stacks ⚠️ |
+| 1 | Single-rank restart → zombie TP group; `/health` still 200, all generations time out | `glm53` (the last TP=2 stack) ⚠️ most expensive |
+| 2 | Two stacks both want the GPU → OOMs the whole node. Overlap is judged by **node set**, and a TP=2 stack's rank1 counts | switching stacks ⚠️ |
 | 3 | `NCCL WARN ... GID table changed` every ~45 s | reading logs (harmless) |
 | 4 | Domestic mirror "is slow" — actually `docker build`/`run` forced through the xray proxy (90×) | building images |
 | 5 | ModelScope/github unreachable while Tailscale is fine → DHCP hands out no DNS | networking |
@@ -513,8 +702,8 @@ Current baseline: **`benchmarks/glm53-2026-09-19/`** (GLM, with the upstream
 comparison and its own three scripts). Previous: `benchmarks/bench-full-qwen38fn-2026-09-03/`
 (Flash-Next vs V4). Harness + V4 baseline: `benchmarks/bench-full-2026-08-05/`.
 
-⚠️ **`bench_full.py` does not work on GLM at all** — it hardcodes V4-Flash's
-model name *and* a `thinking` kwarg, while GLM is a **third** semantics:
+⚠️ **`bench_full.py` does not work on GLM at all** — it hardcodes the deleted
+V4-Flash's model name *and* a `thinking` kwarg, while GLM is a **third** semantics:
 `chat_template_kwargs.reasoning_effort` (`low`/`high`/`max`; `medium` rejected),
 **no way to turn thinking off**, unset renders **Max**, and the CoT comes back
 in `reasoning`, not `reasoning_content`. Use the scripts in
@@ -558,19 +747,13 @@ codex/qwen's built-in `reasoning:false` does **not** reach a self-hosted vLLM.
   that fact lives.** Every tool derives from it; `make switch TO=<id>` edits it.
 - `stacks/_lib/` — `stackctl.sh` (all make verbs), `common.sh` (registry reads +
   required-field validation), `preflight.sh` (whole-registry mutual exclusion +
-  asset checks), `adapter-{k3s,docker}.sh` (one file per runtime).
+  asset checks), `adapter-docker.sh` (one file per runtime — **docker is the only
+  one left**; `adapter-k3s.sh` was deleted 2026-09-20 with the cluster).
 - `stacks/<id>/stack.env` — the machine-readable identity: served name, port,
   host, runtime, **thinking kwarg / CoT field**, watchdog stop action, assets.
 - `stacks/<id>/recipe.yaml` — *why* those parameters, with the measurements.
-  For k3s stacks the flags are the source of truth for
-  `stacks/<id>/k8s/configmap-launch.yaml` — **change both together.**
-- `stacks/<id>/{launch,test,preflight}.sh`, `Makefile.mk`, `k8s/`, `runbook-cn.md`
+- `stacks/<id>/{launch,test,preflight}.sh`, `Makefile.mk`, `runbook-cn.md`
   — all optional hooks, picked up automatically when present.
-
-**Live cluster**
-- `k8s/` — cluster-level only now: `README.md` (versions + ops + traps),
-  `registries.yaml`, `cilium-values.yaml`, `gpu/` (RuntimeClass + vendored device
-  plugin). Per-stack manifests moved to `stacks/<id>/k8s/`.
 
 **Shared scripts** — these are cross-stack tools. ✅ **None of them hardcodes a
 stack identity any more**; they all read the registry (that used to be the single
@@ -589,16 +772,19 @@ largest source of silent breakage — gotcha #9).
   are the registry (`--help` lists them live).
 - `scripts/mem-floor.sh` — host-memory floor stress test; the evidence behind
   `gpu_memory_utilization 0.75`. **Re-run it before raising gmu or max_num_seqs.**
-- `scripts/test-liveness-probe.py` / `scripts/test-mem-watch.sh` /
-  `scripts/test-ple-patch.sh` / `scripts/repro-issue55.py` — regressions.
-  ⚠️ Two of them are registry-wide, so a newly added stack is covered without
-  anyone editing them: `test-mem-watch.sh` asserts the watchdog can really stop
-  **every** registered stack (a new stack that forgets its stop action fails
-  there, not during an OOM), and `test-preflight.sh` (`make preflight-test`)
-  asserts every stack excludes every other one.
-- `scripts/vllm-fix-torch.sh` — fixes the torch-CPU build trap.
+- `scripts/test-mem-watch.sh` / `scripts/test-preflight.sh` — the two regressions,
+  and both are **registry-wide**, so a newly added stack is covered without anyone
+  editing them: `test-mem-watch.sh` asserts the watchdog can really stop **every**
+  registered stack (a new stack that forgets its stop action fails there, not
+  during an OOM), and `test-preflight.sh` (`make preflight-test`) asserts every
+  stack excludes every other one.
+  ⚠️ Three stack-specific regressions were deleted 2026-09-20 with the stacks they
+  tested (`test-liveness-probe.py`, `repro-issue55.py`, `test-ple-patch.sh` — all
+  three read files under `stacks/v4flash/` or `stacks/qwen38fn/`).
+- `scripts/vllm-fix-torch.sh` — fixes the torch-CPU build trap (a vLLM-build
+  problem, not tied to any one stack).
 - `scripts/v2rayn-launch.sh` — revives the S1 v2rayN proxy (needed for github
-  clones during a V4-Flash build).
+  clones during an image build).
 - `scripts/modelscope-download.sh` — model download via `make modelscope-download`.
 
 **Docs** (see `README.md` for the full map)
@@ -609,18 +795,22 @@ largest source of silent breakage — gotcha #9).
   three incidents that explain why any of it exists.
 - `docs/s2-outage-2026-08-15-cn.md` — S2's hardware death, why WoL failed
   (**no BMC/IPMI on these boxes**), and the TP=2 recovery procedure.
-- Per-stack runbooks live with their stack: `stacks/v4flash/runbook-cn.md`,
-  `stacks/v4flash/dspark-upgrade-cn.md`, `stacks/qwen38/runbook-cn.md`.
-- ⚠️ **qwen38fn, glm53 and qwen38un have no runbook yet** — their reasoning lives
-  in `stacks/<id>/recipe.yaml` comments. Known gap.
-- `docs/k3s-migration-design-cn.md` — cluster design (⚠️ §6 superseded).
+- Per-stack runbooks live with their stack: `stacks/qwen38/runbook-cn.md`,
+  `stacks/fndgx/runbook-cn.md`.
+- ⚠️ **glm53 and qwen38un have no runbook** — their reasoning lives in
+  `stacks/<id>/recipe.yaml` comments. Known gap, and it got sharper on 2026-09-20:
+  `glm53` is now the only rollback, and it is the one with no runbook.
+- `docs/k3s-migration-design-cn.md` — ⚠️ **history only.** The cluster it designs
+  was uninstalled 2026-09-20 (§6 was already superseded before that).
 - `docs/host-maintenance-cn.md` — apt / driver / kernel / DKMS runbook.
 - `docs/gb10-tuning-cn.md` — GB10 host tuning: GPU clock cap (adopted 2026-08-25), non-existent knobs, do-not-touch list.
 - `docs/auto-mitigation-cn.md` — memory watchdog + alerting spec.
 - `docs/china-network-mirrors-cn.md` — mirror runbook.
-- `benchmarks/bench-full-qwen38fn-2026-09-03/` — **current** baseline (Flash-Next
-  + the V4 comparison). `benchmarks/bench-full-2026-08-05/` — the harness itself
-  and the V4 baseline.
+- `benchmarks/bench-full-qwen38fn-2026-09-03/` — Flash-Next + the V4 comparison.
+  `benchmarks/bench-full-2026-08-05/` — the harness itself and the V4 baseline.
+  ⚠️ **Both stacks were deleted 2026-09-20**, so these are records, not baselines
+  anyone can reproduce. The reproducible ones are `benchmarks/glm53-2026-09-19/`,
+  `benchmarks/qwen38un-2026-09-19/` and `benchmarks/fndgx-2026-09-20/`.
 - `benchmarks/mtp-k-sweep-2026-09-03/` — MTP `k` sweep: why `tok/step` (counted) is
   the load-bearing number when a knob needs an engine restart, and the QSA assert
   that caps `k` at 4. Its harness (`mtp_arm.py`) is the reusable pattern for any
@@ -635,12 +825,17 @@ largest source of silent breakage — gotcha #9).
   identifiers verbatim in English. This file stays English. **`docs/` holds only
   what is shared across stacks** — anything true of exactly one model belongs in
   `stacks/<id>/`, so adding a model adds files instead of editing them.
-- Images on both servers: **Flash-Next `vllm-qwen38fn:latest`** (official
-  `vllm/vllm-openai:qwen38-flash-next`, pinned by RepoDigest in the recipe — the
-  PLE patch is tied to a specific image version, so tag drift makes it silently
-  mismatch); V4-Flash `vllm-node-dsv4:latest` (jasl fork build); single-node
-  fallback upstream `vllm/vllm-openai:nightly-aarch64`. Driver 580.173.02 /
-  CUDA 13.0, verified on both nodes 2026-09-02.
+- Images on both servers: primary `lmsysorg/sglang:nightly-cu134-…`; glm53
+  `ghcr.nju.edu.cn/miaai-lab/glm-5.3-flash-2x-dgx-sparks:exl3-instanttensor`;
+  `qwen38` upstream `vllm/vllm-openai:nightly-aarch64`; **fndgx
+  `qwen38-flash-dgx` on S2 only** — built from the
+  `vllm/vllm-openai:qwen38-flash-next` digest plus blazux's 13 patch layers.
+  Driver 580.173.02 / CUDA 13.0, verified on both nodes 2026-09-02.
+  ⚠️ The two deleted stacks' images (`vllm-qwen38fn:latest`,
+  `vllm-node-dsv4:latest` + 2 older tags, ~100 GB across both nodes) are **still
+  in docker** — nothing references them any more. They are the obvious thing to
+  `docker rmi` if disk gets tight; until then they are the only copy left of
+  either engine, so deleting them is a one-way door.
 - Host baseline (both nodes, verified 2026-09-02): kernel `6.17.0-1031-nvidia`
   (`1029` + `1014` kept as fallback), driver `580.173.02`, swap 0, clock cap
   active. S2 was brought from `1029` to `1031` on 2026-09-02 — the narrow path
@@ -657,6 +852,13 @@ largest source of silent breakage — gotcha #9).
   `stacks/<id>/` directory. If you find yourself editing the Makefile, a shared
   script or a doc table to make a new model work, that is a bug in the registry —
   fix the registry instead. `stacks/README.md` is the contract.
+  ⚠️ **Removing one is not symmetric, and 2026-09-20 is the worked example.**
+  Deleting `stacks/<id>/` is necessary but not sufficient: the last stack of a
+  runtime also takes its adapter, the shared scripts' branches for that runtime,
+  and any regression that reads files under the deleted directory. Grep for the
+  id and the runtime name across `scripts/`, `stacks/_lib/` and the Makefile, then
+  run `make stack-check preflight-test memwatch-test` — the two registry-wide
+  regressions are what actually prove nothing dangling is left.
 - **Any change that moves which stack is primary runs `make switch TO=<id>`**,
   which rewrites `stacks/PRIMARY` and regenerates the doc tables. `make stack-check`
   fails the build if they drift, so this is no longer a thing to remember.

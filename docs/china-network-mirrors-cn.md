@@ -54,8 +54,9 @@ docker pull ghcr.nju.edu.cn/<org>/<img>:<tag>
 ⚠️ **换非官方镜像源时要核真实性,别只看"拉下来了"。** 核法:从控制机直连 ghcr.io
 读 manifest → 取 config blob 摘要,与节点上 `docker image inspect --format '{{.Id}}'`
 比对。上例两值均为 `ef9f5013…`,证明南大源服务的是**与上游逐字节相同**的镜像,
-不是重打包。(`docker save | k3s ctr images import` 会重新打包 → 那条路上的摘要
-不可用于此比对,见 `stacks/qwen38fn/recipe.yaml` 里三个互不相等摘要的教训。)
+不是重打包。(任何 `docker save | … import` 的搬运路径都会重新打包 → 那条路上的
+摘要不可用于此比对。这个教训来自已删除的 `qwen38fn`,它一度有三个互不相等的摘要;
+k3s 下线后本仓库不再走这种搬运,但换任何镜像源时判据不变。)
 
 ## 模型权重:用 ModelScope
 

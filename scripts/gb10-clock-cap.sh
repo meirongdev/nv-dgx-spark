@@ -139,7 +139,7 @@ payload = {'model': "$MODEL",
                          'content': 'Count from 1 to 300, one number per line. '
                                     'Output only the numbers.'}],
            'max_tokens': 300, 'min_tokens': 300, 'temperature': 0}
-# 逐栈不同的思考 kwarg。空 = 不发(k3s 两栈)。
+# 逐栈不同的思考 kwarg。空 = 不发。
 ck = r'''$CHAT_KWARGS'''.strip()
 if ck:
     payload['chat_template_kwargs'] = json.loads(ck)

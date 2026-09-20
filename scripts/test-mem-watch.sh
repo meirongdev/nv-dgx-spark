@@ -91,30 +91,44 @@ MW="$HERE/mem-watch.sh"
 # ⚠️ 必须把本文件为了打桩而设的环境变量**摘掉**再调子进程 —— 否则 MEMWATCH_LIB_ONLY
 #    会让被测脚本跳过注册表加载,而 WATCH_NODES=nodeA/nodeB 之类会盖住推导结果,
 #    于是断言测的是打桩值,不是真实推导。(第一版就是这么假通过的。)
-cfg(){ env -u MEMWATCH_LIB_ONLY -u WATCH_NODES -u WATCH_STACK -u WATCH_NS \
-           -u WATCH_DEPLOYS -u WATCH_MODE -u WATCH_STATE -u WATCH_LOG \
+cfg(){ env -u MEMWATCH_LIB_ONLY -u WATCH_NODES -u WATCH_STACK \
+           -u WATCH_MODE -u WATCH_STATE -u WATCH_LOG \
        bash "$MW" --config ${1:+"$1"} 2>/dev/null \
      | awk -F= -v k="$2" '$1==k{sub(/^[^=]*=/,""); print}'; }
 
 PRIMARY_ID="$(cat "$HERE/../stacks/PRIMARY" | tr -d '[:space:]')"
 check "不带参数时守的是 stacks/PRIMARY" "$PRIMARY_ID" "$(cfg '' STACK)"
 check "指定栈时跟着走(glm53)" "glm53" "$(cfg glm53 STACK)"
-check "k3s 栈推导出两个 rank" "qwen38fn-worker qwen38fn-leader" "$(cfg qwen38fn DEPLOYS)"
 check "docker 栈推导出停机命令" "./start.sh stop" "$(cfg glm53 DOCKER_STOP)"
 
 # ★ 对**每一个**注册的栈都验一遍「真要动手时动得了」。新加的栈自动进这个循环 ——
 #   不用改这个文件,而漏填停机动作会在这里当场响,不是等到整机 OOM 那天。
 . "$HERE/../stacks/_lib/common.sh"
 set +o pipefail
+#
+# ⚠️ 这里只能验**形态**,验不了那个文件在远端到底在不在(本测试纯本地,不碰集群)。
+#    真正的存在性检查在 mem-watch.sh 的启动自检里。两边必须认同一套规则 ——
+#    2026-09-20 就是因为不认同而漏了一个栈:这里只验了「字段非空」就报
+#    「动作可用」,而启动自检只认路径形态,于是 qwen38 的裸命令停机动作
+#    (docker rm -f …)被拼成 /home/admin/docker,那个栈**从来没有过能启动的
+#    看门狗**,测试却一路绿灯。一个分不清「通过」和「根本没运行」的检查器,
+#    比没有检查器更糟(stacks/README.md 规则 5)。
 for id in $(stack_ids_active); do
   case "$(cfg "$id" MODE)" in
     docker)
-      [ -n "$(cfg "$id" DOCKER_STOP)" ] && [ -n "$(cfg "$id" DOCKER_CONTAINERS)" ] \
-        && r=ok || r="缺 STACK_MEMWATCH_STOP/STACK_CONTAINERS" ;;
-    k8s)
-      [ "$(cfg "$id" DEPLOYS | wc -w | tr -d ' ')" = 2 ] \
-        && r=ok || r="STACK_DEPLOYS 必须是成对的两个 rank" ;;
-    *) r="未知 MODE" ;;
+      stop="$(cfg "$id" DOCKER_STOP)"; head="${stop%% *}"
+      if [ -z "$stop" ] || [ -z "$(cfg "$id" DOCKER_CONTAINERS)" ]; then
+        r="缺 STACK_MEMWATCH_STOP/STACK_CONTAINERS"
+      else
+        case "$head" in
+          ./*|/*) r=ok ;;                       # STACK_DIR 下的脚本 → 自检 test -x
+          */*)    r="'$head' 既不是 ./ 或 / 开头的路径,又带斜杠 —— 启动自检两条分支都过不了" ;;
+          *)      r=ok ;;                       # 裸命令 → 自检 command -v
+        esac
+      fi ;;
+    # k3s 运行时已于 2026-09-20 整体下线 —— 任何非 docker 形态都是配置错误,
+    # 而 mem-watch.sh 的启动自检对它直接 exit 3。两边必须认同一套规则。
+    *) r="未知 MODE(只剩 docker 一种形态)" ;;
   esac
   check "栈 $id 的看门狗动作可用" "ok" "$r"
   [ -n "$(cfg "$id" NODES)" ] && r=ok || r="缺 STACK_MEMWATCH_NODES"

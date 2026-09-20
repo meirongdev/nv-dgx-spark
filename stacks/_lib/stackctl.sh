@@ -42,7 +42,6 @@ esac
 
 load_stack "$STACK_ARG"
 case "$STACK_RUNTIME" in
-  k3s)      . "$LIB/adapter-k3s.sh" ;;
   docker)   . "$LIB/adapter-docker.sh" ;;
   external) die "'$STACK_ID' 是 external 栈(本地/非本仓库部署),没有生命周期动词" ;;
   *)        die "未知 STACK_RUNTIME='$STACK_RUNTIME'。可用适配器:$(ls "$LIB"/adapter-*.sh | sed 's|.*adapter-||;s|\.sh||' | tr '\n' ' ')" ;;

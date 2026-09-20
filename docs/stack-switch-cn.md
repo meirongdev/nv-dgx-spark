@@ -99,8 +99,8 @@ qwen -p "Reply with exactly one line: PONG"
 codex exec --profile dgx --skip-git-repo-check "Reply with exactly one line: PONG"
 ```
 
-再到引擎侧确认请求真落到了那台(docker 栈 `docker logs --since 10m <container> |
-grep -E 'Prefill batch'`;k3s 栈 `kubectl -n <ns> logs deploy/<leader> | grep POST`)。
+再到引擎侧确认请求真落到了那台(`docker logs --since 10m <container> |
+grep -E 'Prefill batch'`,或直接 `make logs STACK=<id>`)。
 
 > ⚠️ **本节上一版写着「codex 的 CLI `--version` 会 hang、它根本不读 profile,所以
 > 只能把请求**原样重放**到 `/v1/responses`」——0.154.0 实测两条都不成立**:

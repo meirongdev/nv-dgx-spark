@@ -1,0 +1,280 @@
+# stacks/fndgx/recipe.yaml —— 为什么是这些参数,以及量到了什么
+#
+# 机器可读的身份在 stack.env。这里是给人看的账本:每个选择的理由、实测数字、
+# 以及**还没验过的东西**(后者和前者一样重要 —— 本仓库三次事故都源于把
+# 「没验过」读成了「验过了」)。
+# 部署过程和踩到的坑在 runbook-cn.md。
+
+栈: fndgx
+建立日期: 2026-09-20
+上游: https://github.com/blazux/qwen3.8-Flash-DGX
+上游提交: main @ 克隆于 2026-09-20
+
+为什么存在:
+  - S2 自 2026-09-19 主力栈变成单节点后整台空着(116 GiB 可用,GPU 全闲)。
+  - 本栈与 qwen38fn **是同一个模型**(Qwen3.8-Flash-Next NVFP4),但不是同一个栈:
+    qwen38fn 要两台机器做 TP=2,本栈把 48 GiB 的 PLE n-gram 表用 mmap 从 NVMe
+    读,于是**一台**机器就装得下。
+  - 结果是本仓库第一次同时跑两个栈:S1 的 qwen38un(主力)+ S2 的 fndgx,
+    两个互相独立的端点。
+
+# ===========================================================================
+# 一、checkpoint:为什么是 RadixArk 而不是上游默认的 NVIDIA
+# ===========================================================================
+checkpoint:
+  用的: RadixArk/Qwen3.8-Flash-Next-NVFP4
+  revision: 7b719225242aacd3dbd3f9407468c2ee9a9d2594
+  规模: 418 个文件 / 206 个 safetensors 分片 / 126 GiB
+  理由:
+    - 它**已经在 S2 上**了(2026-09-02 为 qwen38fn 下的,同一份文件两个栈共用),
+      零下载。
+    - 上游 2026-09-14 起默认 nvidia/Qwen3.8-Flash-Next-NVFP4,但
+      **huggingface.co 从这两台节点上连不通**(实测 curl 直接 Connection refused),
+      而 NVIDIA 那份有一个 50 GiB 的分片、需要 Xet 后端。换不了,不是不想换。
+  代价(上游自己的数,不是我们量的):
+    - 质量 86.1% ± 1.9 vs NVIDIA 的 88.8% ± 1.0(55 场 tournament)
+    - KV 池比 NVIDIA 的小 15-22%
+    - 但解码更快:上游测 37.1 vs 34.5 tok/s
+  未做:
+    - MODE=hybrid-mtp(profiles/context,只对 RadixArk 有效,+22% KV)需要
+      prepare-mtp-graft.sh 去嫁接 Inferact 那份 checkpoint 的 NVFP4 MTP 专家
+      —— 又是一次下载,同样卡在 huggingface.co。**没试过。**
+
+  权重布局:
+    # ⚠️ 这一段是**我们自己搭的**,上游没有这一步。
+    # 原始权重是一个扁平目录 hub/Qwen3.8-Flash-Next-NVFP4/(qwen38fn 也在用),
+    # 而 serve.sh 要的是 HF cache 形状 hub/models--RadixArk--…/snapshots/<rev>/。
+    # 用 418 个**相对**符号链接把前者呈现成后者,不复制、不改原目录。
+    # 相对是硬性的:容器里挂载点是 /hf,绝对路径一律解析不到(gotcha #6)。
+    布局: hub/models--RadixArk--Qwen3.8-Flash-Next-NVFP4/snapshots/<rev>/*
+          -> ../../../Qwen3.8-Flash-Next-NVFP4/*
+    风险: 扁平目录被删/搬走 → 全部悬空,而 vLLM 要加载到一半才炸。
+          preflight.sh 第 2 条闸门专门数悬空链接。
+
+  hybrid 布局:
+    命令: MODE=hybrid + scripts/prepare-hybrid.sh(一次性)
+    结果: 300 个侧层张量转成 blockwise fp8,最大逐张量相对误差 0.0354
+    占用: +13 GiB(206 个 *.safetensors 里只有 4 个是真文件,其余是符号链接)
+    收益: 上游测 +20% 解码、+15-20% KV;侧层每解一个 token 都要整读一遍,减半就是这个数
+
+# ===========================================================================
+# 二、镜像:唯一一处对上游的本地改动
+# ===========================================================================
+镜像:
+  名字: qwen38-flash-dgx
+  基底: vllm/vllm-openai:qwen38-flash-next@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8
+  基底已在本地: 是 —— S2 上 docker.m.daocloud.io/vllm/vllm-openai 那份的 digest
+                **与上游 pin 的完全相同**,所以「拉取」是秒级的层复用,没有 20 GB 下载。
+  构建耗时: 约 18 分钟(大头是第 8 层用镜像自带 nvcc 编确定性 top-k 内核)
+
+  本地改动:
+    # ⚠️ 全仓库唯一一处偏离上游的地方,改的是 7 行 URL。
+    什么: Dockerfile / Dockerfile.v0.29 里 7 个 `ADD` 的来源从
+          raw.githubusercontent.com 改到 cdn.jsdelivr.net/gh/…@<同一个 commit>
+    为什么: raw.githubusercontent.com 从节点上 20 秒超时(gotcha #5/#8),
+            而 jsDelivr 实测 0.63 秒 200。
+    安全性没有降低: `ADD --checksum=sha256:…` 一个字没动,7 个文件在 Mac 上
+            逐个比过 —— jsDelivr 返回的内容与上游 pin 的 sha256 **逐字节一致**。
+            换句话说 BuildKit 仍然在校验,只是换了条路取同样的字节。
+    留痕: S2 上保留了 Dockerfile.upstream-orig / Dockerfile.v0.29.upstream-orig。
+    上游一动就要重做: 是。上游改了这两个文件就得重新打这 7 行。
+
+# ===========================================================================
+# 三、启动配方(profile=native)
+# ===========================================================================
+配方:
+  profile: native    # hybrid + 原生 262144(不开 YaRN)+ 确定性 top-k + MTP=2
+  关键开关:
+    MODE: hybrid                 # NVFP4 专家 + fp8 侧层
+    CTX: 262144                  # 原生;2026-09-20 从 YaRN 500000 降回来,见下「CTX 实验」
+    YARN: 0
+    MTP: 2                       # 投机解码;profiles/speed 用 3,+7% 速度换约一个 tournament 点
+    GPU_MEM: 0.80                # 上游默认。0.85 上游报「跑一天后开始吃 swap」,0.875 被 OOM kill
+    SEQS: 8                      # max_num_seqs
+    PREFIX_CACHE: 1
+    DET_TOPK: 1                  # 确定性 persistent_topk 内核,温度 0 下输出可复现
+    DRAFT_VOCAB: 1               # MTP 草稿只打分 65,536 个高频 token(上游测 +20% 解码)
+    COMPILE_CACHE: <repo>/.compile-cache   # 我们加的:vLLM 编译图跨重启复用,省约 80 秒
+    EFFORT_ALIAS: 1              # high/max→xhigh、minimal→low,见下
+
+  为什么加 COMPILE_CACHE:
+    上游默认不落盘,而 serve.sh 每次都重建容器 → 每次启动重编约 80 秒。
+    本栈是常驻栈,值得。
+
+# ===========================================================================
+# 四、实测(2026-09-20,S2,与 S1 主力栈并跑)
+# ===========================================================================
+实测:
+  启动:
+    首次加载: 约 5 分钟(上游标称 8-13 分钟;我们更快是因为 prepare-hybrid 刚跑完,
+              页缓存是热的 —— 冷启动应按上游的数估)。
+              带 COMPILE_CACHE 重启约 3.5 分钟。
+    KV 池: 496,770 tokens;262,144 tokens/请求时 maximum concurrency **1.90x**
+
+# ---------------------------------------------------------------------------
+# CTX 实验(2026-09-20):降上下文换不来 KV 池
+# ---------------------------------------------------------------------------
+CTX实验:
+  问题: KV 池 513.6K(首启)/ 500.0K(重启)低于上游的约 680K。是不是 CTX 太大?
+  做法: 停栈,改用上游 native profile(CTX=262144, YARN=0)重起,读启动指标。
+  结果:
+    "500000 + YaRN":  Available KV 13.54 GiB -> 池 500,000 tokens, concurrency 1.00x
+    "262144 native":  Available KV 14.03 GiB -> 池 496,770 tokens, concurrency **1.90x**
+  结论: **池子基本没动**(-0.6%),可用 KV 显存还略微多了 0.49 GiB。
+        池子大小由「权重+激活之后还剩多少显存」决定,**不是**由 max-model-len 决定。
+        真正变的只有 maximum concurrency:同一个池子,请求短一半 => 1.00x -> 1.90x。
+        所以「CTX/YaRN 开销」这个假设被**排除**。
+
+  # ⚠️⚠️ 2026-09-20 当天再次更正:下面这段曾被写成「缺口已解释」,**它只解释了
+  #      一半**。后来读到上游 README 里针对 RadixArk 的专门对照表,才发现上游给
+  #      RadixArk 自己的数就是 **589K tokens @ GPU_MEM=0.80, ctx 500k**
+  #      (NVIDIA 是 679K,+15%)。也就是说:
+  #        - MTP 草稿专家没量化 → 解释的是 **RadixArk(589K)vs NVIDIA(679K)**;
+  #        - 我们的 500K **vs RadixArk 自己的 589K** 还差 15%,**那部分仍未解释**。
+  #      别再把这两件事混成一件。下面保留 MTP 那段,因为它对前一半仍然成立。
+  MTP草稿专家未量化(解释 RadixArk vs NVIDIA,不解释我们 vs RadixArk):
+    启动日志:
+      Actual usage is **81.85 GiB** for consumed memory (weights + non-torch),
+      1.47 GiB peak activation, 0.48 GiB CUDAGraph  (预算 97.35 GiB = 0.80 × 121.69)
+    上游标称权重约 75 GiB —— 我们重了约 6.9 GiB。
+    直接证据(同一份日志):
+      modelopt block-moe: experts mtp.layers.48.mlp.experts -> **checkpoint algo None**
+    即 **RadixArk 的 MTP 草稿专家是 bf16,没被量化**。NVIDIA 那份 checkpoint 用
+    FP8_BLOCK_SCALES 量化了它们(Dockerfile 补丁 11 就是为此存在的)。
+    上游 profiles/context.env 写得很明白:嫁接 NVFP4 MTP 草稿专家
+    「+22% KV over RadixArk hybrid;**the default NVIDIA checkpoint gets that KV
+    without a graft**」,serve.sh 注释里给的量是「~3.4 GB less on the card」。
+    14.03 + 3.4 ≈ 17.4 GiB,对上上游 680K 需要的量级。
+  => 这部分**不是配置错误,是 checkpoint 选择的已知代价**,而两条修法
+     (换 NVIDIA 那份 / 跑 prepare-mtp-graft.sh)都要过 huggingface.co,走不通。
+
+  仍未解释的那 15%(我们 500K vs 上游 RadixArk 589K):
+    上游对照表(README「RadixArk vs NVIDIA」一节)给的 RadixArk 基准:
+      KV pool @500k, GPU_MEM=0.80 : 589K tokens
+      weights loaded              : 77.3 GiB
+    我们:
+      KV pool @500k               : 500,000 tokens(-15%)
+      consumed (weights+non-torch): 81.85 GiB
+    最可能的机制(**未验证**):`GPU_MEM` 是**总**显存的比例,不是空闲显存的比例。
+    上游 serve.sh 原话:「GPU_MEM is a fraction of TOTAL device memory, so it also
+    leaves out whatever was already resident」。我们启动时
+    `Free memory on device (113.24/121.69 GiB)` —— 已经有 8.45 GiB 被别的东西占着
+    (S2 上常驻 k3s server + Cilium + gnome-shell + node-exporter)。
+    ⚠️ 但别把这条当结论:CLAUDE.md 记过 glm53 那次**把 k3s 整个停掉只换回 0.11 GiB**。
+    真要查就是:停 k3s/桌面 → 重启本栈 → 读 Available KV cache memory。**没做。**
+
+  ⚠️ 顺带一个**不要照做**的诱惑:同一行日志说
+     `--kv-cache-memory=31446511104` (29.29 GiB) 就能「fully utilize gpu memory」。
+     在 GB10 上**不能这么读** —— 显存和主机内存是同一池,而剩下那部分正是
+     mmap 的 48 GiB PLE 表要用的页缓存。上游 serve.sh 原话:
+     「claiming it trades prefill for KV」。主机可用内存本来就只有约 11%。
+
+  单流解码:
+    # 非流式、temperature=0、enable_thinking=false、每项 3 次取热后中位
+    # (docs/benchmarking-cn.md 的三个坑:流式数的是 steps/s;冷+闲置衰减约 30%;短回答被开销压顶)
+    # 两次量,一次在 500K+YaRN 下、一次在 262144 native 下。差别在跑间噪声内
+    # (±1-2%),所以**降上下文对单流解码没有可辨别的影响**。
+    # 三轮:500K+YaRN(限频)/ 262144 native(限频)/ 262144 native(解锁,当前)
+    代码(700 tok): 46.5 / 47.2 / **48.0** tok/s
+    结构化 JSON(700 tok): 46.5 / 45.9 / **46.6** tok/s
+    散文(700 tok): 35.7 / 34.7 / **35.3** tok/s
+    # 解锁时钟的增益 +1.5~1.7%,与本仓库记的「decode 配对差 +0.9%,CI 含 0」一致
+    # —— 是测不出的量级,别当收益。
+    # ⚠️ 与别的栈的对照**不是同一套 harness 量的**,不要直接排名次。
+    #    参考量级:qwen38fn(同一个模型,TP=2 两台机器)记录是 62.1;
+    #    qwen38un(当前主力,S1)记录是 45.4;glm53 记录是 38.8。
+    #    真要比必须用同一套脚本重量一遍 —— 这件事**没做**。
+
+  prefill:
+    # 每条 prompt 内容都不同(随机词流),所以前缀缓存**永远打不中**;
+    # max_tokens=1,所以耗时≈prefill;第 1 条热身丢掉,后 3 条取中位。
+    "~13.0K prompt": 2,297(限频)-> **2,385**(解锁)tok/s   # 上游 8k: 2,400-2,900
+    "~51.7K prompt": 2,810(限频)-> **3,050**(解锁)tok/s   # 上游 32k: 2,500-3,000
+    结论: 解锁后 51.7K 这一点 **高于上游 32K 区间的上沿**,而且我们的 prompt 长 60%。
+          13.0K 贴着上游 8K 区间下沿。**相符或更好。**
+          时钟上限 2026-09-20 已按要求在两台上解除(uninstall,不是 reset)。
+          prefill 的解锁增益 +3.8% / +8.5%,比 decode 大得多。
+
+  前缀缓存(上游 smoke-test.sh 量的):
+    同一个 prompt 第二次: 7.20 s -> 1.20 s(hits 0 -> 8000)
+    确定性: 两次首 token logprobs 完全一致(QSADET 生效,见下)
+
+  # ⚠️ 已更正的一个错误结论(2026-09-20 当天):
+  #    最初引用 smoke-test.sh 的 "10,665 tok / 7.20 s = 1,482 tok/s",并把它
+  #    与上游的 2,400-2,900 对比,记成「差一半,原因不明」。那是**冷的、而且是
+  #    该 prompt 形状的第一次** —— docs/benchmarking-cn.md 早就写过这个坑
+  #    (「第一次约慢 43%」),我照样踩了。1,482 × 1.43 ≈ 2,120,和重测的 2,297 吻合。
+  #    教训:**上游发布的性能表默认是热的,拿冷数字去比是在比两件不同的事。**
+  #    附带查证:确定性内核确实生效(引擎日志 `QSADET active: /opt/llm/kernel-det/_C_det.so`)。
+  #    曾怀疑它没加载,因为上游 Dockerfile 记着「8k: 1,476 -> 2,488」而 1,476 与
+  #    1,482 几乎相同 —— 那是巧合。直接 ctypes.CDLL 该 .so 会报 libc10.so 找不到,
+  #    那是**探针**没预加载 torch,不是内核坏了。
+
+  主机内存(服务中稳态):
+    available: 13 GiB / 10.7%(500K+YaRN) -> 15 GiB / **12.9%**(262144 native)
+    # ⚠️ 这只比 memwatch 的 warn=8% 高 2.7 个点,crit=5%。
+    #    而本仓库在 qwen38un 上刚学过一条:**启动时的余量不等于稳态余量**
+    #    (那边 0.85 时 9.4% 两小时后掉到 5.0%,看门狗动手停了栈)。
+    #    本栈的稳态还只观察了几十分钟 —— 结论是「暂时够」,不是「稳」。
+    #    另外 PLE 表走 mmap,它**要**页缓存,所以低余量有一部分是设计使然。
+
+  多模态: 能看图。128×128 四象限 PNG,颜色和顺序全对(紫/白/黑/橙 4/4),
+          带图比不带图多 66 个 prompt token。
+          # 本镜像的 usage.prompt_tokens_details 是 null,所以 qwen38un 那套
+          # image_tokens>0 的判据用不了,改用 prompt_tokens 差值,见 test.sh。
+          # ⚠️ 不带图时模型**自信地编**出 "Red Blue Green Yellow" —— 这就是
+          #    为什么判据不能是「答案看起来对」。
+
+# ===========================================================================
+# 五、思考语义:本仓库第六套(全部实测,不是抄的)
+# ===========================================================================
+思考语义:
+  CoT 字段: reasoning
+    # ⚠️ **不是** reasoning_content —— 后者实测恒为 None。
+    #    而 qwen38fn(同一个模型,官方镜像)的 stack.env 记的是 reasoning_content。
+    #    差别来自引擎构建/parser 版本,不是模型。这一格抄过去就是错的,
+    #    而且错得没有任何报错(gotcha #9)。
+    #    ⏳ qwen38fn 那栈的 reasoning_content 我们**没有复验**(它当前停着)。
+  关思考: chat_template_kwargs.enable_thinking = false —— **真的关得掉**
+    证据: 同一道题 102 → 3 个输出 token,reasoning 从 299 字变 None
+    代价: 答案从对的 22 变成错的 13(那道题必须思考)
+  被静默忽略的写法:
+    - `thinking: false`(v4flash 的写法)→ HTTP 200,CoT 一字未减(194 字,与基线相同)
+  第二个旋钮: reasoning_effort
+    模板档位: low / medium / xhigh(不传即 xhigh)
+    顶层 reasoning_effort 也收,因为 serve.sh 的 EFFORT_ALIAS=1 另存了一份
+    改写过 effort 解析行的模板并挂进容器,把 high/max→xhigh、minimal→low。
+    ⚠️ 没有它,codex / Claude Code 发的 "high" **每一个请求都 400**,
+       而那只是启动期一行 warning。test.sh 第 3 项专门守这一条。
+    实测各档 CoT 长度(一道简单题,差别不大):low/minimal 168 字、medium 167、
+    xhigh/high/max/不传 194 字。
+  身份闸门: 本栈是 vLLM,错的 model 名会 **404**(gotcha #10 说的「什么名字都收」
+            是 SGLang 的毛病,不适用于这里)。
+
+# ===========================================================================
+# 六、还没做的事(别把这一节读成「不重要」)
+# ===========================================================================
+未验证:
+  - 质量:aider-polyglot 一次都没跑过。本仓库的质量债现在是**四个栈深**
+    (qwen38fn / glm53 / qwen38un / fndgx 都没测过,唯一的基线是 V4-Flash 的 82.4%)。
+  - SEQS 没调过:并发聚合在 c8 封顶 113 tok/s,而**封顶的是 SEQS=8 这个配置,
+    不是机器,也不是频率**(解除时钟上限只把峰值推动 +1.2%,却把 c4 每流推了 +9.5%)(上游 README 把「低 max-num-seqs 与饱和无法区分」写成明确警告,
+    其引用的 @jschmied 实测聚合一路涨到 c48=266.8)。KV 池 496,770 tokens,
+    32 路短请求只占约 32K,池子绰绰有余。提 SEQS 大概率还能涨一大截,
+    但会放大并发 prefill 饿住解码的问题(对策 --long-prefill-token-threshold 1024),
+    且要重测。**待办。**
+  - 与 qwen38fn 的同 harness 并发对照:没做。本仓库给它记的是 ~304 tok/s @ c8,
+    我们 112.4 —— 两台变一台只解释 2 倍,剩下 0.7 倍没解释,而两个数**不是同一套
+    harness 量的**,不能当排名。
+  - 并发 c4 每流实测 23.0,**高于上游给 RadixArk 的 21.6(+6.5%)**。
+  - 长上下文:CTX=500000 是配的值,不是跑到过的值。上游用 needle 测到 413k;
+    我们最长只喂过 10.6k。
+  - 稳态内存:见上,只观察了几十分钟。
+  - MTP=3(profiles/speed)、hybrid-mtp、fp8 KV 的 1M 上下文:都没试过。
+  - 与 qwen38fn 的同 harness 对照:没做,所以「46.5 vs 62.1」只能当量级看。
+
+已知的运维性质:
+  - 容器带 `--restart unless-stopped`(上游 serve.sh 给的),所以**主机重启后它会自己回来**。
+    本仓库别的 docker 栈没有这个性质。k3s 的四个 deployment 都是 0 副本,
+    所以重启后不会有人跟它抢 —— 但这一条值得记住。
+  - `make stop STACK=fndgx` 走 `./flash rm`(docker rm -f),`unless-stopped` 随之失效。

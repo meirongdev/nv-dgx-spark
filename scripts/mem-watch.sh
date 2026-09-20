@@ -19,17 +19,17 @@
 #   (make memwatch-reset)才会解除 —— 引擎只会在你 `make run STACK=v4flash` 时回来,
 #   避免"scale 0 → 内存松动 → 又拉起 → 又掉"的抖动。
 #
-# 位置:跑在这台操作机(有 kubectl + SSH)。局限:操作机要在线;
-#       节点本身不自保(见文档 §4 展望,节点内自保需另配 kubectl 到 S2)。
+# 位置:跑在这台操作机(有 SSH 到两台节点)。局限:操作机要在线;
+#       节点本身不自保(见文档 §4 展望)。
 #
 # 用法:
 #   scripts/mem-watch.sh --once      # 单次打印各节点 available%(只读,验证用)
 #   scripts/mem-watch.sh --reset     # 清除已触发状态(解除保持)
 #   scripts/mem-watch.sh             # 常驻循环(建议放 tmux,ctrl-c 退出)
 # 环境变量可覆盖:WATCH_NODES / INTERVAL / WARN_PCT / CRIT_PCT / CRIT_CONSEC /
-#   WATCH_SSH_USER / WATCH_SSH_KEY / KUBECONFIG / NOTIFY=1(macOS 桌面通知)
-#   WATCH_STACK / WATCH_NS / WATCH_DEPLOYS —— **换主力栈时必须一起改**,
-#   否则看门狗会 scale 一组不存在的 deploy(启动自检已会挡住这种情况)。
+#   WATCH_SSH_USER / WATCH_SSH_KEY / NOTIFY=1(macOS 桌面通知)
+#   WATCH_STACK / WATCH_DOCKER_* —— **换主力栈时必须一起改**,否则看门狗会对着
+#   一个不存在的容器/停机脚本使劲(启动自检已会挡住这种情况)。
 #   正常路径是只改 Makefile 顶部的 MEMWATCH_STACK,由 make memwatch* 注入。
 # ============================================================
 set -u
@@ -38,9 +38,9 @@ set -u
 # ============================================================
 # 身份从**注册表**推导,不再是这里的一组默认值
 # ============================================================
-# 旧版在这里写死 WATCH_NS / WATCH_DEPLOYS / WATCH_DOCKER_* 的默认值,Makefile 那边
-# 还有一段 ifeq 阶梯逐栈拼环境变量。换栈时漏改的后果是这道防线**静默失效**:
-# 巡检照跑、日志照记,真要动手时 scale 一组不存在的对象。
+# 旧版在这里写死 WATCH_DOCKER_* 等默认值,Makefile 那边还有一段 ifeq 阶梯逐栈拼
+# 环境变量。换栈时漏改的后果是这道防线**静默失效**:巡检照跑、日志照记,真要
+# 动手时对着一组不存在的对象使劲。
 # 现在只读 stacks/<id>/stack.env(不给 id 就是 stacks/PRIMARY)。
 #
 #   scripts/mem-watch.sh                 # 守当前主力栈
@@ -68,13 +68,12 @@ INTERVAL="${WATCH_INTERVAL:-10}"            # 两次轮询间隔(秒)
 WARN_PCT="${WATCH_WARN_PCT:-8}"
 CRIT_PCT="${WATCH_CRIT_PCT:-5}"
 CRIT_CONSEC="${WATCH_CRIT_CONSEC:-2}"       # 连续多少次低于临界才动作
-KUBECONFIG="${KUBECONFIG:-$HOME/.kube/dgx-spark.yaml}"
-
 STACK="${WATCH_STACK:-${STACK_ID:-unknown}}"
-MODE="${WATCH_MODE:-${STACK_RUNTIME:-k8s}}"              # k8s | docker
-[ "$MODE" = k3s ] && MODE=k8s                            # 注册表说 k3s,本脚本一直叫 k8s
-NS="${WATCH_NS:-${STACK_NS:-$STACK}}"
-DEPLOYS="${WATCH_DEPLOYS:-${STACK_DEPLOYS:-}}"           # ⚠️ 两个 rank 必须一起
+# 2026-09-20:k3s 运行时整体下线(两台机器上的集群已卸载),本脚本只剩 docker 一种
+# 形态。默认值也一并从 k8s 改成 docker —— 旧默认在注册表读不到 STACK_RUNTIME 时
+# 会把看门狗推进一条 kubectl 路径,那条路径如今**永远探不到东西**,而巡检和日志
+# 照跑:正是本脚本开头那一段警告的静默失效形态。
+MODE="${WATCH_MODE:-${STACK_RUNTIME:-docker}}"           # docker(唯一形态)
 STATE="${WATCH_STATE:-/tmp/.${STACK}-memwatch-fired}"
 LOGFILE="${WATCH_LOG:-${TMPDIR:-/tmp}/${STACK}-memwatch.log}"
 NOTIFY="${WATCH_NOTIFY:-0}"
@@ -138,31 +137,19 @@ node_avail_pct(){
 
 # --- 检查 vLLM 当前有没有在跑(replicas 求和),返回>0 表示在跑 ---
 engine_running(){
-  if [ "$MODE" = docker ]; then
-    # 探不到(ssh 挂了)时回 0 = 本轮不巡检,与 k8s 分支探不到时同样 fail-open。
-    ssh_head "docker ps --filter name=$DOCKER_CONTAINERS --format '{{.Names}}' 2>/dev/null | wc -l" \
-      2>/dev/null | tr -d '[:space:]' | awk '{print $1+0}'
-    return
-  fi
-  kubectl --kubeconfig "$KUBECONFIG" -n "$NS" get deploy \
-      -o jsonpath='{.items[*].spec.replicas}' 2>/dev/null \
-    | tr ' ' '\n' | awk '{s+=$1} END{print s+0}'
+  # 探不到(ssh 挂了)时回 0 = 本轮不巡检(fail-open,遵循仓库探针哲学)。
+  ssh_head "docker ps --filter name=$DOCKER_CONTAINERS --format '{{.Names}}' 2>/dev/null | wc -l" \
+    2>/dev/null | tr -d '[:space:]' | awk '{print $1+0}'
 }
 
 # --- 触发自救:两个 rank 一起停掉 ---
 scale_down(){
   local who="$1" pct="$2"
   log "CRITICAL: $who available=${pct}% < ${CRIT_PCT}% sustained — stopping $STACK"
-  if [ "$MODE" = docker ]; then
-    # ./start.sh stop 成对停 head+worker(stop_containers),不留 zombie TP 组。
-    ssh_head "cd '$DOCKER_DIR' && $DOCKER_STOP" \
-      && { log "'$DOCKER_STOP' done — engine down."; } \
-      || err "'$DOCKER_STOP' 失败 —— 手动介入: make $STACK-stop"
-  else
-    # shellcheck disable=SC2086  # DEPLOYS 是有意分词的 deploy 名列表
-    kubectl --kubeconfig "$KUBECONFIG" -n "$NS" scale deploy $DEPLOYS --replicas=0 \
-      && { log "scaled both ranks to 0 (no zombie TP group). engine down."; }
-  fi
+  # 停机动作成对停 head+worker(多节点栈),不留 zombie TP 组。
+  ssh_head "cd '$DOCKER_DIR' && $DOCKER_STOP" \
+    && { log "'$DOCKER_STOP' done — engine down."; } \
+    || err "'$DOCKER_STOP' 失败 —— 手动介入: make stop STACK=$STACK"
   printf 'fired=%s at=%s node=%s avail_pct=%s\n' "$who" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$who" "$pct" > "$STATE"
   log "state written: $STATE  (reset with: make memwatch-reset)"
   notify "dgx mem-watch fired: $who avail=${pct}% — $STACK stopped"
@@ -220,8 +207,8 @@ case "${1:-loop}" in
   --config)
     # 打印从注册表推导出来的身份(不出网)。用途:排查"看门狗到底在守谁",
     # 以及让 test-mem-watch.sh 能在不碰集群的情况下钉住这套映射。
-    printf 'STACK=%s\nMODE=%s\nNODES=%s\nNS=%s\nDEPLOYS=%s\nDOCKER_HOST=%s\nDOCKER_DIR=%s\nDOCKER_CONTAINERS=%s\nDOCKER_STOP=%s\nSTATE=%s\n' \
-      "$STACK" "$MODE" "$WATCH_NODES" "$NS" "$DEPLOYS" \
+    printf 'STACK=%s\nMODE=%s\nNODES=%s\nDOCKER_HOST=%s\nDOCKER_DIR=%s\nDOCKER_CONTAINERS=%s\nDOCKER_STOP=%s\nSTATE=%s\n' \
+      "$STACK" "$MODE" "$WATCH_NODES" \
       "$DOCKER_HOST_IP" "$DOCKER_DIR" "$DOCKER_CONTAINERS" "$DOCKER_STOP" "$STATE"
     exit 0
     ;;
@@ -232,38 +219,46 @@ case "${1:-loop}" in
   *) err "unknown arg: $1"; exit 2 ;;
 esac
 
-if [ "$MODE" = docker ]; then
-  log "=== mem-watch starting: mode=docker stack=$STACK head=$DOCKER_HOST_IP dir=$DOCKER_DIR containers=[$DOCKER_CONTAINERS] nodes=[$WATCH_NODES] interval=${INTERVAL}s warn=${WARN_PCT}% crit=${CRIT_PCT}% x${CRIT_CONSEC} ==="
-else
-  log "=== mem-watch starting: mode=k8s stack=$STACK ns=$NS deploys=[$DEPLOYS] nodes=[$WATCH_NODES] interval=${INTERVAL}s warn=${WARN_PCT}% crit=${CRIT_PCT}% x${CRIT_CONSEC} ==="
+# 形态只剩 docker。不认识的形态**必须当场拒启**,不能退回某条分支糊弄过去 ——
+# 那样就又回到了"巡检照跑、动手时空转"。
+if [ "$MODE" != docker ]; then
+  err "STACK_RUNTIME='$MODE' 没有对应的看门狗形态(k3s 已于 2026-09-20 整体下线)。"
+  err "本脚本只能守 docker 栈;请修 stacks/$STACK/stack.env 的 STACK_RUNTIME。"
+  exit 3
 fi
+log "=== mem-watch starting: mode=docker stack=$STACK head=$DOCKER_HOST_IP dir=$DOCKER_DIR containers=[$DOCKER_CONTAINERS] nodes=[$WATCH_NODES] interval=${INTERVAL}s warn=${WARN_PCT}% crit=${CRIT_PCT}% x${CRIT_CONSEC} ==="
 
 # ⚠️ 最重要的一条自检:确认**真要动手时动得了**。指错栈/指错形态的后果是
 # 看门狗照常巡检、照常记日志,却在真要动手时对着一组不存在的对象使劲 —— 一道
 # 静默失效的防线比没有防线更危险。宁可现在就不启动。
-if [ "$MODE" = docker ]; then
-  # docker 模式:ssh 必须通,且 start.sh 必须在、可执行。两者缺一,动手时就是空转。
-  ssh_head true 2>/dev/null || {
-    err "ssh 不通:$SSH_USER_W@$DOCKER_HOST_IP(key=$SSH_KEY_W) —— 看门狗动不了手。"
-    exit 3
-  }
-  ssh_head "cd '$DOCKER_DIR' && test -x ${DOCKER_STOP%% *}" 2>/dev/null || {
-    err "'$DOCKER_DIR/${DOCKER_STOP%% *}' 不存在或不可执行 —— 看门狗会保护不到任何东西。"
-    err "确认 WATCH_DOCKER_DIR 指向上游 repo(或改 Makefile 顶部的 MEMWATCH_STACK)。"
-    exit 3
-  }
-else
-  for d in $DEPLOYS; do
-    kubectl --kubeconfig "$KUBECONFIG" -n "$NS" get deploy "$d" >/dev/null 2>&1 || {
-      err "deploy '$d' 不存在于 namespace '$NS' —— 看门狗会保护不到任何东西。"
-      err "切换主力栈后请同步 Makefile 顶部的 MEMWATCH_STACK(或设 WATCH_STACK/WATCH_NS/WATCH_DEPLOYS)。"
+# ssh 必须通,且停机动作必须在、可执行。两者缺一,动手时就是空转。
+ssh_head true 2>/dev/null || {
+  err "ssh 不通:$SSH_USER_W@$DOCKER_HOST_IP(key=$SSH_KEY_W) —— 看门狗动不了手。"
+  exit 3
+}
+# 停机动作有两种合法形态,各自要做**真**检查 —— 只认其中一种的话,另一种栈
+# 会在这里被判死而根本不启动。2026-09-20 实测:qwen38 的停机动作是裸命令
+# `docker rm -f qwen38-27b`,旧逻辑把它当路径拼成 `/home/admin/docker`,于是
+# 那个栈**从来没有过可用的看门狗** —— 而 make memwatch-test 一直报它 PASS,
+# 因为那边只验了字段非空,没验形态。
+_stop_head="${DOCKER_STOP%% *}"
+case "$_stop_head" in
+  ./*|/*)   # STACK_DIR 下的脚本(qwen38un 的 ./stop.sh、fndgx 的 ./flash rm)
+    ssh_head "cd '$DOCKER_DIR' && test -x $_stop_head" 2>/dev/null || {
+      err "'$DOCKER_DIR/$_stop_head' 不存在或不可执行 —— 看门狗会保护不到任何东西。"
+      err "确认 STACK_DIR 指向上游 repo(stacks/$STACK/stack.env)。"
       exit 3
-    }
-  done
-fi
+    } ;;
+  *)        # 裸命令(qwen38 的 docker rm -f <容器>):二进制必须在 PATH 上
+    ssh_head "command -v $_stop_head >/dev/null 2>&1" 2>/dev/null || {
+      err "'$_stop_head' 在 $DOCKER_HOST_IP 上不是可执行命令 —— 看门狗会保护不到任何东西。"
+      err "停机动作要么是 STACK_DIR 下的脚本(./stop.sh),要么是 PATH 上的命令。"
+      exit 3
+    } ;;
+esac
 
 [ -f "$STATE" ] && log "note: state present (previously armed) — will hold; reset with: make memwatch-reset"
-if [ "$(engine_running)" -eq 0 ]; then log "note: $STACK currently scaled to 0; nothing to guard until you start it"; fi
+if [ "$(engine_running)" -eq 0 ]; then log "note: $STACK 当前没在跑;起来之前没有东西要守"; fi
 
 while :; do
   if [ "$(engine_running)" -gt 0 ]; then

@@ -74,7 +74,7 @@ make clock-cap-uninstall  # 彻底移除单元并解锁
 | `make clock-cap-verify`(带负载) | S1 mean **2177** / S2 mean **2185**(n≈20)→ 生效 |
 | `make clock-cap-install` | 两台单元 installed+enabled+active,`ExecMainStatus=0` |
 | **重启路径验证** | 手动 `-rgc` 解锁 → `systemctl restart gb10-clock-cap` → 再次带负载验证,锁自动回到 2177/2185 ✅ |
-| 引擎影响 | v4flash-leader/worker 全程 `1/1 Running`、0 重启(全部操作不需要重启引擎) |
+| 引擎影响 | 当时的 v4flash leader/worker 全程 `1/1 Running`、0 重启(全部操作不需要重启引擎) |
 
 ### ⚠️ 三个必须知道的点
 

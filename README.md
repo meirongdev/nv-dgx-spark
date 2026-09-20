@@ -18,10 +18,9 @@ from it by `make stack-table` — don't hand-edit it.
 | 栈 | 节点 | 端点 | 引擎 / 运行时 | 状态 |
 |---|---|---|---|---|
 | **Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2**<br>`STACK=qwen38un` | 1 | `:8888` `qwen3.8-27b-sglang` | sglang / docker | **primary (2026-09-19 起)** |
-| GLM-5.3-Flash EXL3 4bpw<br>`STACK=glm53` | 2 | `:8888` `GLM-5.3-Flash-EXL3` | vllm-exl3 / docker | rollback #2 —— 850K ctx |
+| Qwen3.8-Flash-Next NVFP4 单机 (PLE mmap + hybrid)<br>`STACK=fndgx` | 1 | `:18300` `qwen3.8-flash-next` | vllm-ple-mmap / docker | S2 常驻 —— 与主力栈并跑 |
+| GLM-5.3-Flash EXL3 4bpw<br>`STACK=glm53` | 2 | `:8888` `GLM-5.3-Flash-EXL3` | vllm-exl3 / docker | 唯一 rollback —— 850K ctx |
 | Qwen3.8-27B-NVFP4 (censored, no speculator)<br>`STACK=qwen38` | 1 | `:8888` `qwen38-27b` | vllm / docker | retired-ish —— 24.9 tok/s |
-| Qwen3.8-Flash-Next NVFP4 (MTP k=3)<br>`STACK=qwen38fn` | 2 | `:8000` `qwen38-flash-next` | vllm / k3s | rollback #1 —— 单流代码最快 62.1 |
-| DeepSeek-V4-Flash-0731 (DSpark n=5)<br>`STACK=v4flash` | 2 | `:8000` `deepseek-v4-flash` | vllm / k3s | rollback #3 |
 <!-- END generated:stacks -->
 
 > ⚠️ **No two of these can run at the same time** — they want the same GPU
@@ -54,11 +53,11 @@ make stacks                    # the registry: who's primary, ports, served name
 make info                      # current primary in detail
 
 make run                       # preflight (mutual exclusion) + start the primary
-make status                    # containers/pods + /v1/models + free -h
+make status                    # containers + /v1/models + free -h
 make test                      # smoke test, gated on the served name matching
-make logs   STACK=qwen38fn WORKER=1
+make logs   STACK=glm53 WORKER=1   # rank1 — glm53 is the only multi-node stack left
 
-make switch TO=v4flash         # change the primary stack, with acceptance checks
+make switch TO=glm53           # change the primary stack, with acceptance checks
 make stack-check               # registry self-consistent + doc tables current
 
 # use it
@@ -94,10 +93,9 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 |---|---|
 | **[`stacks/README.md`](stacks/README.md)** | **The contract: what adding a model requires (one `stack.env`, no edits elsewhere)** |
 | `stacks/<id>/recipe.yaml` | Why this stack's parameters are what they are, with the measurements. Every stack has one |
-| [`stacks/v4flash/runbook-cn.md`](stacks/v4flash/runbook-cn.md) | V4-Flash: engine build/prep, one-time setup |
-| [`stacks/v4flash/dspark-upgrade-cn.md`](stacks/v4flash/dspark-upgrade-cn.md) | DSpark speculative decoding: version landscape, tuning, gotchas |
 | [`stacks/qwen38/runbook-cn.md`](stacks/qwen38/runbook-cn.md) | Single-node fallback: deploy from scratch, the traps |
-| ⚠️ *(gap)* | `qwen38fn` / `glm53` / `qwen38un` have no runbook — only `recipe.yaml` comments |
+| [`stacks/fndgx/runbook-cn.md`](stacks/fndgx/runbook-cn.md) | Flash-Next single-node on S2: from-zero procedure |
+| ⚠️ *(gap)* | `glm53` / `qwen38un` have no runbook — only `recipe.yaml` comments |
 
 ### Runbooks — shared across stacks
 
@@ -108,7 +106,6 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 | [`docs/host-maintenance-cn.md`](docs/host-maintenance-cn.md) | Host OS: apt / NVIDIA driver / kernel / DKMS — **read before any `apt upgrade`** |
 | [`docs/gb10-tuning-cn.md`](docs/gb10-tuning-cn.md) | GB10 host-level tuning: the GPU clock cap A/B (adopted), the knobs that don't exist, and what not to touch |
 | [`docs/china-network-mirrors-cn.md`](docs/china-network-mirrors-cn.md) | daocloud / ModelScope / Tsinghua mirrors from mainland China |
-| [`k8s/README.md`](k8s/README.md) | Cluster-level: Cilium, GPU plugin, versions, ops |
 
 ### Reference — read before you need it
 
@@ -123,7 +120,7 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 
 | Doc | Decision |
 |---|---|
-| [`docs/k3s-migration-design-cn.md`](docs/k3s-migration-design-cn.md) | Why k3s + Cilium, and the migration record. ⚠️ §6 (ClusterMesh) is **superseded — rejected 2026-08-13** |
+| [`docs/k3s-migration-design-cn.md`](docs/k3s-migration-design-cn.md) | Why k3s + Cilium, and the migration record. ⚠️ **History only — the cluster was uninstalled 2026-09-20**; §6 (ClusterMesh) was already **rejected 2026-08-13** |
 | [`benchmarks/bench-full-2026-08-05/README.md`](benchmarks/bench-full-2026-08-05/README.md) | Performance baseline, and why the forum "NVFP4 KV" recipe was **rejected** |
 
 ## Repository layout
@@ -133,9 +130,8 @@ Makefile              generic verbs (run/stop/status/logs/test/switch); knows no
 CLAUDE.md             operational index (AGENTS.md, QWEN.md → symlinks)
 stacks/               THE REGISTRY — one directory per model
   PRIMARY               one line: which stack is primary
-  _lib/                 stackctl + runtime adapters + whole-registry preflight
+  _lib/                 stackctl + the docker adapter + whole-registry preflight
   <id>/                 stack.env (identity) + recipe.yaml (why) + optional hooks
-k8s/                  cluster-level only: Cilium values, GPU plugin, registries
 scripts/              cross-stack tools — none hardcodes a stack identity
 playbooks/            Ansible: the two metrics exporters
 docs/                 only what is SHARED across stacks (per-stack docs live in stacks/<id>/)

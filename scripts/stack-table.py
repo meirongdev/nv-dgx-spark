@@ -54,10 +54,19 @@ def validate(rs, prim):
         for f in ("STACK_NAME", "STACK_RUNTIME", "STACK_MODEL", "STACK_PORT", "STACK_HEAD"):
             if not s.get(f):
                 errs.append(f"{sid}: 缺必填字段 {f}")
-        if s.get("STACK_RUNTIME") == "k3s" and len(s.get("STACK_DEPLOYS", "").split()) != 2:
-            errs.append(f"{sid}: k3s 栈的 STACK_DEPLOYS 必须是成对的两个 rank(gotcha #1)")
         if s.get("STACK_RUNTIME") == "docker" and not s.get("STACK_STOP_CMD"):
             errs.append(f"{sid}: docker 栈必须有 STACK_STOP_CMD,否则看门狗停不掉它")
+        # 互斥按节点相交判(stacks/_lib/common.sh 的 stack_gpu_nodes)。缺这一行
+        # 会退回 STACK_HEAD,对 TP=2 栈就是**漏掉 rank1 所在的那台机器** ——
+        # 于是两个栈在同一块 GPU 上相遇,而 preflight 一声不吭(gotcha #2)。
+        if s.get("STACK_RUNTIME") != "external":
+            gpu_nodes = s.get("STACK_GPU_NODES", "").split()
+            if not gpu_nodes:
+                errs.append(f"{sid}: 缺 STACK_GPU_NODES —— 互斥判不出它占哪些节点的 GPU")
+            elif s.get("STACK_NODES") and len(gpu_nodes) != int(s["STACK_NODES"]):
+                errs.append(f"{sid}: STACK_GPU_NODES 有 {len(gpu_nodes)} 个节点,"
+                            f"但 STACK_NODES={s['STACK_NODES']} —— TP=2 栈漏写 rank1 那台"
+                            f"正是 gotcha #2 会 OOM 掉一台没有 BMC 的机器的那一格")
     # served name 必须全局唯一 —— 它是栈的身份,重名等于身份不可判定
     for field, label in (("STACK_MODEL", "served-model-name"),
                          ("STACK_CLIENT_ALIAS", "客户端别名")):

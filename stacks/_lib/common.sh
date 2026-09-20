@@ -84,6 +84,33 @@ load_stack(){
   export STACK_SELF_DIR="$STACK_DIR_LOCAL"
 }
 
+# --- GPU 占用足迹 ------------------------------------------------------------
+# 互斥(gotcha #2)判的是「两个栈会不会抢同一块 GPU 的内存」,而 GPU 是**按节点**
+# 分的。在此之前互斥是全表的:任何一个栈在跑都拦住所有别的栈。这在两台机器都被
+# TP=2 栈占满的年代是对的,2026-09-19 主力栈变成单节点之后就过宽了 —— S2 整台空着,
+# 却没有任何栈能在上面起来。
+#
+# ⚠️ 判据是**节点集合相交**,不是 STACK_HEAD 相等:TP=2 栈的 rank1 也吃 GPU 内存,
+#    只看 head 会把「S2 上的栈」和「rank1 在 S2 的栈」判成互不相干 —— 那正是
+#    gotcha #2 会 OOM 掉一台没有 BMC 的机器的那一格。
+#
+# 显式的 STACK_GPU_NODES 优先。没写就按既有字段推导,最后落到 STACK_HEAD;
+# 但**新栈请显式写**,`make stack-check` 会因为缺它而失败。
+stack_gpu_nodes(){
+  local id="$1" f v
+  for f in STACK_GPU_NODES STACK_MEMWATCH_NODES STACK_NODES_IPS STACK_HEAD; do
+    v=$(stack_field "$id" "$f")
+    [ -n "$v" ] && { echo "$v"; return; }
+  done
+}
+
+# 两个节点集合有交集则 rc=0。
+nodes_overlap(){
+  local a b x y
+  for x in $1; do for y in $2; do [ "$x" = "$y" ] && return 0; done; done
+  return 1
+}
+
 # 只取一个字段,不污染调用者的环境。枚举全表时用。
 stack_field(){
   local id="$1" var="$2"
@@ -98,5 +125,3 @@ sshx(){
   ssh -i "$STACK_SSH_KEY" -o StrictHostKeyChecking=no -o BatchMode=yes \
       -o ConnectTimeout=15 "$STACK_SSH_USER@$host" "$@"
 }
-
-K8S="${K8S:-kubectl --kubeconfig $HOME/.kube/dgx-spark.yaml}"

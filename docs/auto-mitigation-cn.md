@@ -1,5 +1,19 @@
 # 防宕机自动化：软件减载与告警（实现规格）
 
+> ⚠️ **2026-09-20 更新：k3s 与 Cilium 已从两台机器上彻底卸载,`docker` 是唯一运行时。**
+> 本文写于 k8s 时代,凡出现 `kubectl scale` / deploy / namespace 之处都是历史文本。
+> 现在的实际形态:
+> - 看门狗的动作 = SSH 到 head 执行该栈的 `STACK_MEMWATCH_STOP`(见 `stack.env`),
+>   不再是 `kubectl scale`。`scripts/mem-watch.sh` 的 k8s 分支已删除,遇到非 docker
+>   的 `STACK_RUNTIME` 直接 `exit 3`——宁可不启动,也不要一条静默失效的防线。
+> - state / 日志文件**按栈分开**(`/tmp/.<stack>-memwatch-fired`、
+>   `${TMPDIR:-/tmp}/<stack>-memwatch.log`),因为现在**同时跑着两个实例**:
+>   `make memwatch`(主力栈)和 `make memwatch STACK=fndgx`,各在各的 tmux 里。
+> - §2.3 否决 k8s cgroup 上限的那份实测**依然有效**,而且现在是纯历史:结论是
+>   「统一内存绕过容器 cgroup」,与编排器无关,所以将来若再上 k8s 也不要重试它。
+> - §2.6 展望里「在 S2 放一份本地 kubectl 做节点自保」的路子已不适用;节点自保若
+>   要做,得是节点上一个读 `free` 并直接 `docker stop` 的本地守护。
+>
 > **状态：2026-08-15 实现完成。**
 >
 > 两份改动：
@@ -102,24 +116,27 @@ GB10 的 128 GB LPDDR5X 是 **CPU 与 GPU 共享的相干统一内存**。V4-Fla
 
 - 轮询两台节点（S1 `100.97.87.120`、S2 `100.67.164.92`，tailnet SSH `admin`@`~/.ssh/vgio`）；
 - 探不到节点 = **不算数**（fail-open，沿用仓库探针哲学：数据缺失必须放行，不误杀）；
-- 触发后写 state 文件 `/tmp/.v4flash-memwatch-fired` 并**保持**——
-  **不自动恢复**，引擎只在你 `make run STACK=v4flash` 时回来，避免「scale 0 → 内存松 →
-  自拉起 → 又掉」抖动（与「两栈手工控制、qwen38 不设 --restart」的仓库哲学一致）；
-- 动作是 `kubectl scale deploy v4flash-worker v4flash-leader --replicas=0`——
-  **两个 rank 一起**，不产生 zombie TP 组（gotcha #1）。
+- 触发后写 state 文件 `/tmp/.<stack>-memwatch-fired` 并**保持**——
+  **不自动恢复**，引擎只在你 `make run STACK=<id>` 时回来，避免「停掉 → 内存松 →
+  自拉起 → 又掉」抖动；
+- 动作是该栈的 `STACK_MEMWATCH_STOP`(SSH 到 head 上执行)——多节点栈必须
+  **两个 rank 一起**停，不产生 zombie TP 组（gotcha #1）。
+  ⚠️ 2026-09-20 前这里写的是 `kubectl scale deploy v4flash-worker v4flash-leader
+  --replicas=0`;k3s 下线后该路径已从脚本里删除。
 
 ### 2.6 使用与验证
 
 ```bash
-make memwatch-check     # 只读:两节点 available%(实测 S1/S2 均 ~11%)
-make memwatch           # 常驻守护(建议 tmux;观察 /tmp/v4flash-memwatch.log)
-tail -f ${TMPDIR:-/tmp}/v4flash-memwatch.log
-make memwatch-reset     # 触发 scale 0 后,先复位再 make run STACK=v4flash 拉起
+make memwatch-check          # 只读:两节点 available%
+make memwatch                # 主力栈的常驻守护(建议 tmux)
+make memwatch STACK=fndgx    # ⚠️ 第二个栈要**自己的**实例,自己的 tmux 会话
+tail -f ${TMPDIR:-/tmp}/<stack>-memwatch.log
+make memwatch-reset          # 触发后先复位,再 make run STACK=<id> 拉起
 ```
 
 > **局限**：守护挂在操作机（Mac）上，操作机要在线才有效；节点自身不自保。
-> 若要节点自保，需在 S2（k3s server）放一份本地 kubectl + kubeconfig 的等价守护，
-> 见 §4 展望。已实测：`make memwatch-check` 两节点返回 11%，`WARN_PCT=8` 当前不误报；
+> 节点自保若要做，得是节点上一个读 `free -h` 并直接执行该栈停机命令的本地守护
+> （k3s 下线后，原先「在 S2 放一份本地 kubectl」的路子已不存在）。见 §4 展望。已实测：`make memwatch-check` 两节点返回 11%，`WARN_PCT=8` 当前不误报；
 > `make memwatch` 已在守护时两 rank 均在跑（replicas=2），逻辑就绪。
 
 ---
@@ -140,7 +157,7 @@ Prometheus/Alertmanager，`cluster="dgx-spark"` 标签区分。
 | **vLLM `/metrics`** | ❌ 未纳入 Prometheus | 新增一个 scrape job，target `100.97.87.120:8000`，`metric_path=/metrics`，labels `cluster=dgx-spark`（vLLM 默认与 API 同端口暴露；若本 build 走专用 metrics 端口则以实测为准） |
 
 vLLM 侧真正有用的三个指标：`vllm:kv_cache_usage_perc`、`vllm:num_requests_running`、
-`vllm:num_requests_waiting`。`make load STACK=v4flash` 现在只能手动查，纳入 Prometheus 后
+`vllm:num_requests_waiting`。`make load STACK=<id>` 现在只能手动查，纳入 Prometheus 后
 才有曲线和告警。
 
 ### 3.2 告警规则清单
@@ -150,7 +167,7 @@ vLLM 侧真正有用的三个指标：`vllm:kv_cache_usage_perc`、`vllm:num_req
 | # | 告警名 | 表达式（PromQL 要点） | 触发 | 严重度 | 防什么 |
 |---|---|---|---|---|---|
 | A1 | `DgxSparkMemPressure` | `node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100` | `< 12` 持续 5m | warning | 内存逼近红线（整机 OOM 前兆，S2 事件后最该盯的指标） |
-| A2 | `DgxSparkMemCritical` | 同上 | `< 5` 持续 2m | critical | 即将整机冻结，应及时人工 `v4flash-stop` |
+| A2 | `DgxSparkMemCritical` | 同上 | `< 5` 持续 2m | critical | 即将整机冻结，应及时人工 `make stop STACK=<id>` |
 | A3 | `DgxSparkKVCacheHigh` | `vllm:kv_cache_usage_perc` | `> 0.90` 持续 5m | warning | KV 打满 = 排队/吞吐骤降前兆 |
 | A4 | `DgxSparkRequestsQueued` | `vllm:num_requests_waiting` | `> 4` 持续 2m | warning | `max_num_seqs=6` 饱和，有人在排队挨饿（2026-08-02 事故类型） |
 | A5 | `DgxSparkNodeDown` | `up{job="node-exporter-dgx-spark"}` | `== 0` 持续 1m | critical | 节点掉线/断电瞬间告警（**S2 那次就是这类**，能第一时间触发恢复流程） |
@@ -188,7 +205,7 @@ vLLM 侧真正有用的三个指标：`vllm:kv_cache_usage_perc`、`vllm:num_req
 - **A1/A2 的 `MemAvailable` 已含页缓存**，比裸 `MemFree` 准确，直接用它。
 - 这些规则**只是告警不带执行器**。若要「逼近红线自动 scale 0」，执行器已由
   看门狗承担（§2，本仓库已实现）；homelab 若想接自动动作，可用 Alertmanager
-  webhook 触发 `make stop STACK=v4flash` —— 但注意别和 §2 看门狗重复/冲突。
+  webhook 触发 `make stop STACK=<id>` —— 但注意别和 §2 看门狗重复/冲突。
 
 ---
 
@@ -199,7 +216,7 @@ vLLM 侧真正有用的三个指标：`vllm:kv_cache_usage_perc`、`vllm:num_req
 | 宿主机看门狗 + 自动 scale 0（§2） | ✅ **已实现** | `scripts/mem-watch.sh` + `make memwatch*` |
 | ~~k8s cgroup 内存上限~~ | ❌ 已废弃 | 实测统一内存绕过 cgroup，兜不住（§2.3） |
 | Prometheus 告警（§3） | ✅ **已落地**（2026-08-15） | homelab prometheus-rules.yaml；A1–A3 已按实测否决/删除，见 §3.2 落地对账 |
-| 节点自保版看门狗（§2.6 展望） | 后续 | 在 S2（k3s server）放本地 kubectl 的等价守护，脱离操作机也能自保 |
+| 节点自保版看门狗（§2.6 展望） | 后续 | 在节点上放一个读 `free -h`、直接执行本栈停机命令的本地守护，脱离操作机也能自保（k3s 下线后不再是 kubectl 方案） |
 | 智能 PDU（电源侧） | 后续（硬件） | S2 那次真正适用的手段，见 fallback §1.1 |
 
 > **检查清单（落地判据）**：

@@ -37,7 +37,7 @@ DSpark 的解码速度 = `steps/s × 每步接受的 token 数`,而**接受率�
 ——同一个请求上 ~14 vs ~60,差 4 倍多。
 
 **正确做法**:用 `stream:false`,读 `usage.completion_tokens` 除以墙钟时间
-(`stacks/v4flash/test.sh` 就是这么做的);或者用服务端的
+(各栈的 `test.sh` 都是这么做的);或者用服务端的
 `vllm:generation_tokens_total` 除以墙钟时间。
 
 ### 2. 冷启动**和空闲**衰减约 30%

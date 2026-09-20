@@ -16,7 +16,7 @@ stacks/
 │   ├── stackctl.sh         make 的所有动词都走它
 │   ├── common.sh           注册表读取 + 字段校验
 │   ├── preflight.sh        遍历整个注册表做互斥 + 资产自检
-│   └── adapter-{k3s,docker}.sh   运行时适配器
+│   └── adapter-docker.sh    运行时适配器(k3s 适配器已于 2026-09-20 随集群删除)
 └── <id>/
     ├── stack.env           ← **唯一必填的文件**(机器可读的身份)
     ├── recipe.yaml           为什么是这些参数(人读的;强烈建议有)
@@ -24,7 +24,6 @@ stacks/
     ├── launch.sh             启动包装(docker 栈按需)
     ├── preflight.sh          本栈专属的额外闸门(按需)
     ├── Makefile.mk           本栈专属的 make 目标(按需)
-    ├── k8s/                  k3s 栈的 manifests(按需)
     └── runbook-cn.md         从零部署 + 踩过的坑(按需)
 ```
 
@@ -34,8 +33,8 @@ stacks/
 
 ### 1. 建目录,写 `stack.env`
 
-抄一份形态最接近的:单节点 docker 看 `qwen38un/`,跑上游编排器的看 `glm53/`,
-k3s TP=2 看 `qwen38fn/`。
+抄一份形态最接近的:单节点 docker 看 `qwen38un/`,跑上游编排器的看 `glm53/`
+(它同时也是唯一的双节点 TP=2 范例),包第三方编排器的看 `fndgx/`。
 
 必填六项(缺任何一项,所有工具都会**拒绝启动**而不是带着半个身份跑):
 
@@ -43,10 +42,26 @@ k3s TP=2 看 `qwen38fn/`。
 |---|---|
 | `STACK_ID` | 必须等于目录名 |
 | `STACK_NAME` | 人读的名字 |
-| `STACK_RUNTIME` | `k3s` / `docker` / `external`(本地模型,只供客户端切换) |
+| `STACK_RUNTIME` | `docker` / `external`(本地模型,只供客户端切换)。⚠️ `k3s` 已于 2026-09-20 下线,写它会被 `stackctl.sh` 当场拒绝 |
 | `STACK_MODEL` | **served-model-name —— 栈的真正身份**,全局唯一 |
-| `STACK_PORT` | 端点端口(可以和别的栈重号,它们互斥) |
+| `STACK_PORT` | 端点端口(可以和别的栈重号,**前提是它们互斥**,见下) |
 | `STACK_HEAD` | 暴露 OpenAI API 的那台 |
+
+再加一项,`make stack-check` 会因为缺它而失败(`external` 栈除外):
+
+| 字段 | 含义 |
+|---|---|
+| `STACK_GPU_NODES` | **本栈会吃哪些节点的 GPU 内存** —— 互斥的判据 |
+
+⚠️ 互斥是**节点集合相交**,不是「除我之外的所有栈」。2026-09-19 主力栈变成单节点
+之后,全表互斥就过宽了:整台 S2 空着,却没有任何栈能在上面起来。2026-09-20 改成
+按节点判,于是 S1 的 qwen38un 和 S2 的 fndgx 可以并跑。
+
+⚠️ **TP=2 栈必须把 rank1 那台也写进去。** 只写 `STACK_HEAD` 的话,`glm53`
+(head=S1)会被判成与「S2 上的单机栈」无关 —— 然后两者在 S2 上抢同一块 GPU,
+OOM 掉一台**没有 BMC** 的机器(gotcha #2)。`stack-check` 会核对
+`STACK_GPU_NODES` 的个数与 `STACK_NODES` 相符,`scripts/test-preflight.sh`
+里两条带 ★ 的用例守的也是这一格。
 
 ⚠️ **三个最危险的可选字段**,因为它们写错**不会报错**(gotcha #9):
 
@@ -58,9 +73,14 @@ k3s TP=2 看 `qwen38fn/`。
 
 其余字段按运行时分工,见各栈 `stack.env` 里的注释。至少要让下面两件事成立:
 
-- **看门狗停得掉它。** docker 栈要有 `STACK_STOP_CMD`(以及成对停 head+worker 的
-  `STACK_MEMWATCH_STOP`),k3s 栈要有成对的 `STACK_DEPLOYS`。
+- **看门狗停得掉它。** 要有 `STACK_STOP_CMD`(以及成对停 head+worker 的
+  `STACK_MEMWATCH_STOP`)。
   漏填会被 `make memwatch-test` 当场逮住 —— 它对**每一个**注册的栈都验一遍。
+  ⚠️ `STACK_MEMWATCH_STOP` 的**第一个词**只有两种合法形态,写成第三种会让看门狗
+  `exit 3` 根本不启动:`./x.sh` / `/abs/x.sh`(相对 `STACK_DIR`,自检做 `test -x`),
+  或一个裸命令名(自检做 `command -v`)。`bin/x.sh` 这种「相对但不带 ./」两边都过不了。
+  2026-09-20 修此处之前,`qwen38` 就卡在这里 —— 而 `memwatch-test` 当时只验字段
+  非空,一路报 PASS。
 - **preflight 拦得住它。** 填 `STACK_WEIGHTS` / `STACK_WEIGHTS_SHARDS` /
   `STACK_IMAGE`,通用 preflight 就会替你数分片、查镜像。
 

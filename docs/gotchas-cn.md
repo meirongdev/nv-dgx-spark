@@ -28,14 +28,19 @@
 而每一次真实生成都超时(2026-08-13 实测)。
 
 任何单 rank 事件都会触发:进程 OOM、CUDA 错误、一个节点重启、一次误手的
-`kubectl delete pod`。旧的 systemd 方案对此免疫,因为重启它会**同时**拆掉两台的容器。
+`docker rm`(k8s 时代则是 `kubectl delete pod`)。
 
-**所以永远用 `make restart STACK=v4flash`(两个 rank 一起),恢复代价约 10 分钟。**
+**所以永远用 `make restart STACK=<id>`(两个 rank 一起),恢复代价约 10 分钟。**
 
-现在有 liveness 探针能兜住:leader 的探针(`liveness.py`,在
-`stacks/v4flash/k8s/configmap-launch.yaml` 里)检测的是**"有活干但零进展"**——读 `/metrics`,
-仅当 `num_requests_running+waiting > 0` **且** `vllm:iteration_tokens_total_count`
-自上次检查以来没有前进时才判失败。worker 的探针盯着 leader 的 `/health`,共同命运。
+⚠️ **2026-09-20 起这一条只对 `glm53` 适用** —— 两个 k3s TP=2 栈已随集群一起删除,
+`glm53` 是注册表里唯一还跨两台机器的栈。**但它一点没变弱**:这是 TP=2 的性质,
+不是某个引擎或某个编排器的性质。
+⚠️ 同时,**原来兜底的 liveness 探针也一起没了**。k8s 时代 leader 的探针
+(`liveness.py`)检测的是「有活干但零进展」——读 `/metrics`,仅当
+`num_requests_running+waiting > 0` **且** `vllm:iteration_tokens_total_count`
+自上次检查以来没有前进时才判失败;worker 的探针盯着 leader 的 `/health`,共同命运。
+docker 下**没有等价物在跑**:僵死的 TP 组不会被任何东西自动发现,只能靠真实生成
+超时暴露。下面那三条探针铁律因此暂时是**设计遗产**,不是现役防线。
 
 ### 三条探针设计铁律(每条都是这里踩出来的)
 
@@ -68,13 +73,18 @@
 同时跑会 OOM 整台机器——就是那种会连 tmux server 一起带走的故障。
 
 ```bash
-make stop STACK=qwen38fn   # 必须先停当前那套
-make run STACK=v4flash     # 再起另一套
+make stop                  # 先停主力栈
+make stop STACK=fndgx      # glm53 要两台机器,S2 上这个也得停
+make run  STACK=glm53      # 再起另一套
 ```
 
-`make run STACK=qwen38fn` 起栈前会**自检互斥**(`qwen38fn-preflight`),不再只靠文档
-提醒;另外两套仍靠人。qwen38 容器**故意不设 `--restart`**,就是为了避免开机自启
-后和 k3s 拉起的 TP=2 栈撞车。详见 `stacks/qwen38/runbook-cn.md` §5.4、§7。
+⚠️ 互斥判据是**节点集合相交**,不是「除我之外的所有栈」:`qwen38un`(S1)和
+`fndgx`(S2)因此可以并跑,而 `glm53` 跨两台,和谁都冲突。
+`make run STACK=<id>` 起栈前**遍历整个注册表**自检,并分别打印「已检查」和
+「未检查(节点不相交)」,不再只靠文档提醒。
+qwen38 容器**故意不设 `--restart`**,就是为了避免开机自启后和别的栈撞车
+(⚠️ `fndgx` 是唯一带 `--restart unless-stopped` 的,重启后会自己回来)。
+详见 `stacks/qwen38/runbook-cn.md` §5.4、§7。
 
 ---
 
