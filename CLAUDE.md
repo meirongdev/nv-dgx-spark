@@ -149,7 +149,9 @@ of the retired `qwen38fn`'s 62.1 on half the hardware, and nominally above the p
 has not been run**, so treat it as an order of magnitude, not a ranking.
 
 ✅ **It hits upstream's published RadixArk numbers on every axis they publish.**
-Full data + scripts: `benchmarks/fndgx-2026-09-20/`.
+Full data + scripts: `benchmarks/fndgx-2026-09-20/`, plus
+`benchmarks/fndgx-seqs-2026-09-20/` for the rejected `SEQS` run and the PLE
+counters.
 Numbers below are **after the 2026-09-20 clock-cap removal** (capped values in
 parentheses):
 - **Single stream, prose: 35.3** (34.7) vs upstream's RadixArk **37.1** → −4.9%.
