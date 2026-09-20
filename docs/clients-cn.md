@@ -61,9 +61,45 @@ Claude Code 发的 `high` 和 `max` —— 因为上游 `serve.sh` 的 `EFFORT_A
 ```bash
 codex --profile dgx          # → :8888  qwen3.8-27b-sglang(2026-09-19 起,主力,S1)
 codex --profile fndgx        # → :18300 qwen3.8-flash-next(2026-09-20 起,单机,S2)
-codex --profile qwen38       # → :8888  qwen38-27b(原版降级栈)
-codex                        # 默认不变:ChatGPT 免费额度 gpt-5.5
+codex --profile qwen38       # → :8888  qwen38-27b(原版降级栈,⚠️ 见下)
+codex --profile litellm      # → homelab 网关 custom_dgx/qwen3.8-27b-sglang(DGX 主 / Mac 备)
+codex --profile mac          # → homelab 网关 mac/ornith(绕开 DGX,直接打 Mac)
+codex                        # 默认:ChatGPT 额度。⚠️ 现场值是 gpt-5.4-mini,不是 gpt-5.5
 ```
+
+⚠️ **`--profile qwen38` 现在不能直接用,而且失败是静默的。** 它和主力 `qwen38un`
+都占 S1 的 `:8888`(互斥),当前跑的是 `qwen38un`;而 SGLang **什么模型名都收**
+(gotcha #10)—— 2026-09-20 实测往 `:8888` 发 `model="qwen38-27b"` 拿到 **200 并原样
+回显该名字**,实际回答的是 uncensored 那个栈。用它之前必须先 `make run STACK=qwen38`
+并 `curl :8888/v1/models` 核对真身。
+
+🧹 **2026-09-20 客户端清理**(`~/.codex` 不进 git,记在这里免得再漂):
+- `dgx-models.json` 删掉了 `qwen38-flash-next` 和 `deepseek-v4-flash` 两条 —— 两个栈
+  都已随 k3s 删除。后者尤其危险:它的 `context_window` 写着 1048576,而 `:8888` 是
+  SGLang(收任何模型名),在 `/model` 里选中它就会拿 1M 的压缩阈值去打一个
+  262144 的服务端,**中途才被拒**。现在该 catalog 只剩 `qwen3.8-27b-sglang` 一条。
+- `litellm.config.toml` 的模型从 `custom_dgx/qwen38-flash-next` 改成
+  `custom_dgx/qwen3.8-27b-sglang`。⚠️ 网关侧的 key 白名单早已换成新名,所以这个
+  profile 在改之前是 **403**,不是「能跑但跑错」—— 实测旧名 403、新名 200。
+  同时补了 `litellm-models.json`(此前它是唯一没有 catalog 的 DGX profile,
+  codex 每次启动都报 `Model metadata ... not found` 并退回 GPT-5 的
+  272000×95% = 258,400 —— 恰好卡在 262144 以内,没出事纯属运气),并删掉了
+  `model_context_window` / `model_max_output_tokens` 两个**都不起作用**的键。
+  catalog 的 `context_window` 取 262144:网关的 DGX 主路和 Mac Ornith 兜底路
+  都是这个窗口,路由到哪边都成立。effort 枚举是**经网关**单独实测的
+  (`none/low/medium/xhigh` 200,`minimal/high/max` 400 —— LiteLLM 原样透传,
+  与直连一致,但那是测出来的,不是推出来的)。
+- ℹ️ 顺带证伪一条:补 catalog 前 codex 会把思考过程当正文打在终端上,看起来像
+  「网关把 CoT 塞进了正文」。抓原始响应看**不是** —— 网关返回的是规矩的
+  `type:"reasoning"` + `type:"message"` 两个 output item,和直连同构;是没有 catalog
+  时 codex 按 fallback metadata 去**渲染**了 reasoning item。
+  **终端上看到 CoT,说明的是客户端元数据,不是服务端返回格式。**
+- `bifrost.config.toml` 已删除:bifrost 网关 2026-08-08 就退役了
+  (见 `k3s-migration-design-cn.md`),而且 `[model_providers.bifrost]` 早就不在
+  任何配置文件里 —— 那个 profile 无论模型名写什么都起不来。
+- 默认模型 `gpt-5.4-mini` 已不在 codex 的 `models_cache.json`(现存 `gpt-5.6-terra` /
+  `gpt-5.6-luna` / `gpt-5.5`),codex 自己记着它迁往 `gpt-5.6-luna`。
+  经确认**刻意保留**,不是漏改。
 
 > **2026-09-19 实测 effort 枚举(27B-Uncensored / SGLang)** —— 与 Flash-Next
 > **相同**,但仍是实测,不是照抄(这几个栈的枚举互不相同过):
@@ -98,9 +134,9 @@ codex                        # 默认不变:ChatGPT 免费额度 gpt-5.5
 > ⚠️ 窗口靠 **每个 profile 自己的 catalog**(`model_catalog_json` 指向哪个就是哪个;
 > 现场是 `~/.codex/dgx-models.json` / `qwen38-models.json` / `fndgx-models.json`)
 > 的 catalog 条目(`context_window`),
-> **不是** `model_context_window`。新增 `qwen38-flash-next` 条目时写的是 262144
-> = 服务端 `--max-model-len`。(顺带发现旧的 `deepseek-v4-flash` catalog 写的是
-> 65536,而 config 写 1000000 —— 一直按 64K 在跑。)
+> **不是** `model_context_window`。每条都写 262144 = 服务端 `--max-model-len`。
+> (历史:旧的 `deepseek-v4-flash` catalog 写 65536 而 config 写 1000000 —— 一直按
+> 64K 在跑。该条目已于 2026-09-20 连同 `qwen38-flash-next` 一起从 catalog 删除。)
 
 ⚠️ **codex 的 `/model` 不能跨 provider 切换**(只能在当前 provider 内换模型和档位),
 换后端必须**重启**并带 `--profile`。这点和 Qwen Code 不同。
