@@ -61,45 +61,76 @@ Claude Code 发的 `high` 和 `max` —— 因为上游 `serve.sh` 的 `EFFORT_A
 ```bash
 codex --profile dgx          # → :8888  qwen3.8-27b-sglang(2026-09-19 起,主力,S1)
 codex --profile fndgx        # → :18300 qwen3.8-flash-next(2026-09-20 起,单机,S2)
-codex --profile qwen38       # → :8888  qwen38-27b(原版降级栈,⚠️ 见下)
-codex --profile litellm      # → homelab 网关 custom_dgx/qwen3.8-27b-sglang(DGX 主 / Mac 备)
-codex --profile mac          # → homelab 网关 mac/ornith(绕开 DGX,直接打 Mac)
-codex                        # 默认:ChatGPT 额度。⚠️ 现场值是 gpt-5.4-mini,不是 gpt-5.5
+codex --profile local        # → 127.0.0.1:8000  Mac 本地 omlx(gemma-4 26B QAT)
+codex --profile m2           # → 100.89.15.120:8000  M2 那台的 omlx(不经 DGX)
+codex                        # 默认:ChatGPT 额度;现场 config.toml 写的是 gpt-5.5
 ```
 
-⚠️ **`--profile qwen38` 现在不能直接用,而且失败是静默的。** 它和主力 `qwen38un`
-都占 S1 的 `:8888`(互斥),当前跑的是 `qwen38un`;而 SGLang **什么模型名都收**
-(gotcha #10)—— 2026-09-20 实测往 `:8888` 发 `model="qwen38-27b"` 拿到 **200 并原样
-回显该名字**,实际回答的是 uncensored 那个栈。用它之前必须先 `make run STACK=qwen38`
-并 `curl :8888/v1/models` 核对真身。
+⚠️ **`--profile qwen38` / `litellm` / `mac` 三个 profile 在本机并不存在** ——
+2026-09-20 复核 `~/.codex` 只有 `dgx` / `fndgx` / `local` / `m2` 四个 overlay,
+上面曾列出的那三个没有对应的 `*.config.toml`。它们的教训仍然成立,照抄前先建文件。
 
-🧹 **2026-09-20 客户端清理**(`~/.codex` 不进 git,记在这里免得再漂):
-- `dgx-models.json` 删掉了 `qwen38-flash-next` 和 `deepseek-v4-flash` 两条 —— 两个栈
-  都已随 k3s 删除。后者尤其危险:它的 `context_window` 写着 1048576,而 `:8888` 是
-  SGLang(收任何模型名),在 `/model` 里选中它就会拿 1M 的压缩阈值去打一个
-  262144 的服务端,**中途才被拒**。现在该 catalog 只剩 `qwen3.8-27b-sglang` 一条。
-- `litellm.config.toml` 的模型从 `custom_dgx/qwen38-flash-next` 改成
-  `custom_dgx/qwen3.8-27b-sglang`。⚠️ 网关侧的 key 白名单早已换成新名,所以这个
-  profile 在改之前是 **403**,不是「能跑但跑错」—— 实测旧名 403、新名 200。
-  同时补了 `litellm-models.json`(此前它是唯一没有 catalog 的 DGX profile,
-  codex 每次启动都报 `Model metadata ... not found` 并退回 GPT-5 的
-  272000×95% = 258,400 —— 恰好卡在 262144 以内,没出事纯属运气),并删掉了
-  `model_context_window` / `model_max_output_tokens` 两个**都不起作用**的键。
-  catalog 的 `context_window` 取 262144:网关的 DGX 主路和 Mac Ornith 兜底路
-  都是这个窗口,路由到哪边都成立。effort 枚举是**经网关**单独实测的
-  (`none/low/medium/xhigh` 200,`minimal/high/max` 400 —— LiteLLM 原样透传,
-  与直连一致,但那是测出来的,不是推出来的)。
-- ℹ️ 顺带证伪一条:补 catalog 前 codex 会把思考过程当正文打在终端上,看起来像
-  「网关把 CoT 塞进了正文」。抓原始响应看**不是** —— 网关返回的是规矩的
+⚠️ **其中 qwen38 那条教训适用于任何指向 `:8888` 的 profile,而且失败是静默的。**
+`qwen38` 和主力 `qwen38un` 都占 S1 的 `:8888`(互斥),当前跑的是 `qwen38un`;
+而 SGLang **什么模型名都收**(gotcha #10)—— 2026-09-20 实测往 `:8888` 发
+`model="qwen38-27b"` 拿到 **200 并原样回显该名字**,实际回答的是 uncensored 那个栈。
+用它之前必须先 `make run STACK=qwen38` 并 `curl :8888/v1/models` 核对真身。
+
+🧹 **2026-09-20 客户端清理**(`~/.codex` 不进 git,记在这里免得再漂)
+
+⚠️ **先说一条元教训:这一节的上一版记的清理,磁盘上并没有发生。**
+2026-09-20 22:49 逐个文件复核,发现本节当时声称的状态里有五处与磁盘不符:
+它说"已删除"的 `bifrost.config.toml` **还在**,说"早就不在任何配置文件里"的
+`[model_providers.bifrost]` **还在 `config.toml` 里**,而它点名的
+`dgx-models.json` / `qwen38-models.json` / `fndgx-models.json` / `litellm-models.json`
+**全盘不存在**(`find ~ -maxdepth 4` 查过,`CODEX_HOME` 也确认未设置)。
+**写下"已清理"和"确实清理了"是两件事;`~/.codex` 不进 git,没有任何东西会
+替你发现二者不一致。** 下次改完请贴实测输出,别贴意图。
+
+**本机 `~/.codex` 的实测布局(2026-09-20 复核):**
+- overlay profile 只有四个:`dgx.config.toml` / `fndgx.config.toml` /
+  `local.config.toml` / `m2.config.toml`。
+- ⚠️ **没有任何 profile 写 `model_catalog_json`** —— 四个 profile **共用同一份**
+  `~/.codex/models.json`。所以 catalog 里任何一条死模型,在**每个** profile 的
+  `/model` 选单里都看得见,不存在"只污染一个 profile"这回事。
+
+**本次实际删掉的东西(都指向 2026-09-20 随 k3s 删除的 `qwen38fn` / `v4flash`):**
+- `~/.codex/models.json` 删掉 `qwen38-flash-next` 和 `deepseek-v4-flash` 两条。
+  后者尤其危险:它的 `context_window` 写着 65536 而 `bifrost.config.toml` 里写
+  1000000,两处从来没对齐过;而 `:8888` 是 SGLang(收任何模型名),在 `/model` 里
+  选中它不会报错,只会拿一个错的压缩阈值去打一个 262144 的服务端。
+  现在 catalog 剩三条:`qwen3.8-27b-sglang`、`qwen3.8-flash-next`、
+  `mlx-community__Qwen3.6-35B-A3B-nvfp4`。
+- `~/.codex/deepseek.config.toml` 整个删除:模型是已删的 `deepseek-v4-flash`,
+  而且它声明的 `model_provider = "deepseek-local"` **全盘没有任何地方定义过** ——
+  这个 profile 无论集群侧是什么状态都起不来。
+- `~/.codex/bifrost.config.toml` 整个删除,并从 `config.toml` 里移除
+  `[model_providers.bifrost]`:网关 2026-08-08 退役,模型 `custom_dgx/deepseek-v4-flash`
+  所在的栈也已删除。⚠️ `~/.zshrc` 里仍 `export BIFROST_VK=…`,现已无配置引用它。
+- `~/.qwen/settings.json` 的 `modelProviders` 删掉 `qwen38-flash-next`
+  @ `100.97.87.120:8000`。**这条是最值得删的一条**:它与在跑的 `qwen3.8-flash-next`
+  只差一个点(见下面 fndgx 一节),而 `:8000` 已实测不可达 —— 选错只会连到一个死端点。
+- `~/.codex/dgx.config.toml` 的回滚注释:原文教人回滚到 `qwen38fn`(`:8000` +
+  `make qwen38fn-run`),那个栈已删除,那种 make 动词形式也已不存在。改成现存的
+  两条路径(`glm53` 要停两个栈;`qwen38` 不用停 `fndgx`)。
+
+**删完的实测验证**(不是只看配置 —— 这是本仓库的规矩):
+- `:8888/v1/models` → 200 `qwen3.8-27b-sglang`;`:18300/v1/models` → 200
+  `qwen3.8-flash-next`;`127.0.0.1:8000` → 200(omlx 在跑,gemma / Qwen3.6 两条都在)。
+- 已删的 `100.97.87.120:8000` → **不可达**,证实那条 catalog 确实是死的。
+- 重放 `--profile dgx` 会发的真实请求(`POST /v1/responses`,effort=medium)→
+  **HTTP 200**,`model` 原样回显,`output` 是规矩的 `reasoning` + `message` 两段。
+- 四个 `*.config.toml` 全部 `tomllib` 解析通过;`scripts/qwen-model-switch.sh status`
+  三处启动字段一致。
+- 改动前的每个文件都留了 `*.bak-20260920-224938`,整体删除的两个 profile 留了
+  `*.removed-20260920-224938`。
+
+- ℹ️ 一条仍然有效、但**本机无法复核**的观察(它来自 litellm 网关路径,而那个
+  profile 在本机不存在):补 catalog 前 codex 会把思考过程当正文打在终端上,
+  看起来像「网关把 CoT 塞进了正文」。抓原始响应看**不是** —— 网关返回的是规矩的
   `type:"reasoning"` + `type:"message"` 两个 output item,和直连同构;是没有 catalog
   时 codex 按 fallback metadata 去**渲染**了 reasoning item。
   **终端上看到 CoT,说明的是客户端元数据,不是服务端返回格式。**
-- `bifrost.config.toml` 已删除:bifrost 网关 2026-08-08 就退役了
-  (见 `k3s-migration-design-cn.md`),而且 `[model_providers.bifrost]` 早就不在
-  任何配置文件里 —— 那个 profile 无论模型名写什么都起不来。
-- 默认模型 `gpt-5.4-mini` 已不在 codex 的 `models_cache.json`(现存 `gpt-5.6-terra` /
-  `gpt-5.6-luna` / `gpt-5.5`),codex 自己记着它迁往 `gpt-5.6-luna`。
-  经确认**刻意保留**,不是漏改。
 
 > **2026-09-19 实测 effort 枚举(27B-Uncensored / SGLang)** —— 与 Flash-Next
 > **相同**,但仍是实测,不是照抄(这几个栈的枚举互不相同过):
@@ -131,12 +162,13 @@ codex                        # 默认:ChatGPT 额度。⚠️ 现场值是 gpt-5
 > `medium` 18.6s/2574、`xhigh` 15.8s/**仅782**(72% 的 token 花在思考上)。
 > 故 `dgx.config.toml` 默认 `medium`。
 >
-> ⚠️ 窗口靠 **每个 profile 自己的 catalog**(`model_catalog_json` 指向哪个就是哪个;
-> 现场是 `~/.codex/dgx-models.json` / `qwen38-models.json` / `fndgx-models.json`)
-> 的 catalog 条目(`context_window`),
-> **不是** `model_context_window`。每条都写 262144 = 服务端 `--max-model-len`。
+> ⚠️ 窗口靠 **catalog 条目的 `context_window`**,**不是** `model_context_window`
+> (后者对压缩阈值不起作用)。⚠️ **本机没有 per-profile catalog** —— 2026-09-20 复核:
+> 没有任何 profile 写 `model_catalog_json`,四个 profile **共用** `~/.codex/models.json`。
+> 每条 DGX 条目都写 262144 = 服务端 `--max-model-len`。
 > (历史:旧的 `deepseek-v4-flash` catalog 写 65536 而 config 写 1000000 —— 一直按
-> 64K 在跑。该条目已于 2026-09-20 连同 `qwen38-flash-next` 一起从 catalog 删除。)
+> 64K 在跑,两处从未对齐。该条目已于 2026-09-20 连同 `qwen38-flash-next`
+> **实际**从 catalog 删除,并有实测记录,见上面的清理一节。)
 
 ⚠️ **codex 的 `/model` 不能跨 provider 切换**(只能在当前 provider 内换模型和档位),
 换后端必须**重启**并带 `--profile`。这点和 Qwen Code 不同。
@@ -145,7 +177,8 @@ codex                        # 默认:ChatGPT 额度。⚠️ 现场值是 gpt-5
 
 Profile V2 的 overlay 文件是 `~/.codex/<name>.config.toml`,每个自带
 `[model_providers.<name>]`。**不要用 `model_context_window`** —— 那个键对压缩阈值
-不起作用;窗口要交给 `model_catalog_json`。
+不起作用;窗口要交给 catalog。⚠️ 本机的 catalog 是**共用的** `~/.codex/models.json`
+(无 `model_catalog_json`),所以往里加一条就是给所有 profile 都加,删一条同理。
 
 三个必须写对的 provider 字段:
 
@@ -161,8 +194,8 @@ wire_api = "responses"           # codex 0.142 删掉了 "chat",必须用 respon
 
 catalog 的作用是消除 `Model metadata for <slug> not found. Defaulting to fallback
 metadata` 警告 —— 否则 codex 会拿 GPT-5 的 `272000×95%=258400` 当窗口,
-可能超出服务端上限。qwen38 的 catalog 直接从 dgx 的派生(保留其 17,730 字符
-base_instructions),生成方法见 `stacks/qwen38/runbook-cn.md` §6.3。
+可能超出服务端上限。新条目的做法是从现有条目派生(保留其 base_instructions),
+生成方法见 `stacks/qwen38/runbook-cn.md` §6.3。
 
 ### reasoning effort:三套栈的档位语义完全不同
 
@@ -308,7 +341,7 @@ CLI 会按模型名匹配并**预留输出 token**:`contextLimit = max(0, contex
 
 | 模型 | 必须写 | 原因 |
 |---|---|---|
-| `deepseek-v4-flash` | **1000000** | 匹配 `deepseek-v4*` → 预留 **384000**。任何小于约 384k 的值(含未设置时的 131072 默认)都会把硬阈值夹到 **0**,导致**每个请求**都报 `hard limit: 0; compression NOOP`——**哪怕只有 4k 提示词** |
+| `deepseek-v4-flash`(⚠️ 栈已于 2026-09-20 删除,本行是教训不是配置) | **1000000** | 匹配 `deepseek-v4*` → 预留 **384000**。任何小于约 384k 的值(含未设置时的 131072 默认)都会把硬阈值夹到 **0**,导致**每个请求**都报 `hard limit: 0; compression NOOP`——**哪怕只有 4k 提示词** |
 | `qwen38-27b` | **262144** | 服务端只接受 262144。实测**不**命中 384k 预留(repo 内/外两条路径都验证过) |
 
 写死 1000000 然后切到 qwen38 → CLI 会发出服务端拒收的超长请求;
@@ -395,8 +428,9 @@ curl -s http://100.97.87.120:8888/v1/chat/completions \
 
 两个 CLI 的配置都在家目录,**不随 repo 走**:
 
-- **codex**:`~/.codex/<name>.config.toml` + `~/.codex/<name>-models.json`,
-  外加 `~/.zshrc` 里 `export LOCAL_LLM_API_KEY=dummy`。
+- **codex**:`~/.codex/<name>.config.toml`,外加**一份共用的** `~/.codex/models.json`
+  (本机实测布局:没有 per-profile 的 `<name>-models.json`,也没有 `model_catalog_json`),
+  再加 `~/.zshrc` 里 `export LOCAL_LLM_API_KEY=dummy`。
   qwen38 的完整重建步骤(含生成 catalog 的 python)见
   `stacks/qwen38/runbook-cn.md` §6.3。
 - **Qwen Code**:`~/.qwen/settings.json`,最小可用骨架见
