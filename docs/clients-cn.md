@@ -108,7 +108,8 @@ codex                        # 默认:ChatGPT 额度;现场 config.toml 写的�
   `[model_providers.bifrost]`:网关 2026-08-08 退役,模型 `custom_dgx/deepseek-v4-flash`
   所在的栈也已删除。`~/.zshrc` 里的 `export BIFROST_VK=…` 与
   `alias codex-dgx='codex --profile bifrost'`(该 alias 已因上面这步而失效)
-  也已于同日一并清理,alias 改指 `--profile dgx`。
+  也已于同日**一并删除** —— 打 DGX 直接用 `codex --profile dgx` / `--profile fndgx`,
+  不再留中间别名。
   ⚠️ 删 env 不等于吊销 key:`sk-bf-…` 这个值仍留在 `~/.zshrc.bak-*` 等备份里,
   要彻底清除得连备份一起处理(网关已退役,故未处理)。
 - `~/.qwen/settings.json` 的 `modelProviders` 删掉 `qwen38-flash-next`
