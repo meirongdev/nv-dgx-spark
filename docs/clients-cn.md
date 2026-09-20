@@ -106,7 +106,11 @@ codex                        # 默认:ChatGPT 额度;现场 config.toml 写的�
   这个 profile 无论集群侧是什么状态都起不来。
 - `~/.codex/bifrost.config.toml` 整个删除,并从 `config.toml` 里移除
   `[model_providers.bifrost]`:网关 2026-08-08 退役,模型 `custom_dgx/deepseek-v4-flash`
-  所在的栈也已删除。⚠️ `~/.zshrc` 里仍 `export BIFROST_VK=…`,现已无配置引用它。
+  所在的栈也已删除。`~/.zshrc` 里的 `export BIFROST_VK=…` 与
+  `alias codex-dgx='codex --profile bifrost'`(该 alias 已因上面这步而失效)
+  也已于同日一并清理,alias 改指 `--profile dgx`。
+  ⚠️ 删 env 不等于吊销 key:`sk-bf-…` 这个值仍留在 `~/.zshrc.bak-*` 等备份里,
+  要彻底清除得连备份一起处理(网关已退役,故未处理)。
 - `~/.qwen/settings.json` 的 `modelProviders` 删掉 `qwen38-flash-next`
   @ `100.97.87.120:8000`。**这条是最值得删的一条**:它与在跑的 `qwen3.8-flash-next`
   只差一个点(见下面 fndgx 一节),而 `:8000` 已实测不可达 —— 选错只会连到一个死端点。
