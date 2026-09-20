@@ -376,6 +376,17 @@ has read "default to medium" since 2026-09-03 while the value stayed `xhigh` —
 across two stack switches. Nothing caught it because **both values return 200**.
 Now `medium`, replayed → 200. Generalize it: sending a real request proves the
 endpoint works, **not that the value you sent is the one you decided on.**
+⚠️ **2026-09-20, a second drift of the same family, found the same way.** The
+client-cleanup section of `docs/clients-cn.md` described a `~/.codex` that did
+not exist: it claimed `bifrost.config.toml` was deleted (it was not), that
+`[model_providers.bifrost]` was gone from every config (it was in `config.toml`),
+and it named four per-profile catalogs that were nowhere on disk. The actual
+cleanup then ran: two dead slugs out of the shared catalog, the `deepseek` and
+`bifrost` profiles deleted, the dead `:8000` entry out of `~/.qwen/settings.json`,
+`BIFROST_VK` and `alias codex-dgx` out of `~/.zshrc`. Generalize it: **`~/.codex`
+is not in git, so writing "cleaned up" in a doc is the only record there is —
+and nothing will ever tell you it was never true.** Paste measured output, not
+intent.
 
 ✅ **`scripts/gb10-clock-cap.sh` is on the new stack and re-verified** — cap is
 live (rank0 2183 MHz under load, n=29). Three things had to change beyond the
@@ -720,16 +731,30 @@ Two traps this stack added to the pile, both measured on 2026-09-19:
 
 ## Connecting from clients
 
-All stacks are **unauthenticated** vLLM and serve `/v1/chat/completions` **and**
-`/v1/responses`. Full setup, per-stack reasoning-effort semantics, the
-`contextWindowSize` hard-limit-0 trap and how to rebuild on a new machine:
-**`docs/clients-cn.md`**.
+Every stack is **unauthenticated** and serves `/v1/chat/completions` **and**
+`/v1/responses` — but they are **not all vLLM** (the primary is SGLang; four
+engines are in play, see the top of this file). Full setup, per-stack
+reasoning-effort semantics, the `contextWindowSize` hard-limit-0 trap and how to
+rebuild on a new machine: **`docs/clients-cn.md`**.
 
 ```bash
-codex --profile dgx        # → :8888 qwen3.8-27b-sglang  (primary, since 2026-09-19)
-codex --profile qwen38     # → :8888 qwen38-27b          (stock 27B, no speculator)
+codex --profile dgx        # → :8888  qwen3.8-27b-sglang (primary, since 2026-09-19)
+codex --profile fndgx      # → :18300 qwen3.8-flash-next (S2, since 2026-09-20)
+codex --profile local      # → 127.0.0.1:8000 Mac-local omlx
+codex --profile m2         # → 100.89.15.120:8000 the M2 box's omlx
 qwen                       # boot default; ./scripts/qwen-model-switch.sh sglang to flip
 ```
+
+⚠️ **There is no `--profile qwen38`** — `stacks/qwen38` exists, a codex profile
+for it does not (verified 2026-09-20). Same for `litellm` / `mac`, which
+`docs/clients-cn.md` listed until that date. Create the file before quoting them.
+
+⚠️ **All codex profiles share ONE catalog**, `~/.codex/models.json` — no profile
+sets `model_catalog_json` (verified 2026-09-20). So a stale entry there is
+visible in **every** profile's `/model` picker, not just the one it belongs to,
+and `:8888` being SGLang means picking it returns **200** with the wrong engine
+behind it (gotcha #10). It currently holds exactly three slugs; the two that
+pointed at the stacks deleted with k3s were removed on 2026-09-20.
 
 ⚠️ Thinking kwargs **and** the CoT response field differ per stack
 (`thinking`/`enable_thinking`, `reasoning_content`/`reasoning`) — both fail
