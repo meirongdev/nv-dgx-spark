@@ -95,8 +95,8 @@ codex                        # 默认不变:ChatGPT 免费额度 gpt-5.5
 > `medium` 18.6s/2574、`xhigh` 15.8s/**仅782**(72% 的 token 花在思考上)。
 > 故 `dgx.config.toml` 默认 `medium`。
 >
-> ⚠️ 窗口靠 **`~/.codex/models.json`**(**一个**共享 catalog,不是每 profile 一个;
-> 本文 2026-09-20 之前写成 `<profile>-models.json`,现场从来没有过那个文件)
+> ⚠️ 窗口靠 **每个 profile 自己的 catalog**(`model_catalog_json` 指向哪个就是哪个;
+> 现场是 `~/.codex/dgx-models.json` / `qwen38-models.json` / `fndgx-models.json`)
 > 的 catalog 条目(`context_window`),
 > **不是** `model_context_window`。新增 `qwen38-flash-next` 条目时写的是 262144
 > = 服务端 `--max-model-len`。(顺带发现旧的 `deepseek-v4-flash` catalog 写的是
@@ -284,6 +284,15 @@ CLI 会按模型名匹配并**预留输出 token**:`contextLimit = max(0, contex
 > 而带点的这个属于**未知形状**。切换后**实际跑了一次 `qwen -p` 并确认引擎侧
 > 收到请求、CLI 正常回话**(没有 "hard limit: 0"),所以 262144 是安全的。
 > 加新栈时照此办理:**光看配置写对了不算验证。**
+>
+> ✅ **2026-09-20 对 `qwen3.8-flash-next`(fndgx,同样带点)照此验过**:
+> `modelProviders` 里补了这一条(`100.67.164.92:18300`,ctx 262144),并用一个
+> 项目级 `.qwen/settings.json` 真发了一次 —— CLI 正常回话、**没有 "hard limit: 0"**,
+> 引擎侧 `POST /v1/chat/completions 200`。所以 262144 对它也是安全的。
+> ⚠️ 第一次探测是**假的**:只导出 `OPENAI_BASE_URL`/`OPENAI_MODEL` 环境变量、在
+> 一个没有 `.qwen/` 的目录里跑,qwen **忽略了它们**,照旧走全局启动默认(远端
+> omlx),却一样回了正确答案 —— 服务端日志里根本没有那条请求。
+> **"回答对了"不是端点验证,要么看引擎日志,要么看 CLI 自己打印的模型名。**
 
 ### thinking 开关
 
