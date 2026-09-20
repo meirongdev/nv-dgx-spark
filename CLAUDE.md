@@ -97,6 +97,22 @@ abliterated — **hypothesis, not verified.**
 probes answered. The vendor's 64–99% → 0–6% harmful-refusal claim is **not**
 independently verified here, and capability regression was not measured.
 
+✅ **It is multimodal — and this repo had never noticed.**
+`Qwen3_5ForConditionalGeneration` with a 27-layer ViT inside the weights (333
+`visual.*` tensors, **left in bf16**: they sit in `quantization_config.ignore`, so
+NVFP4 never touched them). SGLang turns it on from `config.json` by itself —
+**we pass no flag for it**, which is exactly why nobody saw it. Verified live
+2026-09-20: four-quadrant colors and their order correct, `image_tokens=64`, and
+**DFlash2 keeps accepting on image requests** (accept len 2.70–3.24) — images do
+not cost you the speculator. `make test STACK=qwen38un` now covers it, gated on
+`image_tokens > 0` rather than on the answer looking right (a dropped image still
+produces a confident description — gotcha #9's shape).
+⚠️ base64 data URIs only (no outbound net from the nodes); **video is untested and
+likely broken** (the image has no `torchcodec`, though the weights ship a video
+preprocessor — *a config file existing is not a working path*); and **visual
+quality is entirely unmeasured** — naming four colored squares is not reading a
+chart or a screenshot. `docs/clients-cn.md` §发图.
+
 ✅ **`mem-fraction-static` is 0.80**, not upstream's 0.90 — and **0.85 is a tried
 and rejected middle step, not a safer-looking alternative.** Both lower values
 were adopted to buy back the OOM guard, because these boxes have **no BMC**:
@@ -135,7 +151,17 @@ patching anything long-running (memwatch, a tmux loop, a sidecar), restart it an
 re-read its startup banner — that banner is what it is *actually* guarding.
 
 `max_running_requests` is 12 at **both** 0.85 and 0.80, so that penalty is not
-0.80's. **Never 0.95** — upstream hard-rebooted a box on it. Override chain:
+0.80's. ⚠️ **What caps it is the mamba state cache, not KV** — the boot log says so
+outright (read 2026-09-20, after months of the docs saying only "12"):
+`64 // 5 = 12`, where 64 is solved from free memory and 5 is the per-request state
+slot ratio that radix caching costs. The KV pool is **4.7× the context**, so
+*staring at KV can never explain 12* — which is why it stayed a bare number.
+Three knobs exist (`--mamba-full-memory-ratio`, `--max-mamba-cache-size`,
+`--mamba-ssm-dtype bfloat16`); ⏳ **none tried** — raising it restarts the primary
+and needs a re-measure, and 0.80's throughput is itself unmeasured (above), so the
+two would confound. The c16 fallback to 356 tok/s is this cap's direct
+consequence — **an owned to-do, not a mystery.**
+**Never 0.95** — upstream hard-rebooted a box on it. Override chain:
 start.sh 0.95 → start-dflash.sh 0.90 → our `DF_EXTRA` 0.80, argparse last-wins.
 
 ⏳ **Throughput at 0.80 has not been re-measured.** The headline numbers below
@@ -161,6 +187,11 @@ served name does *not* trip Qwen Code's 384k output reservation, which was the
 open question); for codex the CLI's own `--version` hangs (pre-existing, it
 never reads the profile), so the profile+catalog were parsed and the exact
 request codex would send was replayed against `/v1/responses` → 200.
+⚠️ **2026-09-20: one drift survived that verification.** `dgx.config.toml`'s comment
+has read "default to medium" since 2026-09-03 while the value stayed `xhigh` —
+across two stack switches. Nothing caught it because **both values return 200**.
+Now `medium`, replayed → 200. Generalize it: sending a real request proves the
+endpoint works, **not that the value you sent is the one you decided on.**
 
 ✅ **`scripts/gb10-clock-cap.sh` is on the new stack and re-verified** — cap is
 live (rank0 2183 MHz under load, n=29). Three things had to change beyond the

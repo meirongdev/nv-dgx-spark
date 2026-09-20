@@ -103,7 +103,30 @@ metadata` 警告 —— 否则 codex 会拿 GPT-5 的 `272000×95%=258400` 当�
 可能超出服务端上限。qwen38 的 catalog 直接从 dgx 的派生(保留其 17,730 字符
 base_instructions),生成方法见 `stacks/qwen38/runbook-cn.md` §6.3。
 
-### reasoning effort:两套栈的档位语义完全不同
+### reasoning effort:三套栈的档位语义完全不同
+
+**qwen38un / SGLang(当前主力)—— `high` 被拒、`none` 可用:**
+
+2026-09-19 对活的 `:8888` `/v1/responses` 每档实发一次(看 HTTP 码):
+
+| 档位 | 结果 | 墙钟 / 正文长度(同一编码题,n=1) |
+|---|---|---|
+| `none` | ✅ 200 | 9.7s / 1767 字符 |
+| `low` | ✅ 200 | 19.2s / 2295 |
+| `medium` | ✅ 200(**codex 侧采用值**) | 24.5s / **2513** |
+| `xhigh` | ✅ 200(服务端默认) | 35.3s / **仅 1581** |
+| `minimal` / `high` / `max` | ❌ 400 | — |
+
+⚠️ **`high` 在这一栈是被拒的**,在下面那套 qwen38 vLLM 上却是 200 —— 档位枚举
+**逐栈不同,不能跨栈照抄**(gotcha #9 的同一类)。服务端 400 的文本
+*"Supported types are xhigh (default), medium, and low"* 自己漏了 `none`,
+但 `none` 实测 200,**以实测为准**。
+
+⚠️ **2026-09-20 修掉的一处漂移**:`~/.codex/dgx.config.toml` 的注释从 2026-09-03
+起就写着"默认取 medium",值却一直是 `xhigh` —— 跨两次换栈没人发现,因为
+**两个值都返回 200**,没有任何报错会提示注释和值不一致。现已改为 `medium`
+并实发 `/v1/responses` 验过。教训与 gotcha #9 同源:*结论写在注释里、没落到值上,
+是一种不会报错的错误*。
 
 **V4-Flash(jasl fork)——只有最高档有效:**
 
@@ -123,7 +146,9 @@ base_instructions),生成方法见 `stacks/qwen38/runbook-cn.md` §6.3。
 前缀在引擎更新编码器之前拿不到。
 
 > codex 侧对应写 `model_reasoning_effort = "xhigh"`(`/v1/responses` 的枚举只到
-> xhigh,发 `max`/`ultra` 会被 400 拒掉)。详见 `~/.codex/dgx.config.toml` 注释。
+> xhigh,发 `max`/`ultra` 会被 400 拒掉)。⚠️ **这条只在 `dgx` profile 指向
+> V4-Flash 时成立**;该 profile 现已指向 qwen38un,档位见上表。回滚到 V4-Flash
+> 时要连档位一起改回来 —— 历史备份在 `~/.codex/dgx.config.toml.bak-*`。
 
 **Qwen3.8-27B(上游 vLLM)——各档位是真的有差别:**
 
@@ -229,6 +254,37 @@ CLI 会按模型名匹配并**预留输出 token**:`contextLimit = max(0, contex
 `content` 会短得反常(只剩最终答案),说明 CoT 已被正确分离走了。
 
 `/v1/responses` 两栈一致——CoT 走 `type:"reasoning"` 输出项,codex 用的是这条路径。
+
+---
+
+## 发图:多模态(**只有 qwen38un 这一栈有**)
+
+当前主力栈是 `Qwen3_5ForConditionalGeneration`,权重自带 27 层 ViT,**无需任何
+启动参数**(SGLang 读 config.json 自动开)。2026-09-20 实测可用 —— 在此之前
+repo 里**一个字都没提过**这个能力。
+
+```bash
+# content 用数组,图在前文字在后;data URI 即可,不需要先上传
+curl -s http://100.97.87.120:8888/v1/chat/completions \
+  -H 'Content-Type: application/json' -d '{
+    "model": "qwen3.8-27b-sglang",
+    "messages": [{"role":"user","content":[
+      {"type":"image_url","image_url":{"url":"data:image/png;base64,<BASE64>"}},
+      {"type":"text","text":"这张图里是什么?"}]}],
+    "chat_template_kwargs": {"enable_thinking": false}}'
+```
+
+⚠️ **判据是 `usage.prompt_tokens_details.image_tokens > 0`,不是"答案看起来对"。**
+图被静默丢掉时,模型照样会编一段像模像样的描述。`make test STACK=qwen38un`
+第 3 节就是按这个判据做的回归。
+
+⚠️ **用 base64 data URI,不要用 http(s) 图片 URL** —— 节点没有外网直连
+(服务端 `allowed_media_domains=[]`,单文件上限 64 MB)。
+
+⚠️ **视频未验证,且大概率不通**:权重带 `video_preprocessor_config.json`,但镜像缺
+`torchcodec`。**配置文件存在不等于这条路通。**
+
+其余各栈都是纯文本 —— 发图给它们不会报你想要的错,只会得到一个把图当没看见的回答。
 
 ---
 

@@ -82,9 +82,28 @@ defaults:            # 来自上游 .env.sample,未改
 #
 #   0.90 划走 ~112 GiB,而权重只占 24 GB —— 其余全是 KV 池,**远超 262144×16 所需**。
 #   拿 KV 换回主机 headroom 是划算的:0.80 下 KV 仍有 122 万 token,是 262144
-#   上下文的 4.7 倍(0.85 是 137 万 / 5.2 倍)。代价是 SGLang 按内存把
-#   max_running_requests 自动从 16 降到 12 —— 但 **0.85 下同样是 12**,
-#   这一档不是 0.80 付的。吞吐影响见 benchmarks/qwen38un-2026-09-19/README.md。
+#   上下文的 4.7 倍(0.85 是 137 万 / 5.2 倍)。代价是 max_running_requests 从
+#   请求的 16 降到 12 —— 但 **0.85 下同样是 12**,这一档不是 0.80 付的。
+#   吞吐影响见 benchmarks/qwen38un-2026-09-19/README.md。
+#
+#   ⚠️ **卡住并发的不是 KV 池,是 mamba state cache**(2026-09-20 读引擎源码 +
+#   启动日志确认,此前这里只笼统写"按内存自动降")。启动日志原话:
+#     max_running_requests is capped to 12 by the mamba state cache
+#     (max_mamba_cache_size=64, 5 state slots per request). To raise it:
+#     increase --mamba-full-memory-ratio or --max-mamba-cache-size, or halve
+#     the state size with --mamba-ssm-dtype bfloat16.
+#   即 `64 // 5 = 12`。两个数各自的来历(srt/mem_cache/kv_cache_configurator.py):
+#     - **64** 不是固定默认值,是按剩余显存联立解出来的(mamba_full_memory_ratio
+#       4.21 那条式子)→ 所以它确实随 mem-fraction 变,上面表里 0.90 那行的 16
+#       成立,不矛盾。
+#     - **5** = 基础比例 + radix cache 的 extra buffer(本栈 uses_mamba_radix_cache
+#       为真、overlap schedule 开着)。`disable_radix_cache` 时这个比例直接变 1
+#       —— 但那要丢掉前缀缓存,不划算。
+#   为什么这条值得单独记:KV 池是上下文的 4.7 倍,**盯着 KV 调永远解释不了 12**。
+#   ⏳ 三个旋钮都**没试过**(2026-09-20 决定先不动):抬它要重启主力栈并重测
+#      headroom + 吞吐,而 0.80 下的吞吐本身还没复测(见上),两件事叠一起会分不清
+#      谁的效果。benchmarks 里 c16 回落到 356 tok/s(12 + 4 拖尾的参差批)就是这条
+#      的直接后果 —— 所以它是个**有主的待办**,不是未知现象。
 #
 #   决定性的一条是**防线在不在**:0.90 下 `make memwatch` 启动第一拍就报 crit 1/2
 #   (实测),等于没有 OOM 防线;0.85 装回来了,但 2h10m 后被漂移击穿、栈被停;
@@ -98,6 +117,36 @@ defaults:            # 来自上游 .env.sample,未改
 #
 # ⚠️ 改这个值后必须**同时**重测 headroom 和吞吐 —— KV 变小会影响并发档。
 # S2 完全空闲(116 GiB),因为本栈是单节点。
+
+# ---------------------------------------------------------------------------
+# 多模态(视觉)—— 本仓库**第一个**多模态主力栈
+# ---------------------------------------------------------------------------
+# 2026-09-20 实测确认:本栈能吃图,而且是我们一直没发现的既有能力 —— 换栈当天
+# 没人验过,recipe / CLAUDE.md / test.sh / clients-cn.md 全都没提。
+#
+#   架构    : Qwen3_5ForConditionalGeneration(config.json),language_model_only=False
+#   视觉塔  : 27 层 ViT,patch 16 / merge 2,out_hidden 5120,333 个 visual 张量
+#   精度    : **bf16,未被 NVFP4 量化** —— 它们全在 quantization_config.ignore 里
+#   token   : image_token_id 248056 / video_token_id 248057
+#   开关    : 无需任何启动参数。server_args 里 enable_multimodal=None 即 auto,
+#             SGLang 读 config.json 自己认出来
+#   启动日志: Multimodal data loading enabled with 16 worker threads (auto).
+#             Using triton_attn as multimodal attention backend.
+#             Reserving 0.10 GB of the KV budget for post-sizing multimodal …
+#
+# 实测(stacks/qwen38un/test.sh 第 3 节,每次 make test 都会跑):
+#   - 128×128 四象限图 → 颜色和方位全对,usage.image_tokens=64
+#   - DFlash2 投机解码在带图请求上**照常生效**(accept len 2.70-3.24),
+#     带图不会退化成无投机
+#   - 图像 token 进 radix cache(第二次同图 cached_tokens=64)
+#
+# ⚠️ **用 base64 data URI,别用 http(s) 图片 URL** —— 节点没有外网直连
+#    (allowed_media_domains=[],media_url_max_file_size_mb=64)。
+# ⚠️ **视频未验证,且大概率不通**:video_preprocessor_config.json 在权重里,但镜像
+#    缺 torchcodec(启动日志 "No module named 'torchcodec'")。配置文件存在
+#    ≠ 这条路通 —— 想用先验证,别照着文件名下结论。
+# ⏳ **视觉质量完全没测**。能认出四个色块不代表能读图表或截图,这和 aider-polyglot
+#    那笔质量债是同一性质的欠账。
 
 # ---------------------------------------------------------------------------
 # 思考语义 —— **第五套,与前四个栈全都不同**
