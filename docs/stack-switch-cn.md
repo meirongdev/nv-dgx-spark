@@ -70,7 +70,8 @@ make switch TO=<stack-id>
 | `~/.codex/<profile>.config.toml` | 顶层 `model` |
 | `~/.codex/<profile>.config.toml` | `[model_providers.<name>] base_url` ⚠️ **换栈时端点也会变** |
 | `~/.codex/<profile>.config.toml` | `model_reasoning_effort`(枚举逐栈不同,要实测) |
-| `~/.codex/<profile>-models.json` | 该 slug 的 catalog 条目 + `context_window`(**不是** `model_context_window`) |
+| catalog 文件(A:共用的 `~/.codex/models.json`;B:`~/.codex/<profile>-models.json`) | 该 slug 的 catalog 条目 + `context_window`(**不是** `model_context_window`) |
+| `~/.codex/<profile>.config.toml` | `model_catalog_json = "<catalog 的绝对路径>"` ⚠️ **缺了它,上一行等于没写** —— codex 不自动读那份文件 |
 
 ⚠️ **上一版这张表只列了 model 名和窗口,于是 2026-09-19 漏了 `base_url`。**
 那次是 k3s `:8000` → docker `:8888`,只改模型名等于把 codex 指向一个空端口;
@@ -79,6 +80,13 @@ make switch TO=<stack-id>
 
 ⚠️ config 和 catalog 也静默不一致过:旧的 `deepseek-v4-flash` catalog 写 65536、
 config 写 1000000,于是一直按 64K 在跑,没有任何提示。细节见 `docs/clients-cn.md`。
+
+⚠️ **这张表里"catalog 的 context_window"那一格,在 2026-09-21 之前一直是空转的**:
+机器 A(`Matthews-MacBook-Pro`)上没有任何 profile 写 `model_catalog_json`,而 codex
+0.155.1 不会自动读 `~/.codex/models.json` —— catalog 写了什么都不知道。同一个根因还让档位
+调不了。(机器 B 的 profile 早就各指各的 `<profile>-models.json`,没中这一条。两台机器的
+`~/.codex` 布局不同,见 `docs/clients-cn.md`。)
+漏这一格不会报错,只会静默吃 fallback,和上面两个教训是同一类。
 
 ### 3.1b Qwen Code 的 `modelProviders`(脚本也够不着)
 

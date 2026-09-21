@@ -616,9 +616,14 @@ curl -s http://100.97.87.120:8888/v1/chat/completions \
 
 两个 CLI 的配置都在家目录,**不随 repo 走**:
 
-- **codex**:`~/.codex/<name>.config.toml`,外加**每个 profile 自己那份**
-  `~/.codex/<name>-models.json`(由该 overlay 的 `model_catalog_json` 指过去;
-  本机 2026-09-20 实测布局,`~/.codex/models.json` 不存在),
+- **codex**:`~/.codex/<name>.config.toml`,外加 profile 的 `model_catalog_json` 指向的
+  catalog。两台客户端 Mac 的布局不同(见上面「两套 `~/.codex`」):A 是**一份共用的**
+  `~/.codex/models.json`,被多个 profile 指向;B 是**每个 profile 自己那份**
+  `~/.codex/<name>-models.json`,没有 `models.json`。哪种都能用,换机器时先看清是哪台。
+  ⚠️ **profile 里那行 `model_catalog_json = "<绝对路径>"` 是重建时最容易漏的一笔**:
+  codex 0.155.1 不会自动读任何 catalog 文件,少了它,档位选单、快捷键和 `context_window`
+  全都在吃 fallback,而**照常能用、不报错**。A 的四个 profile 曾全部缺这一行
+  (2026-09-21 才给 `dgx` / `fndgx` 补上),根因见上面「调思考深度」一节。
   再加 `~/.zshrc` 里 `export LOCAL_LLM_API_KEY=dummy`。
   qwen38 的完整重建步骤(含生成 catalog 的 python)见
   `stacks/qwen38/runbook-cn.md` §6.3。
