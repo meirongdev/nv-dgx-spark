@@ -351,6 +351,20 @@ Qwen3.6-35B-A3B 另有一层:2026-09-21 实测 omlx 对 `reasoning.effort`
 | `xhigh` | ✅ 200(服务端默认) | 35.3s / **仅 1581** |
 | `minimal` / `high` / `max` | ❌ 400 | — |
 
+> **2026-09-21 复测,换了一道题、并且这次数的是 `reasoning_tokens`**
+> (反转链表,非流式,n=1,`max_output_tokens=1200`)。枚举与 2026-09-19 完全一致:
+>
+> | 档位 | HTTP | 墙钟 | `reasoning_tokens` | 正文字符 |
+> |---|---|---|---|---|
+> | `none` | 200 | 1.9s | **0**(返回里没有 `reasoning` 项) | 355 |
+> | `low` | 200 | 4.2s | 68 | 301 |
+> | `medium` | 200 | 5.9s | 116 | 301 |
+> | `xhigh` | 200 | 11.7s | **353** | **210** |
+> | `minimal` / `high` / `max` | 400 | — | — | — |
+>
+> "思考变多、正文反而变短"在两道完全不同的题上都复现了 —— 这是本栈选 `medium`
+> 的实测依据,不是口味。
+
 ⚠️ **`high` 在这一栈是被拒的**,在下面那套 qwen38 vLLM 上却是 200 —— 档位枚举
 **逐栈不同,不能跨栈照抄**(gotcha #9 的同一类)。服务端 400 的文本
 *"Supported types are xhigh (default), medium, and low"* 自己漏了 `none`,
@@ -427,8 +441,26 @@ gotcha #10 的形状:**状态码验不出你发的档位是不是生效的档位
 唯一能从响应里分辨出来的是 `none`(思考 0 字);其余六个在琐碎题上落在
 70–126 字,n=1 分不开。
 
-`fndgx.config.toml` 取 `medium`,理由与 `dgx` profile 同形(xhigh 把大半预算
-花在思考上)—— 但**这一栈没有实测支撑这个选择**,只是沿用同族结论。
+**2026-09-21 复测:换成一道编码题 + 数 `reasoning_tokens`,别名就分得开了。**
+(反转链表,非流式,n=1,`max_output_tokens=1200`)
+
+| 档位 | HTTP | 墙钟 | `reasoning_tokens` | 实际落在哪一档 |
+|---|---|---|---|---|
+| `none` | 200 | 2.4s | **0** | 关思考 |
+| `minimal` | 200 | 3.8s | 45 | ≈ `low` |
+| `low` | 200 | 3.6s | 22 | `low` |
+| `medium` | 200 | 3.3s | 37 | `medium` |
+| `high` | 200 | 13.8s | **403** | ≈ `xhigh` |
+| `xhigh` | 200 | 14.4s | **419**(正文仅 216 字符) | `xhigh` |
+| `max` | 200 | 10.8s | 282 | ≈ `xhigh` |
+
+⚠️ 琐碎题上分不开的六个档,在编码题上分成了清清楚楚的三组 —— 印证 `EFFORT_ALIAS`
+的改写。**数思考 token、用够重的题**,是这一栈唯一能看出档位是否生效的办法。
+
+`fndgx.config.toml` 取 `medium`,现在**有本栈自己的实测支撑**:xhigh 的思考量是
+medium 的 11 倍、墙钟 4.4 倍,而正文反而从 301 掉到 216 字符 —— 与 `dgx` 同形。
+catalog 只列原生四档(`none`/`low`/`medium`/`xhigh`),正是为了挡住 `high`→`xhigh`
+这种静默改写。
 
 catalog 条目 `qwen3.8-flash-next` 的 `context_window` = **262144**
 = 服务端 `--max-model-len`(`native` profile,不是 YaRN 的 500k)。
