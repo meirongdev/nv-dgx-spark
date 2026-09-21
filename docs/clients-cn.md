@@ -66,11 +66,12 @@ codex --profile litellm      # → llm.meirong.dev 网关 → custom_dgx/qwen3.8
 codex --profile mac          # → 同一个网关,但点名 Mac 兜底模型 mac/ornith
 codex --profile local        # → 127.0.0.1:8000  Mac 本地 omlx(gemma-4 26B QAT)
 codex --profile m2           # → 100.89.15.120:8000  M2 那台的 omlx(不经 DGX)
-codex                        # 默认:ChatGPT 额度;现场 config.toml 写的是 gpt-5.4-mini
+codex                        # 默认:ChatGPT 额度;A 的 config.toml 写 gpt-5.5,B 的写 gpt-5.4-mini
 ```
 
-⚠️ **订正(2026-09-20 23:15):这一节原先写的"`qwen38` / `litellm` / `mac` 三个
-profile 在本机并不存在"是错的 —— 三个文件都在盘上,而且都早于那句"复核"。**
+⚠️ **订正(2026-09-20 23:15,在机器 B 上):这一节原先写的"`qwen38` / `litellm` / `mac`
+三个 profile 在本机并不存在",在 B 上是错的 —— 三个文件都在 B 的盘上,而且都早于那句"复核"。**
+(那句"复核"是在机器 A 上做的,在 A 上它**是对的** —— 见下面的「两套 `~/.codex`」。)
 `stat` 出生时间:`qwen38.config.toml` **2026-08-15**、`mac.config.toml` **2026-08-16**、
 `litellm.config.toml` **2026-09-09**。也就是说,写下"复核发现不存在"的那一刻,
 它们已经躺在 `~/.codex` 里一到五周了。
@@ -94,8 +95,27 @@ profile 在本机并不存在"是错的 —— 三个文件都在盘上,而且�
 **写下"已清理"和"确实清理了"是两件事;`~/.codex` 不进 git,没有任何东西会
 替你发现二者不一致。** 下次改完请贴实测输出,别贴意图。
 
-**本机 `~/.codex` 的实测布局(2026-09-20 23:15 重测:逐个 `tomllib.load` + `stat`,
-不是凭印象):**
+⚠️ **`~/.codex` 至少有两套,分属两台客户端 Mac —— 这一节反复"订正"的根因就在这里
+(2026-09-26 合并时查明)。** A = `Matthews-MacBook-Pro`(09-20 清理与 09-21 catalog
+修复都在这台做);B = 另一台(ce00239 / 8c04ba5 在那台实测,主机名未记录)。两边各自
+`stat`、各自"复核",**各自都对,错的只是把"本机"当成了"所有机器"**:A 上
+`find ~ -maxdepth 4` 找不到 B 的 `qwen38` / `litellm` / `mac` 三个 overlay 和任何
+`*-models.json`(2026-09-26 重跑,仍为空);B 上则没有 A 那份共用的 `models.json`。
+**以后写这一节,先写清是哪台机器。**
+
+**A(`Matthews-MacBook-Pro`)的实测布局**(2026-09-26 `ls -la` + `grep`):
+- overlay 四个:`dgx` / `fndgx` / `local` / `m2`。`m2` 的 `model` 是
+  `mlx-community__Qwen3.6-35B-A3B-nvfp4`,默认 `codex` 是 `gpt-5.5`。
+- catalog 是**一份共用的** `~/.codex/models.json`(三条:`qwen3.8-27b-sglang`、
+  `qwen3.8-flash-next`、`mlx-community__Qwen3.6-35B-A3B-nvfp4`)。
+- ⚠️ **(2026-09-21 推翻)** 09-20 这里写的是"没有任何 profile 写 `model_catalog_json`,
+  四个 profile 共用 `~/.codex/models.json`"。前半句是事实,后半句是**错的推论**:
+  codex 0.155.1 **根本不会自动读** `~/.codex/models.json`(它自带 bundled catalog),
+  所以那份文件当时对**任何** profile 都没有生效 —— 不是"共用",是"都没用上"。
+  现状:`dgx` / `fndgx` 两个 profile 各写一行 `model_catalog_json` 指向它;
+  `local` / `m2` 仍然没有,它们至今在吃 fallback 元数据。详见下面「调思考深度」一节。
+
+**B 的实测布局**(2026-09-20 23:15 重测:逐个 `tomllib.load` + `stat`,不是凭印象):
 
 | overlay | `model` | `model_provider` → `base_url` | `model_catalog_json` | effort |
 |---|---|---|---|---|
@@ -107,27 +127,28 @@ profile 在本机并不存在"是错的 —— 三个文件都在盘上,而且�
 | `local.config.toml` | `mlx-community__gemma-4-26B-A4B-it-qat-nvfp4` | `local-omlx` → `127.0.0.1:8000/v1` | (无) | (未设) |
 | `m2.config.toml` | `gpt-5.5` | `m2` → `100.89.15.120:8000/v1` | (无) | `high` |
 
-- **七个 overlay,不是四个。**`-p/--profile` 的官方语义(`codex --help`,0.155.1)是
+- **B 上是七个 overlay。**`-p/--profile` 的官方语义(`codex --help`,0.155.1)是
   "Layer `$CODEX_HOME/<name>.config.toml` on top of the base user config" ——
   **建个文件就是建个 profile**,`config.toml` 里不需要也没有任何 `[profiles.*]` 段。
-- ⚠️ **`~/.codex/models.json` 并不存在,catalog 不是共用的。** 四个 profile 各写各的
-  `model_catalog_json`(上表第四列),所以 `/model` 选单是**按 profile 隔离**的:
-  `dgx` 里只有 `qwen3.8-27b-sglang`,`fndgx` 里只有 `qwen3.8-flash-next`。
-  上一版写的"加一条就是给所有 profile 加、不存在只污染一个 profile 这回事"**正好说反了**。
+- B 上**没有** `~/.codex/models.json`,四个 profile 各写各的 `model_catalog_json`
+  (上表第四列),所以 B 的 `/model` 选单是**按 profile 隔离**的:`dgx` 里只有
+  `qwen3.8-27b-sglang`,`fndgx` 里只有 `qwen3.8-flash-next`。
   `local` / `m2` / `mac` 没有 catalog,走 codex 的 fallback 元数据。
-- ⚠️ `dgx` 和 `qwen38` **两个 profile 指向同一个 `100.97.87.120:8888`**,而那个端口
+  ⚠️ 这正是 A 上 09-21 那个 bug 的解法 —— B 早就是这么配的。
+- ⚠️ 两台机器上,`dgx` 和 `qwen38`(B 有)**都指向同一个 `100.97.87.120:8888`**,而那个端口
   同一时刻只有一个栈在跑(当前是 `qwen38un`)。加上 gotcha #10(SGLang 什么模型名都收),
   **选错的表现是 200 + 原样回显,不是报错。** 见上面那条警告。
 
 **本次实际删掉的东西(都指向 2026-09-20 随 k3s 删除的 `qwen38fn` / `v4flash`):**
-- `~/.codex/dgx-models.json` 删掉 `qwen38-flash-next` 和 `deepseek-v4-flash` 两条
-  (⚠️ 订正:这里原先写的是 `models.json`,那个文件从来不存在;删前的三条留在
-  `dgx-models.json.bak-20260920-223027` 里,可以对照)。
+- 两台机器各删了一次 `qwen38-flash-next` 和 `deepseek-v4-flash` 两条:A 删在共用的
+  `~/.codex/models.json`(现存三条,2026-09-26 复核),B 删在 `~/.codex/dgx-models.json`
+  (删前的三条留在 B 的 `dgx-models.json.bak-20260920-223027` 里)。
+  ⚠️ ce00239 在这里写过"`models.json` 从来不存在" —— 那是 B 的事实,A 上它一直在。
   后者尤其危险:它的 `context_window` 写着 65536 而 `bifrost.config.toml` 里写
   1000000,两处从来没对齐过;而 `:8888` 是 SGLang(收任何模型名),在 `/model` 里
   选中它不会报错,只会拿一个错的压缩阈值去打一个 262144 的服务端。
-  现在 `dgx-models.json` 只剩 `qwen3.8-27b-sglang` 一条;四份 catalog 各只有一条
-  (见上表)。
+  现在 B 的 `dgx-models.json` 只剩 `qwen3.8-27b-sglang` 一条,四份 catalog 各只有一条
+  (见 B 的表);A 的 `models.json` 剩上面列的三条。
 - `~/.codex/deepseek.config.toml` 整个删除:模型是已删的 `deepseek-v4-flash`,
   而且它声明的 `model_provider = "deepseek-local"` **全盘没有任何地方定义过** ——
   这个 profile 无论集群侧是什么状态都起不来。
@@ -157,8 +178,8 @@ profile 在本机并不存在"是错的 —— 三个文件都在盘上,而且�
 - 改动前的每个文件都留了 `*.bak-20260920-224938`,整体删除的两个 profile 留了
   `*.removed-20260920-224938`。
 
-- ℹ️ 一条仍然有效、但**本机无法复核**的观察(它来自 litellm 网关路径,而那个
-  profile 在本机不存在):补 catalog 前 codex 会把思考过程当正文打在终端上,
+- ℹ️ 一条仍然有效、但**在 A 上无法复核**的观察(它来自 litellm 网关路径,而那个
+  profile 只在 B 上有):补 catalog 前 codex 会把思考过程当正文打在终端上,
   看起来像「网关把 CoT 塞进了正文」。抓原始响应看**不是** —— 网关返回的是规矩的
   `type:"reasoning"` + `type:"message"` 两个 output item,和直连同构;是没有 catalog
   时 codex 按 fallback metadata 去**渲染**了 reasoning item。
@@ -195,10 +216,11 @@ profile 在本机并不存在"是错的 —— 三个文件都在盘上,而且�
 > 故 `dgx.config.toml` 默认 `medium`。
 >
 > ⚠️ 窗口靠 **catalog 条目的 `context_window`**,**不是** `model_context_window`
-> (后者对压缩阈值不起作用)。⚠️ **订正 2026-09-20 23:15:本机用的正是 per-profile
-> catalog** —— `dgx` / `fndgx` / `qwen38` / `litellm` 四个 profile 各写各的
-> `model_catalog_json`,`~/.codex/models.json` 不存在。
-> 每条 DGX 条目都写 262144 = 服务端 `--max-model-len`。
+> (后者对压缩阈值不起作用)。每条 DGX 条目都写 262144 = 服务端 `--max-model-len`。
+> ⚠️ **但"写了就生效"要求 profile 里有 `model_catalog_json`**,codex 0.155.1 不会自动读
+> `~/.codex/models.json`。B 上四个 profile 早就各指各的 `<name>-models.json`;
+> A 上在 2026-09-21 之前没有任何 profile 指路 —— 262144 一直没落地,压缩阈值吃的是
+> fallback,现在 `dgx`/`fndgx` 都指向共用的 `models.json`。
 > (历史:旧的 `deepseek-v4-flash` catalog 写 65536 而 config 写 1000000 —— 一直按
 > 64K 在跑,两处从未对齐。该条目已于 2026-09-20 连同 `qwen38-flash-next`
 > **实际**从 catalog 删除,并有实测记录,见上面的清理一节。)
@@ -210,9 +232,20 @@ profile 在本机并不存在"是错的 —— 三个文件都在盘上,而且�
 
 Profile V2 的 overlay 文件是 `~/.codex/<name>.config.toml`,每个自带
 `[model_providers.<name>]`。**不要用 `model_context_window`** —— 那个键对压缩阈值
-不起作用;窗口要交给 catalog。⚠️ 本机是**每个 profile 一份** catalog
-(`model_catalog_json = "~/.codex/<name>-models.json"`),所以加一条只影响那一个
-profile 的 `/model` 选单 —— 换句话说,**换栈时每份 catalog 都要各改各的**。
+不起作用;窗口要交给 catalog。⚠️ 但 catalog **必须显式指路**:
+`model_catalog_json = "<绝对路径>"`(值是路径),否则 codex 0.155.1 只用自带的
+bundled catalog。两台机器的指法不同(见上面的两份布局):
+- **A**:`dgx` / `fndgx` 都指向同一份 `/Users/matthew/.codex/models.json`,`local` / `m2`
+  还没有。一份文件被多个 profile 指向,加一条就是给这些 profile 都加。
+- **B**:每个 profile 一份 `~/.codex/<name>-models.json`,加一条只影响那一个 profile 的
+  `/model` 选单 —— 换句话说,**换栈时每份 catalog 都要各改各的**。
+⚠️ **它是整体替换,不是合并**:写了它的 profile,`/model` 选单里就只剩这份文件里的
+条目(gpt-5.5 之类会消失)。所以**不要写进 `~/.codex/config.toml`** —— 那会让默认的
+`codex` 也丢掉自己的元数据。
+❌ 同时:`model_max_output_tokens` 在 0.155.1 是 **unknown configuration field**
+(`--strict-config` 会报,平时静默忽略),catalog schema 里也没有对应字段。
+2026-09-21 已从 A 的 `dgx` / `fndgx` 两个 overlay 删除,别再加回来
+(A 的 `local` / `m2` 里还留着,同样不生效)。
 
 三个必须写对的 provider 字段:
 
@@ -230,6 +263,79 @@ catalog 的作用是消除 `Model metadata for <slug> not found. Defaulting to f
 metadata` 警告 —— 否则 codex 会拿 GPT-5 的 `272000×95%=258400` 当窗口,
 可能超出服务端上限。新条目的做法是从现有条目派生(保留其 base_instructions),
 生成方法见 `stacks/qwen38/runbook-cn.md` §6.3。
+
+### 调思考深度:三条路径(2026-09-21 起前两条才真正可用)
+
+**结论先行**:`dgx` / `fndgx` 两个 profile 现在有三条调档路径,都已实测:
+
+| 路径 | 怎么用 | 生效范围 |
+|---|---|---|
+| `/model` | 两级选单:模型 → 档位,会标出 `(default)` / `(current)` | 会话内,立刻 |
+| `ctrl-up` / `ctrl-down` | 状态栏即时显示当前档 | 会话内,立刻 |
+| `-c model_reasoning_effort=<档>` | `codex --profile dgx -c model_reasoning_effort=none` | 本次启动 |
+
+⚠️ **`-c` 不受 catalog 约束**:传 `max` 会**原样发到服务端**,在 `dgx` 上被 400
+(`Supported types are xhigh (default), medium, and low`);而在 `fndgx` 上**任何值
+都是 200**(见下面的别名表),拼错不会有任何提示。选单和快捷键则只在 catalog 列出的
+四档里走。
+
+#### 为什么前两条以前用不了:catalog 根本没被加载
+
+2026-09-21 在 tmux 里跑真实 TUI 抓到的原文:
+
+```
+⚠ Model metadata for `qwen3.8-27b-sglang` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.
+• Reasoning shortcuts are unavailable for qwen3.8-27b-sglang.
+```
+
+第二行是按 `ctrl-up` 的回应 —— **按键有反应,但不干活**。根因有两层,都在 codex 侧:
+
+1. **codex 0.155.1 不会自动读 `~/.codex/models.json`。** 它自带一份 bundled
+   catalog,自定义那份必须用 `model_catalog_json = "<路径>"` 显式指路。
+   ⚠️ 指了路之后它是**整体替换**,不是合并 —— 所以只能写在 profile 里。
+2. **catalog 的 schema 变了。** `supported_reasoning_levels` 必须是对象数组:
+
+   ```json
+   "default_reasoning_level": "medium",
+   "supported_reasoning_levels": [
+     { "effort": "none",   "description": "关思考 —— 最快" },
+     { "effort": "medium", "description": "默认 —— 速度与正文完整度的平衡点" }
+   ]
+   ```
+
+   本机原来写的是裸字符串数组 `["none","low","medium","xhigh"]`,指路之后**整份
+   catalog 加载失败**,报 `invalid type: string "none", expected struct
+   ReasoningEffortPreset`。两层都修完,警告消失、选单出现四档、`ctrl-up` 生效。
+
+✅ **顺带修好的两件事**(都是同一个根因的副作用):catalog 里的
+`context_window = 262144` 终于落地(在此之前压缩阈值一直吃 fallback);
+codex 不再发 `reasoning.summary = "auto"` —— 它现在读得到
+`supports_reasoning_summaries: false` 了。
+
+#### 全链路抓包:改档到底发出去了什么
+
+本地起一个记录代理(codex → 127.0.0.1 → `:8888`),TUI 里 `ctrl-up` 后再发一条:
+
+```
+effort=medium  input_types=['message','message','message']
+effort=xhigh   input_types=['message','message','message','reasoning','message','message']   ← ctrl-up 之后
+```
+
+✅ 走的是**请求级 `reasoning.effort`**,不是 `configuration_update` input item。
+这点必须验:SGLang 对未知 input item 是**硬 400**
+(`Unsupported Responses API input item type: 'configuration_update'`),
+真走那条路会当场炸掉会话。
+
+⚠️ **`local` / `m2` 两个 profile 至今没有 catalog**,所以它们仍然是
+"metadata not found + shortcuts unavailable" 的状态。其中 `m2` 指的
+Qwen3.6-35B-A3B 另有一层:2026-09-21 实测 omlx 对 `reasoning.effort`
+的 7 个值**全部 200、全部 `reasoning_tokens=0`**,思考过程被当正文吐出来 ——
+那一栈的开关是 `chat_template_kwargs.enable_thinking`,不是 effort。
+
+⚠️ **选单里的另外两条是陷阱。** catalog 是一份共用文件,写了它的 profile 在
+`/model` 里会看到全部三条;而 codex 不能跨 provider 切换,选中别的条目只会把那个
+**模型名**发给当前 provider 的 `base_url` —— `:8888` 是 SGLang,**什么名字都收**
+(gotcha #10),于是静默串台。要根治就给每个 profile 单独一份 catalog 文件。
 
 ### reasoning effort:三套栈的档位语义完全不同
 

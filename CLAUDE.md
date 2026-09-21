@@ -381,8 +381,8 @@ client-cleanup section of `docs/clients-cn.md` described a `~/.codex` that did
 not exist: it claimed `bifrost.config.toml` was deleted (it was not), that
 `[model_providers.bifrost]` was gone from every config (it was in `config.toml`),
 and it named four per-profile catalogs that were nowhere on disk. The actual
-cleanup then ran: two dead slugs out of `dgx-models.json` (there is no shared
-catalog — see `## Connecting from clients`), the `deepseek` and
+cleanup then ran: two dead slugs out of the catalog (A's shared `models.json`,
+B's `dgx-models.json` — two machines, see `## Connecting from clients`), the `deepseek` and
 `bifrost` profiles deleted, the dead `:8000` entry out of `~/.qwen/settings.json`,
 `BIFROST_VK` and `alias codex-dgx` out of `~/.zshrc`. Generalize it: **`~/.codex`
 is not in git, so writing "cleaned up" in a doc is the only record there is —
@@ -749,25 +749,44 @@ codex --profile m2         # → 100.89.15.120:8000 the M2 box's omlx
 qwen                       # boot default; ./scripts/qwen-model-switch.sh sglang to flip
 ```
 
-⚠️ **Both claims that used to stand here were wrong, and both were "verified".**
-Re-measured 2026-09-20 23:15 by `stat`-ing every file and parsing every overlay
-with `tomllib`, not from memory:
-- **`--profile qwen38` / `litellm` / `mac` all exist** — and `qwen38.config.toml`
-  was born 2026-08-15, `mac.config.toml` 2026-08-16, i.e. *weeks before* the
-  "verified 2026-09-20" that said they did not. There are **seven** overlays.
-  `codex --help` (0.155.1) states the mechanism: `-p/--profile <name>` layers
-  `$CODEX_HOME/<name>.config.toml` on the base config — **a file is a profile**,
-  there is no `[profiles.*]` table anywhere.
-- **Catalogs are per profile, not shared.** `~/.codex/models.json` does not
-  exist; `dgx` / `fndgx` / `qwen38` / `litellm` each set `model_catalog_json` to
-  their own `<name>-models.json`, so a `/model` picker shows only that profile's
-  slugs. The old "one stale entry pollutes every picker" is the opposite of what
-  this machine does.
-⚠️ What survives unchanged: **`dgx` and `qwen38` point at the same S1 `:8888`**,
-where only one stack can be live, and SGLang answers **200 to any model name**
-(gotcha #10) — so picking the wrong one is silent.
+⚠️ **There are at least two `~/.codex` trees, on two client Macs, and they differ**
+(found while merging on 2026-09-26). A = `Matthews-MacBook-Pro`, B = the machine
+ce00239 was measured on (hostname not recorded). This section and
+`docs/clients-cn.md` flip-flopped for a week because each machine "corrected" the
+doc to match **its own** disk — both `stat`s were right, "本机" was the bug:
+- **A** has four overlays (`dgx` / `fndgx` / `local` / `m2`) and **one shared**
+  `~/.codex/models.json`. `find ~ -maxdepth 4` finds none of B's
+  `qwen38` / `litellm` / `mac` overlays or any `*-models.json` (re-run 2026-09-26).
+- **B** has seven overlays — `--profile qwen38` / `litellm` / `mac` exist there,
+  born 2026-08-15 / 09-09 / 08-16 — and **per-profile** catalogs: `dgx` / `fndgx` /
+  `qwen38` / `litellm` each set `model_catalog_json` to their own
+  `<name>-models.json`, and B has no `models.json`.
+`codex --help` (0.155.1) states the mechanism both share: `-p/--profile <name>`
+layers `$CODEX_HOME/<name>.config.toml` on the base config — **a file is a
+profile**, there is no `[profiles.*]` table anywhere.
+
+⚠️ **On A, codex 0.155.1 never loaded `~/.codex/models.json` at all (found
+2026-09-21).** It ships a bundled catalog and reads a custom one only when a
+profile sets `model_catalog_json = "<path>"`, which none on A did (B's already
+did). The live symptom was
+`Model metadata for qwen3.8-27b-sglang not found. Defaulting to fallback
+metadata` plus `Reasoning shortcuts are unavailable for <model>` — i.e. **the
+`/model` effort picker and ctrl-up/ctrl-down did nothing**, and the catalog's
+`context_window = 262144` never reached the compaction threshold either.
+A's `dgx` and `fndgx` now set it (schema also had to change: `supported_reasoning_levels`
+must be `[{effort, description}]`, not bare strings, or the **whole** catalog
+fails to load). ⚠️ It **replaces** the bundled catalog rather than merging, so it
+belongs in a profile, never in `config.toml`. On A the file is shared, so a profile
+that loads it sees all three slugs in `/model`, where picking another one silently
+retargets the current provider's `base_url` (`:8888` is SGLang: any model name
+returns 200 — gotcha #10). ❌ `model_max_output_tokens` is an unknown field in
+0.155.1 (silently ignored; `--strict-config` names it) and was deleted from A's
+`dgx` / `fndgx`. Full account + measured ladders: `docs/clients-cn.md`.
+⚠️ True on both machines: **`dgx` and `qwen38` point at the same S1 `:8888`**,
+where only one stack can be live — so picking the wrong one is silent.
 ⚠️ Generalized: `~/.codex` is not in git, so a sentence here is the only record —
-and a "verified" with no pasted `ls`/`stat` output behind it is worth nothing.
+a "verified" with no pasted `ls`/`stat` output behind it is worth nothing, and
+**one with no hostname behind it is only true of one machine.**
 
 ⚠️ Thinking kwargs **and** the CoT response field differ per stack
 (`thinking`/`enable_thinking`, `reasoning_content`/`reasoning`) — both fail
