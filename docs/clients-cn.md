@@ -327,6 +327,22 @@ gotcha #10 的形状:**状态码验不出你发的档位是不是生效的档位
 catalog 条目 `qwen3.8-flash-next` 的 `context_window` = **262144**
 = 服务端 `--max-model-len`(`native` profile,不是 YaRN 的 500k)。
 
+✅ **端到端跑通,2026-09-20 23:12** —— 不是"配置看着对",是真的跑了一次 codex:
+
+```
+$ codex exec --profile fndgx --sandbox read-only "Reply with exactly: PROFILE_OK"
+model: qwen3.8-flash-next
+provider: fndgx
+reasoning effort: medium
+...
+PROFILE_OK      (tokens used 2,843)
+```
+
+这一条比重放 `curl` 强一档:它证明的是 **codex 自己**把 overlay、provider、
+catalog、`LOCAL_LLM_API_KEY` 四样东西串起来了 —— 而重放 `curl` 只证明端点活着。
+`--profile dgx` 当年就是靠重放验的,结果放过了 `xhigh`/`medium` 那处漂移
+(两个值都回 200)。**能跑 `codex exec` 就别只 `curl`。**
+
 ---
 
 ## Qwen Code CLI
