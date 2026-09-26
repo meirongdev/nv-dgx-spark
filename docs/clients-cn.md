@@ -87,11 +87,12 @@ codex                        # 默认:ChatGPT 额度;A 的 config.toml 写 gpt-5
 🧹 **2026-09-20 客户端清理**(`~/.codex` 不进 git,记在这里免得再漂)
 
 ⚠️ **先说一条元教训:这一节的上一版记的清理,磁盘上并没有发生。**
-2026-09-20 22:49 逐个文件复核,发现本节当时声称的状态里有五处与磁盘不符:
+2026-09-20 22:49 在机器 A 上逐个文件复核,发现本节当时声称的状态里有五处与 A 的磁盘不符
+(其中 `*-models.json` 那几处,后来查明是 B 上的真实布局 —— 见下面「两套 `~/.codex`」):
 它说"已删除"的 `bifrost.config.toml` **还在**,说"早就不在任何配置文件里"的
 `[model_providers.bifrost]` **还在 `config.toml` 里**,而它点名的
 `dgx-models.json` / `qwen38-models.json` / `fndgx-models.json` / `litellm-models.json`
-**全盘不存在**(`find ~ -maxdepth 4` 查过,`CODEX_HOME` 也确认未设置)。
+在 A 上**全盘不存在**(`find ~ -maxdepth 4` 查过,`CODEX_HOME` 也确认未设置)。
 **写下"已清理"和"确实清理了"是两件事;`~/.codex` 不进 git,没有任何东西会
 替你发现二者不一致。** 下次改完请贴实测输出,别贴意图。
 
@@ -303,7 +304,7 @@ metadata` 警告 —— 否则 codex 会拿 GPT-5 的 `272000×95%=258400` 当�
    ]
    ```
 
-   本机原来写的是裸字符串数组 `["none","low","medium","xhigh"]`,指路之后**整份
+   A 上原来写的是裸字符串数组 `["none","low","medium","xhigh"]`,指路之后**整份
    catalog 加载失败**,报 `invalid type: string "none", expected struct
    ReasoningEffortPreset`。两层都修完,警告消失、选单出现四档、`ctrl-up` 生效。
 
@@ -332,10 +333,10 @@ Qwen3.6-35B-A3B 另有一层:2026-09-21 实测 omlx 对 `reasoning.effort`
 的 7 个值**全部 200、全部 `reasoning_tokens=0`**,思考过程被当正文吐出来 ——
 那一栈的开关是 `chat_template_kwargs.enable_thinking`,不是 effort。
 
-⚠️ **选单里的另外两条是陷阱。** catalog 是一份共用文件,写了它的 profile 在
+⚠️ **(机器 A)选单里的另外两条是陷阱。** A 的 catalog 是一份共用文件,写了它的 profile 在
 `/model` 里会看到全部三条;而 codex 不能跨 provider 切换,选中别的条目只会把那个
 **模型名**发给当前 provider 的 `base_url` —— `:8888` 是 SGLang,**什么名字都收**
-(gotcha #10),于是静默串台。要根治就给每个 profile 单独一份 catalog 文件。
+(gotcha #10),于是静默串台。要根治就给每个 profile 单独一份 catalog 文件 —— 机器 B 就是这么配的。
 
 ### reasoning effort:三套栈的档位语义完全不同
 
