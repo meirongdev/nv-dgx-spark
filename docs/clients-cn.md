@@ -61,14 +61,21 @@ Claude Code 发的 `high` 和 `max` —— 因为上游 `serve.sh` 的 `EFFORT_A
 ```bash
 codex --profile dgx          # → :8888  qwen3.8-27b-sglang(2026-09-19 起,主力,S1)
 codex --profile fndgx        # → :18300 qwen3.8-flash-next(2026-09-20 起,单机,S2)
+codex --profile qwen38       # → :8888  qwen38-27b(⚠️ 与 dgx 抢同一个端口,见下)
+codex --profile litellm      # → llm.meirong.dev 网关 → custom_dgx/qwen3.8-27b-sglang
+codex --profile mac          # → 同一个网关,但点名 Mac 兜底模型 mac/ornith
 codex --profile local        # → 127.0.0.1:8000  Mac 本地 omlx(gemma-4 26B QAT)
 codex --profile m2           # → 100.89.15.120:8000  M2 那台的 omlx(不经 DGX)
-codex                        # 默认:ChatGPT 额度;现场 config.toml 写的是 gpt-5.5
+codex                        # 默认:ChatGPT 额度;现场 config.toml 写的是 gpt-5.4-mini
 ```
 
-⚠️ **`--profile qwen38` / `litellm` / `mac` 三个 profile 在本机并不存在** ——
-2026-09-20 复核 `~/.codex` 只有 `dgx` / `fndgx` / `local` / `m2` 四个 overlay,
-上面曾列出的那三个没有对应的 `*.config.toml`。它们的教训仍然成立,照抄前先建文件。
+⚠️ **订正(2026-09-20 23:15):这一节原先写的"`qwen38` / `litellm` / `mac` 三个
+profile 在本机并不存在"是错的 —— 三个文件都在盘上,而且都早于那句"复核"。**
+`stat` 出生时间:`qwen38.config.toml` **2026-08-15**、`mac.config.toml` **2026-08-16**、
+`litellm.config.toml` **2026-09-09**。也就是说,写下"复核发现不存在"的那一刻,
+它们已经躺在 `~/.codex` 里一到五周了。
+**这是本节第三次同型事故,教训因此再收紧一格:不要写"复核发现 X 不存在",
+贴 `ls -la` / `stat` 的原文。** 一句没有输出撑着的"复核"和没复核完全等价。
 
 ⚠️ **其中 qwen38 那条教训适用于任何指向 `:8888` 的 profile,而且失败是静默的。**
 `qwen38` 和主力 `qwen38un` 都占 S1 的 `:8888`(互斥),当前跑的是 `qwen38un`;
@@ -87,20 +94,40 @@ codex                        # 默认:ChatGPT 额度;现场 config.toml 写的�
 **写下"已清理"和"确实清理了"是两件事;`~/.codex` 不进 git,没有任何东西会
 替你发现二者不一致。** 下次改完请贴实测输出,别贴意图。
 
-**本机 `~/.codex` 的实测布局(2026-09-20 复核):**
-- overlay profile 只有四个:`dgx.config.toml` / `fndgx.config.toml` /
-  `local.config.toml` / `m2.config.toml`。
-- ⚠️ **没有任何 profile 写 `model_catalog_json`** —— 四个 profile **共用同一份**
-  `~/.codex/models.json`。所以 catalog 里任何一条死模型,在**每个** profile 的
-  `/model` 选单里都看得见,不存在"只污染一个 profile"这回事。
+**本机 `~/.codex` 的实测布局(2026-09-20 23:15 重测:逐个 `tomllib.load` + `stat`,
+不是凭印象):**
+
+| overlay | `model` | `model_provider` → `base_url` | `model_catalog_json` | effort |
+|---|---|---|---|---|
+| `dgx.config.toml` | `qwen3.8-27b-sglang` | `dgx` → `100.97.87.120:8888/v1` | `dgx-models.json` | `none` |
+| `fndgx.config.toml` | `qwen3.8-flash-next` | `fndgx` → `100.67.164.92:18300/v1` | `fndgx-models.json` | `medium` |
+| `qwen38.config.toml` | `qwen38-27b` | `qwen38` → `100.97.87.120:8888/v1` | `qwen38-models.json` | `medium` |
+| `litellm.config.toml` | `custom_dgx/qwen3.8-27b-sglang` | `litellm`(provider 定义在 `config.toml`) | `litellm-models.json` | `medium` |
+| `mac.config.toml` | `mac/ornith` | `litellm`(同上) | (无) | `high` |
+| `local.config.toml` | `mlx-community__gemma-4-26B-A4B-it-qat-nvfp4` | `local-omlx` → `127.0.0.1:8000/v1` | (无) | (未设) |
+| `m2.config.toml` | `gpt-5.5` | `m2` → `100.89.15.120:8000/v1` | (无) | `high` |
+
+- **七个 overlay,不是四个。**`-p/--profile` 的官方语义(`codex --help`,0.155.1)是
+  "Layer `$CODEX_HOME/<name>.config.toml` on top of the base user config" ——
+  **建个文件就是建个 profile**,`config.toml` 里不需要也没有任何 `[profiles.*]` 段。
+- ⚠️ **`~/.codex/models.json` 并不存在,catalog 不是共用的。** 四个 profile 各写各的
+  `model_catalog_json`(上表第四列),所以 `/model` 选单是**按 profile 隔离**的:
+  `dgx` 里只有 `qwen3.8-27b-sglang`,`fndgx` 里只有 `qwen3.8-flash-next`。
+  上一版写的"加一条就是给所有 profile 加、不存在只污染一个 profile 这回事"**正好说反了**。
+  `local` / `m2` / `mac` 没有 catalog,走 codex 的 fallback 元数据。
+- ⚠️ `dgx` 和 `qwen38` **两个 profile 指向同一个 `100.97.87.120:8888`**,而那个端口
+  同一时刻只有一个栈在跑(当前是 `qwen38un`)。加上 gotcha #10(SGLang 什么模型名都收),
+  **选错的表现是 200 + 原样回显,不是报错。** 见上面那条警告。
 
 **本次实际删掉的东西(都指向 2026-09-20 随 k3s 删除的 `qwen38fn` / `v4flash`):**
-- `~/.codex/models.json` 删掉 `qwen38-flash-next` 和 `deepseek-v4-flash` 两条。
+- `~/.codex/dgx-models.json` 删掉 `qwen38-flash-next` 和 `deepseek-v4-flash` 两条
+  (⚠️ 订正:这里原先写的是 `models.json`,那个文件从来不存在;删前的三条留在
+  `dgx-models.json.bak-20260920-223027` 里,可以对照)。
   后者尤其危险:它的 `context_window` 写着 65536 而 `bifrost.config.toml` 里写
   1000000,两处从来没对齐过;而 `:8888` 是 SGLang(收任何模型名),在 `/model` 里
   选中它不会报错,只会拿一个错的压缩阈值去打一个 262144 的服务端。
-  现在 catalog 剩三条:`qwen3.8-27b-sglang`、`qwen3.8-flash-next`、
-  `mlx-community__Qwen3.6-35B-A3B-nvfp4`。
+  现在 `dgx-models.json` 只剩 `qwen3.8-27b-sglang` 一条;四份 catalog 各只有一条
+  (见上表)。
 - `~/.codex/deepseek.config.toml` 整个删除:模型是已删的 `deepseek-v4-flash`,
   而且它声明的 `model_provider = "deepseek-local"` **全盘没有任何地方定义过** ——
   这个 profile 无论集群侧是什么状态都起不来。
@@ -168,8 +195,9 @@ codex                        # 默认:ChatGPT 额度;现场 config.toml 写的�
 > 故 `dgx.config.toml` 默认 `medium`。
 >
 > ⚠️ 窗口靠 **catalog 条目的 `context_window`**,**不是** `model_context_window`
-> (后者对压缩阈值不起作用)。⚠️ **本机没有 per-profile catalog** —— 2026-09-20 复核:
-> 没有任何 profile 写 `model_catalog_json`,四个 profile **共用** `~/.codex/models.json`。
+> (后者对压缩阈值不起作用)。⚠️ **订正 2026-09-20 23:15:本机用的正是 per-profile
+> catalog** —— `dgx` / `fndgx` / `qwen38` / `litellm` 四个 profile 各写各的
+> `model_catalog_json`,`~/.codex/models.json` 不存在。
 > 每条 DGX 条目都写 262144 = 服务端 `--max-model-len`。
 > (历史:旧的 `deepseek-v4-flash` catalog 写 65536 而 config 写 1000000 —— 一直按
 > 64K 在跑,两处从未对齐。该条目已于 2026-09-20 连同 `qwen38-flash-next`
@@ -182,8 +210,9 @@ codex                        # 默认:ChatGPT 额度;现场 config.toml 写的�
 
 Profile V2 的 overlay 文件是 `~/.codex/<name>.config.toml`,每个自带
 `[model_providers.<name>]`。**不要用 `model_context_window`** —— 那个键对压缩阈值
-不起作用;窗口要交给 catalog。⚠️ 本机的 catalog 是**共用的** `~/.codex/models.json`
-(无 `model_catalog_json`),所以往里加一条就是给所有 profile 都加,删一条同理。
+不起作用;窗口要交给 catalog。⚠️ 本机是**每个 profile 一份** catalog
+(`model_catalog_json = "~/.codex/<name>-models.json"`),所以加一条只影响那一个
+profile 的 `/model` 选单 —— 换句话说,**换栈时每份 catalog 都要各改各的**。
 
 三个必须写对的 provider 字段:
 
@@ -433,8 +462,9 @@ curl -s http://100.97.87.120:8888/v1/chat/completions \
 
 两个 CLI 的配置都在家目录,**不随 repo 走**:
 
-- **codex**:`~/.codex/<name>.config.toml`,外加**一份共用的** `~/.codex/models.json`
-  (本机实测布局:没有 per-profile 的 `<name>-models.json`,也没有 `model_catalog_json`),
+- **codex**:`~/.codex/<name>.config.toml`,外加**每个 profile 自己那份**
+  `~/.codex/<name>-models.json`(由该 overlay 的 `model_catalog_json` 指过去;
+  本机 2026-09-20 实测布局,`~/.codex/models.json` 不存在),
   再加 `~/.zshrc` 里 `export LOCAL_LLM_API_KEY=dummy`。
   qwen38 的完整重建步骤(含生成 catalog 的 python)见
   `stacks/qwen38/runbook-cn.md` §6.3。

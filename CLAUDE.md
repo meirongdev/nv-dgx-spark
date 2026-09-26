@@ -381,7 +381,8 @@ client-cleanup section of `docs/clients-cn.md` described a `~/.codex` that did
 not exist: it claimed `bifrost.config.toml` was deleted (it was not), that
 `[model_providers.bifrost]` was gone from every config (it was in `config.toml`),
 and it named four per-profile catalogs that were nowhere on disk. The actual
-cleanup then ran: two dead slugs out of the shared catalog, the `deepseek` and
+cleanup then ran: two dead slugs out of `dgx-models.json` (there is no shared
+catalog — see `## Connecting from clients`), the `deepseek` and
 `bifrost` profiles deleted, the dead `:8000` entry out of `~/.qwen/settings.json`,
 `BIFROST_VK` and `alias codex-dgx` out of `~/.zshrc`. Generalize it: **`~/.codex`
 is not in git, so writing "cleaned up" in a doc is the only record there is —
@@ -740,21 +741,33 @@ rebuild on a new machine: **`docs/clients-cn.md`**.
 ```bash
 codex --profile dgx        # → :8888  qwen3.8-27b-sglang (primary, since 2026-09-19)
 codex --profile fndgx      # → :18300 qwen3.8-flash-next (S2, since 2026-09-20)
+codex --profile qwen38     # → :8888  qwen38-27b  ⚠️ same port as dgx
+codex --profile litellm    # → llm.meirong.dev gateway → custom_dgx/qwen3.8-27b-sglang
+codex --profile mac        # → same gateway, pinned to the Mac fallback (mac/ornith)
 codex --profile local      # → 127.0.0.1:8000 Mac-local omlx
 codex --profile m2         # → 100.89.15.120:8000 the M2 box's omlx
 qwen                       # boot default; ./scripts/qwen-model-switch.sh sglang to flip
 ```
 
-⚠️ **There is no `--profile qwen38`** — `stacks/qwen38` exists, a codex profile
-for it does not (verified 2026-09-20). Same for `litellm` / `mac`, which
-`docs/clients-cn.md` listed until that date. Create the file before quoting them.
-
-⚠️ **All codex profiles share ONE catalog**, `~/.codex/models.json` — no profile
-sets `model_catalog_json` (verified 2026-09-20). So a stale entry there is
-visible in **every** profile's `/model` picker, not just the one it belongs to,
-and `:8888` being SGLang means picking it returns **200** with the wrong engine
-behind it (gotcha #10). It currently holds exactly three slugs; the two that
-pointed at the stacks deleted with k3s were removed on 2026-09-20.
+⚠️ **Both claims that used to stand here were wrong, and both were "verified".**
+Re-measured 2026-09-20 23:15 by `stat`-ing every file and parsing every overlay
+with `tomllib`, not from memory:
+- **`--profile qwen38` / `litellm` / `mac` all exist** — and `qwen38.config.toml`
+  was born 2026-08-15, `mac.config.toml` 2026-08-16, i.e. *weeks before* the
+  "verified 2026-09-20" that said they did not. There are **seven** overlays.
+  `codex --help` (0.155.1) states the mechanism: `-p/--profile <name>` layers
+  `$CODEX_HOME/<name>.config.toml` on the base config — **a file is a profile**,
+  there is no `[profiles.*]` table anywhere.
+- **Catalogs are per profile, not shared.** `~/.codex/models.json` does not
+  exist; `dgx` / `fndgx` / `qwen38` / `litellm` each set `model_catalog_json` to
+  their own `<name>-models.json`, so a `/model` picker shows only that profile's
+  slugs. The old "one stale entry pollutes every picker" is the opposite of what
+  this machine does.
+⚠️ What survives unchanged: **`dgx` and `qwen38` point at the same S1 `:8888`**,
+where only one stack can be live, and SGLang answers **200 to any model name**
+(gotcha #10) — so picking the wrong one is silent.
+⚠️ Generalized: `~/.codex` is not in git, so a sentence here is the only record —
+and a "verified" with no pasted `ls`/`stat` output behind it is worth nothing.
 
 ⚠️ Thinking kwargs **and** the CoT response field differ per stack
 (`thinking`/`enable_thinking`, `reasoning_content`/`reasoning`) — both fail
