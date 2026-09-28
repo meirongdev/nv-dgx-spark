@@ -630,3 +630,26 @@ curl -s http://100.97.87.120:8888/v1/chat/completions \
   `stacks/qwen38/runbook-cn.md` §6.3。
 - **Qwen Code**:`~/.qwen/settings.json`,最小可用骨架见
   `stacks/qwen38/runbook-cn.md` §6.2。repo 内的 `.qwen/.env` 是 gitignored 的。
+
+⚠️ **(机器 A,2026-09-28)codex 0.157.1 的二进制在本机起不来 —— 与配置无关。**
+9-26 经 homebrew cask 升级到 0.157.1 后,`/opt/homebrew/bin/codex` 在 macOS 26.5.1
+(25F80)上卡在 `_dyld_start`:0 CPU、footprint ~112K、`DYLD_PRINT_LIBRARIES=1`
+一个库都不打印,`--version` / `exec` / `completion zsh` 全一样(表现就是
+"codex 突然访问不了任何模型",其实它连 main() 都没进去)。升级前留在
+`Caskroom/codex/0.155.1.upgrading/` 的旧二进制毫秒级启动、`exec` 端到端可用 ——
+定位是 0.157.1 与本机 macOS 的兼容问题,不是 `~/.codex` 配置,也不是端点。
+处置:把 0.155.1 拷到 brew 清理够不着的稳定路径,再改符号链接
+(直连 `.upgrading` 目录的话,一次 `brew cleanup` 就能把可用的二进制删掉):
+
+```
+cp /opt/homebrew/Caskroom/codex/0.155.1.upgrading/bin/codex /opt/homebrew/bin/codex-0.155.1
+ln -sfn /opt/homebrew/bin/codex-0.155.1 /opt/homebrew/bin/codex
+```
+
+回滚后 `codex exec --profile fndgx "Reply with exactly: OK"` 端到端通过(答
+`OK`,2,490 tokens,rc=0)。⚠️ 之后再 `brew upgrade codex`:若 `codex --version`
+不秒回,先怀疑二进制,别再查配置。
+另:`~/.codex/auth.json` 的 ChatGPT refresh token 在 2026-09-28 前后过期
+(启动时刷 `ERROR codex_login::auth::manager: Failed to refresh token`)。
+自定义 provider(fndgx 用 `LOCAL_LLM_API_KEY`)不受影响,只影响默认
+ChatGPT profile;`codex login` 可修。
