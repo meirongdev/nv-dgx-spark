@@ -141,11 +141,10 @@ sampling noise) — no intelligence regression.**
   engine. It was restarted and the watchdog re-armed with a 100 s crit debounce
   (`WATCH_CRIT_CONSEC=10`) so only sustained ≤1% pressure kills it. If it fires
   again at idle, investigate the actual memory drain before just re-arming.
-- ⏳ **Unverified on this stack**: aggregate concurrency ladder (upstream claims
-  288 tok/s @ c16 — not re-measured here), long context (262K configured, ~52K
+- ⏳ **Unverified on this stack**: long context (262K configured, ~52K
   longest prompt sent), multimodal (fndgx's image path was tested; this one's
-  isn't). Quality and per-question latency are measured; aggregate throughput
-  is not.
+  isn't).
+- ✅ **Verified on this stack**: aggregate concurrency ladder was re-measured on 2026-09-28. Scaled smoothly up to `max_num_seqs=16`, peaking at ~200.1 tok/s aggregate. This decisively broke through the previous `fndgx` ceiling of 113 tok/s.
 
 ## Previous state (2026-09-20) — k3s removed; two docker stacks: qwen38un on S1, fndgx on S2
 
