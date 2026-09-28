@@ -18,8 +18,8 @@ from it by `make stack-table` — don't hand-edit it.
 | 栈 | 节点 | 端点 | 引擎 / 运行时 | 状态 |
 |---|---|---|---|---|
 | **Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2**<br>`STACK=qwen38un` | 1 | `:8888` `qwen3.8-27b-sglang` | sglang / docker | **primary (2026-09-19 起)** |
-| Qwen3.8-Flash-Next NVFP4 单机 (PLE mmap + hybrid)<br>`STACK=fndgx` | 1 | `:18300` `qwen3.8-flash-next` | vllm-ple-mmap / docker | S2 常驻 —— 与主力栈并跑 |
 | GLM-5.3-Flash EXL3 4bpw<br>`STACK=glm53` | 2 | `:8888` `GLM-5.3-Flash-EXL3` | vllm-exl3 / docker | 唯一 rollback —— 850K ctx |
+| Qwen3.8-Flash-Next NVFP4 单机 (bilikaz hibrid48, K=5 MTP)<br>`STACK=hibrid48` | 1 | `:18300` `qwen3.8-flash-next` | vllm-hibrid48 / docker | S2 常驻 —— 与主力栈并跑 (2026-09-28 顶替 fndgx) |
 | Qwen3.8-27B-NVFP4 (censored, no speculator)<br>`STACK=qwen38` | 1 | `:8888` `qwen38-27b` | vllm / docker | retired-ish —— 24.9 tok/s |
 <!-- END generated:stacks -->
 

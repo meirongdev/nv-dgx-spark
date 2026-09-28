@@ -17,8 +17,8 @@ one is primary, the rest are ways back:
 | 栈 | 节点 | 端点 | 引擎 / 运行时 | 状态 |
 |---|---|---|---|---|
 | **Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2**<br>`STACK=qwen38un` | 1 | `:8888` `qwen3.8-27b-sglang` | sglang / docker | **primary (2026-09-19 起)** |
-| Qwen3.8-Flash-Next NVFP4 单机 (PLE mmap + hybrid)<br>`STACK=fndgx` | 1 | `:18300` `qwen3.8-flash-next` | vllm-ple-mmap / docker | S2 常驻 —— 与主力栈并跑 |
 | GLM-5.3-Flash EXL3 4bpw<br>`STACK=glm53` | 2 | `:8888` `GLM-5.3-Flash-EXL3` | vllm-exl3 / docker | 唯一 rollback —— 850K ctx |
+| Qwen3.8-Flash-Next NVFP4 单机 (bilikaz hibrid48, K=5 MTP)<br>`STACK=hibrid48` | 1 | `:18300` `qwen3.8-flash-next` | vllm-hibrid48 / docker | S2 常驻 —— 与主力栈并跑 (2026-09-28 顶替 fndgx) |
 | Qwen3.8-27B-NVFP4 (censored, no speculator)<br>`STACK=qwen38` | 1 | `:8888` `qwen38-27b` | vllm / docker | retired-ish —— 24.9 tok/s |
 <!-- END generated:stacks -->
 
@@ -28,7 +28,7 @@ one is primary, the rest are ways back:
 ⚠️ **Mutual exclusion is now per-node, not registry-wide** (changed 2026-09-20).
 Two stacks conflict when their **GPU node sets intersect** — `STACK_GPU_NODES` in
 each `stack.env`, enforced by `stacks/_lib/preflight.sh`. So `qwen38un` (S1) and
-`fndgx` (S2) run **at the same time**, which is what makes the idle box usable at
+`hibrid48` (S2) run **at the same time**, which is what makes the idle box usable at
 all; `glm53` still collides with both, because a TP=2 stack's **rank1 also eats
 S2's GPU** and its **rank0 eats S1's**. Several stacks claim `:8888`.
 `make run STACK=<id>` refuses to start against an overlapping stack, and its
@@ -43,11 +43,14 @@ were deleted 2026-09-20), so it is the only thing keeping that code path exercis
 `glm53` and you must add a synthetic two-node fixture there, or the most expensive
 case in gotcha #2 stops being tested.
 
-⚠️ **Two stacks are running right now** — `qwen38un` on S1 (primary) and `fndgx`
-on S2. The primary being single-node removes the whole TP=2 failure class
-(gotcha #1's zombie collectives, cross-node NCCL/RoCE, the lockstep restart rule),
-but it also means **`make memwatch` alone only guards the primary** — `fndgx`
-needs its own `make memwatch STACK=fndgx` instance, in its own tmux session.
+⚠️ **Two stacks are running right now** — `qwen38un` on S1 (primary) and
+`hibrid48` on S2 (replaced `fndgx` on 2026-09-28, same endpoint). The primary
+being single-node removes the whole TP=2 failure class (gotcha #1's zombie
+collectives, cross-node NCCL/RoCE, the lockstep restart rule), but it also means
+**`make memwatch` alone only guards the primary** — `hibrid48` needs its own
+`make memwatch STACK=hibrid48` instance, in its own tmux session (running as
+`memwatch-hibrid48` with `WATCH_WARN_PCT=3 WATCH_CRIT_PCT=1`, because the stack
+idles at ~2.4% available by design).
 
 ⚠️ **Four different engines are in play** (vLLM / vLLM+EXL3 overlay / SGLang /
 vLLM+PLE-mmap) and **six different thinking-kwarg semantics**. There is no shared
@@ -55,8 +58,9 @@ default. They live in each stack's `STACK_THINK_KWARG` / `STACK_THINK_OFF` /
 `STACK_COT_FIELD`, and `docs/clients-cn.md` carries the generated cross-stack
 table. Getting this wrong is silent — gotcha #9. ⚠️ **The same model can have two
 different CoT fields on two different engine builds**: the now-deleted `qwen38fn`
-recorded `reasoning_content`, while `fndgx` — same checkpoint family, newer preview
-image — measurably returns `reasoning` and `reasoning_content` is always `None`.
+recorded `reasoning_content`, while `fndgx` / `hibrid48` — same checkpoint
+family, newer preview images — measurably return `reasoning` and
+`reasoning_content` is always `None`.
 The lesson outlives the stack: **never infer the CoT field from the model name.**
 
 ✅ **Switching the primary stack is `make switch TO=<id>`.** "Which stack is
@@ -68,9 +72,13 @@ command and listed in `docs/stack-switch-cn.md`.
 - **Qwen3.8-27B-Uncensored + SGLang** (`qwen38un`, primary, S1): NVFP4 + DFlash2
   speculator, single node. Code **45.4** tok/s single-stream; concurrency **472.7
   tok/s aggregate @ c12**, the best this repo has measured. Also multimodal.
-- **Flash-Next single-node** (`fndgx`, S2): same model family as the retired
-  `qwen38fn`, but `mmap`s the 48 GiB PLE table off NVMe so it fits one box.
-  48.0 tok/s code; aggregate flatlines at **113 tok/s @ c8** because `SEQS=8`.
+- **Flash-Next single-node** (`hibrid48`, S2, bilikaz v4 recipe): 4-bit output
+  head + fused K=5 MTP, 105 GiB checkpoint, 830K-token KV pool, `max-num-seqs=16`.
+  Same-question A/B (2026-09-28): **1.3–1.6× faster per question at
+  equal-or-better four-suite quality** → replaced `fndgx` (RadixArk, 48 GiB PLE
+  table, 48.0 tok/s code, 113 tok/s @ c8), which is retired to
+  `stacks/fndgx/stack.env.retired-2026-09-28` and still restorable. Data:
+  `benchmarks/ab-radixark-vs-hibrid48-2026-09-28/`.
 - **GLM-5.3-Flash EXL3** (`glm53`, rollback, **TP=2 across both nodes**): 64.3 tok/s
   structured, 850K nominal ctx. ⚠️ Starting it requires stopping **both** live
   stacks, and its host headroom (1.8–2.0%) is too low for `make memwatch` to run.
@@ -87,12 +95,63 @@ cluster. **Numbers below that compare against them are history, not options.**
 
 **Target hosts** (edit `HOSTS` in Makefile to change):
 - `100.97.87.120` — server 1 / `spark-ccf3` (primary `qwen38un`; glm53's rank0)
-- `100.67.164.92` — server 2 / `spark-2435` (`fndgx`; glm53's rank1)
+- `100.67.164.92` — server 2 / `spark-2435` (`hibrid48`; glm53's rank1)
 - SSH: `admin` + `~/.ssh/vgio`
 - `192.168.200.101/102` — the internal 200G CX7 link. Carries the TP=2 NCCL
   traffic (bypassing the CNI) and inter-node file copies.
 
-## Current state (2026-09-20) — k3s removed; two docker stacks: qwen38un on S1, fndgx on S2
+## Current state (2026-09-28) — S2 switched to hibrid48; fndgx retired
+
+**The S2 Flash-Next endpoint now serves bilikaz's `hibrid48`** — the same model
+as fndgx (Qwen3.8-Flash-Next NVFP4), a different engine build: 4-bit output
+head, 105 GiB checkpoint, 830K-token KV pool, fused K=5 MTP,
+`max-num-seqs=16`. The switch was decided by a same-question A/B
+(`benchmarks/ab-radixark-vs-hibrid48-2026-09-28/`): **1.3–1.6× faster per
+question (median 1.27–1.41×) at equal-or-better four-suite quality (Δ ≤ 2/200,
+sampling noise) — no intelligence regression.**
+
+- **External clients unchanged.** hibrid48 took over fndgx's whole external
+  identity: `:18300` / served name `qwen3.8-flash-next` / client alias `fndgx`.
+  S2's `recipe.yaml` carries exactly two local deviations from upstream (port
+  8000→18300, served name). Verified with real requests: `/v1/models`,
+  `/v1/chat/completions`, `/v1/responses` (effort xhigh / none). So
+  `codex --profile fndgx`, the qwen settings and the litellm gateway all keep
+  working with **zero changes** — the profile is still *named* `fndgx`, it just
+  reaches hibrid48 now.
+- **Registry**: `stacks/hibrid48` added (stack.env / launch.sh / preflight.sh /
+  test.sh / recipe.yaml); `stacks/fndgx/stack.env` renamed to
+  `stack.env.retired-2026-09-28` — fndgx is out of the registry but restorable
+  (recipe + runbook + the 126 GiB RadixArk weights all remain on S2; the two
+  weight sets hardlink-share disk). `make stack-table / stack-check /
+  preflight-test / memwatch-test` all green after the change.
+- ⚠️ **Thinking semantics differ from fndgx** (gotcha #9, new instance):
+  top-level `enable_thinking` is **silently ignored** on hibrid48 (measured:
+  72 reasoning tokens with `false`); only `chat_template_kwargs.enable_thinking`
+  really toggles it. CoT still comes back in `reasoning` (`reasoning_content`
+  always None). `/v1/responses` accepts low/medium/high/xhigh + none.
+  `stacks/hibrid48/stack.env` carries the measured values; `make test
+  STACK=hibrid48` asserts them.
+- **Watchdog handover**: `memwatch-fndgx` killed (it had been holding "fired"
+  since 09-27 21:12, during the 105 GiB weight download — its crit line was
+  tuned for a stack that no longer exists). `memwatch-hibrid48` runs with
+  `WATCH_WARN_PCT=3 WATCH_CRIT_PCT=1 WATCH_CRIT_CONSEC=10` — the stack idles at
+  ~2.4% available **by design** (bilikaz's recipe leaves ~2G), so the stock
+  crit=5% fires on startup. ⚠️ The first run proved it: at 09-28 09:57 a
+  page-cache reclamation dip to 1% (2 consecutive ticks) stopped a healthy
+  engine. It was restarted and the watchdog re-armed with a 100 s crit debounce
+  (`WATCH_CRIT_CONSEC=10`) so only sustained ≤1% pressure kills it. If it fires
+  again at idle, investigate the actual memory drain before just re-arming.
+- ⏳ **Unverified on this stack**: aggregate concurrency ladder (upstream claims
+  288 tok/s @ c16 — not re-measured here), long context (262K configured, ~52K
+  longest prompt sent), multimodal (fndgx's image path was tested; this one's
+  isn't). Quality and per-question latency are measured; aggregate throughput
+  is not.
+
+## Previous state (2026-09-20) — k3s removed; two docker stacks: qwen38un on S1, fndgx on S2
+
+⚠️ *Superseded as of 2026-09-28 for S2: `fndgx` was replaced by `hibrid48` (see
+the Current state section above). Everything below about S2/fndgx is history;
+the fndgx stack files remain on S2 and can be restored if needed.*
 
 ### k3s is gone from both nodes (2026-09-20)
 
@@ -461,7 +520,7 @@ make info                       # the current primary in detail (thinking kwarg,
 
 make run                        # preflight (whole-registry mutual exclusion) then start
 make run     STACK=glm53        # …a specific stack
-make status  STACK=fndgx        # containers + /v1/models + free -h
+make status  STACK=hibrid48     # containers + /v1/models + free -h
 make test    STACK=qwen38un     # smoke test — gated on /v1/models matching the registry
 make logs    STACK=glm53 WORKER=1      # rank1 (dual-node stacks only — glm53 is the last one)
 make boot-log STACK=glm53       # this boot's launcher output (not the engine log)
@@ -485,14 +544,22 @@ Per-stack notes that the verbs don't carry:
   103.09 GiB free vs the 103.44 GiB `gpu-memory-utilization` wanted — short by
   0.35 GiB, surfacing only 3 minutes in as a CUDA-layer `ValueError`.
   Fix: `sudo systemctl restart polkit`. Upstream hit the same growth (their #193).
-- **fndgx** — the only stack whose head is **S2**, and the only one wrapping a
-  third-party orchestrator (`./flash`, from blazux/qwen3.8-Flash-DGX).
-  ⚠️ It needs its **own** watchdog: `make memwatch STACK=fndgx`.
-  ⚠️ Its container carries `--restart unless-stopped`, so **it comes back by itself
-  after a host reboot** — no other docker stack here does.
-  ⚠️ Its Dockerfile carries a 7-line local patch (GitHub → jsDelivr); re-apply it
-  after any upstream pull, or the build cannot fetch its kernel sources.
-  `stacks/fndgx/runbook-cn.md` has the from-zero procedure.
+- **hibrid48** — the only stack whose head is **S2**. Serves bilikaz's
+  `myllmbox/qwen38-flash-next-vllm:v4` image; `run.sh` reads everything from
+  `recipe.yaml` (upstream kit layout under `/home/admin/hibrid48-recipe/`).
+  ⚠️ It needs its **own** watchdog: `make memwatch STACK=hibrid48`, and the stock
+  thresholds are **too high for this stack** (it idles at ~2.4% available by
+  design) — run it with `WATCH_WARN_PCT=3 WATCH_CRIT_PCT=1`, or it fires at boot
+  exactly the way `glm53` does at the default crit=5%.
+  ⚠️ `vm.compaction_proactiveness=0` must stay set on S2 (persisted in
+  `/etc/sysctl.d/99-myllmbox-compaction.conf` by the recipe's `tune-host.sh`);
+  upstream measured ~10% throughput loss without it. `stacks/hibrid48/preflight.sh`
+  warns (does not block) if it has drifted back to the kernel default 20.
+  ⚠️ Thinking kwarg differs from fndgx: top-level `enable_thinking` is silently
+  ignored here — only `chat_template_kwargs.enable_thinking` works (measured
+  2026-09-28, see `make test STACK=hibrid48`).
+  No runbook yet — its `recipe.yaml` (upstream copy) + the A/B account in
+  `benchmarks/ab-radixark-vs-hibrid48-2026-09-28/README.md` carry the reasoning.
 
 ⚠️ **Never restart a single rank of a TP=2 stack** — it leaves the survivor hung
 in collectives while `/health` and `/v1/models` still return 200. This is a
@@ -556,7 +623,7 @@ Normal shape — two independent single-node stacks, one per box:
    │ S1 spark-ccf3     │ ◄──────────► │ S2 spark-2435     │
    │ 192.168.200.101   │  RoCE/NCCL   │ 192.168.200.102   │
    │ docker            │  (idle when  │ docker            │
-   │ qwen38un  :8888   │   no TP=2)   │ fndgx    :18300   │
+   │ qwen38un  :8888   │   no TP=2)   │ hibrid48 :18300   │
    └──────────────────┘              └──────────────────┘
               │ Tailscale VPN (100.x)         │
               └───────────┬───────────────────┘
@@ -569,7 +636,7 @@ Normal shape — two independent single-node stacks, one per box:
 The TP=2 shape still exists, but **only `glm53` uses it**: one container per node,
 rank0 on S1 exposing the OpenAI API and rank1 on S2 headless with no endpoint of
 its own, NCCL/RoCE over the 200G link. It needs **both** boxes, so it cannot run
-while `qwen38un` or `fndgx` is up. Everything gotcha #1 says about never touching
+while `qwen38un` or `hibrid48` is up. Everything gotcha #1 says about never touching
 a single rank applies to it and nothing else.
 
 ## Unified memory constraints (GB10) — read before changing any launch flag
@@ -578,8 +645,11 @@ a single rank applies to it and nothing else.
 - **Don't over-allocate `gpu-memory-utilization`** — too high risks OOM freezes
   of sshd itself. Live values: `qwen38un` **0.80** (`mem-fraction-static`; 0.85
   was tried and rejected — see the table in `## Previous state (2026-09-19)`),
-  `fndgx` **0.80** (`GPU_MEM`; **never raise it**, upstream reports 0.85 drifting
-  into swap and 0.875 OOM-killed), `qwen38` **0.75**.
+  `hibrid48` **0.70** (`gpu-memory-utilization`; its KV pool is pinned
+  separately with `--kv-cache-memory 27G`, so this fraction does not size the
+  pool), `qwen38` **0.75**. (Retired `fndgx` ran `GPU_MEM` **0.80** with the
+  never-raise-it warning — upstream reports 0.85 drifting into swap, 0.875
+  OOM-killed.)
   Retired but still instructive: V4-Flash ran **0.80** because 0.85 caused a full
   head-node OOM on 2026-06-29, and Flash-Next went 0.80 → 0.75 on 2026-09-02
   because `scripts/mem-floor.sh` measured 8-way × 8K prompt leaving only 5 GiB
@@ -599,8 +669,12 @@ a single rank applies to it and nothing else.
   refuses to start (exit 3) if it cannot actually stop that stack. A k8s cgroup
   memory limit was tried and **rejected** — `docs/auto-mitigation-cn.md`.
   ⚠️ **One instance guards one stack.** With two stacks live you need two:
-  `make memwatch` (primary) **and** `make memwatch STACK=fndgx`, each in its own
-  tmux session. State/log files are per-stack, so they don't collide.
+  `make memwatch` (primary) **and** the S2 stack's own instance
+  (`WATCH_WARN_PCT=3 WATCH_CRIT_PCT=1 make memwatch STACK=hibrid48`), each in
+  its own tmux session. State/log files are per-stack, so they don't collide.
+  ⚠️ `hibrid48` idles at ~2.4% host available **by design** (bilikaz's recipe
+  leaves ~2G), so at the stock crit=5% its watchdog fires on startup — exactly
+  the glm53 situation.
   ⚠️ `STACK_MEMWATCH_STOP`'s first word must be either a path under `STACK_DIR`
   (`./stop.sh`) or a bare command name — the startup self-check validates each
   form differently. Until 2026-09-20 it only understood the path form, so
@@ -740,7 +814,7 @@ rebuild on a new machine: **`docs/clients-cn.md`**.
 
 ```bash
 codex --profile dgx        # → :8888  qwen3.8-27b-sglang (primary, since 2026-09-19)
-codex --profile fndgx      # → :18300 qwen3.8-flash-next (S2, since 2026-09-20)
+codex --profile fndgx      # → :18300 qwen3.8-flash-next (S2; profile name kept — serves hibrid48 since 2026-09-28)
 codex --profile qwen38     # → :8888  qwen38-27b  ⚠️ same port as dgx
 codex --profile litellm    # → llm.meirong.dev gateway → custom_dgx/qwen3.8-27b-sglang
 codex --profile mac        # → same gateway, pinned to the Mac fallback (mac/ornith)
@@ -855,7 +929,9 @@ largest source of silent breakage — gotcha #9).
 - `docs/s2-outage-2026-08-15-cn.md` — S2's hardware death, why WoL failed
   (**no BMC/IPMI on these boxes**), and the TP=2 recovery procedure.
 - Per-stack runbooks live with their stack: `stacks/qwen38/runbook-cn.md`,
-  `stacks/fndgx/runbook-cn.md`.
+  `stacks/fndgx/runbook-cn.md` (fndgx retired 2026-09-28). `hibrid48` has no
+  runbook — its `recipe.yaml` (upstream copy) + the A/B account in
+  `benchmarks/ab-radixark-vs-hibrid48-2026-09-28/README.md` carry the reasoning.
 - ⚠️ **glm53 and qwen38un have no runbook** — their reasoning lives in
   `stacks/<id>/recipe.yaml` comments. Known gap, and it got sharper on 2026-09-20:
   `glm53` is now the only rollback, and it is the one with no runbook.
@@ -869,7 +945,9 @@ largest source of silent breakage — gotcha #9).
   `benchmarks/bench-full-2026-08-05/` — the harness itself and the V4 baseline.
   ⚠️ **Both stacks were deleted 2026-09-20**, so these are records, not baselines
   anyone can reproduce. The reproducible ones are `benchmarks/glm53-2026-09-19/`,
-  `benchmarks/qwen38un-2026-09-19/` and `benchmarks/fndgx-2026-09-20/`.
+  `benchmarks/qwen38un-2026-09-19/`, `benchmarks/fndgx-2026-09-20/` and
+  `benchmarks/ab-radixark-vs-hibrid48-2026-09-28/` (RadixArk fndgx vs bilikaz
+  hibrid48 A/B — drove the 2026-09-28 S2 switch).
 - `benchmarks/mtp-k-sweep-2026-09-03/` — MTP `k` sweep: why `tok/step` (counted) is
   the load-bearing number when a knob needs an engine restart, and the QSA assert
   that caps `k` at 4. Its harness (`mtp_arm.py`) is the reusable pattern for any
@@ -886,9 +964,11 @@ largest source of silent breakage — gotcha #9).
   `stacks/<id>/`, so adding a model adds files instead of editing them.
 - Images on both servers: primary `lmsysorg/sglang:nightly-cu134-…`; glm53
   `ghcr.nju.edu.cn/miaai-lab/glm-5.3-flash-2x-dgx-sparks:exl3-instanttensor`;
-  `qwen38` upstream `vllm/vllm-openai:nightly-aarch64`; **fndgx
-  `qwen38-flash-dgx` on S2 only** — built from the
-  `vllm/vllm-openai:qwen38-flash-next` digest plus blazux's 13 patch layers.
+  `qwen38` upstream `vllm/vllm-openai:nightly-aarch64`; **hibrid48
+  `myllmbox/qwen38-flash-next-vllm:v4` on S2 only** (vLLM 0.30.0 base + bilikaz
+  patches, public pinned tag) — the retired fndgx image `qwen38-flash-dgx`
+  (built from the `vllm/vllm-openai:qwen38-flash-next` digest plus blazux's 13
+  patch layers) is still on S2 for rollback.
   Driver 580.173.02 / CUDA 13.0, verified on both nodes 2026-09-02.
   ⚠️ The two deleted stacks' images (`vllm-qwen38fn:latest`,
   `vllm-node-dsv4:latest` + 2 older tags, ~100 GB across both nodes) are **still

@@ -1,0 +1,35 @@
+{
+  "tag": "radixark",
+  "model": "qwen3.8-flash-next",
+  "endpoint": "http://100.67.164.92:18300/v1/chat/completions",
+  "protocol": {
+    "thinking": true,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "max_tokens": 32768
+  },
+  "started": "2026-09-27 13:32:19",
+  "humaneval": {
+    "n": 164,
+    "passed": 164,
+    "pass_at_1": 1.0
+  },
+  "gsm8k": {
+    "n": 200,
+    "correct": 195,
+    "accuracy": 0.975
+  },
+  "mmlu_pro": {
+    "n": 200,
+    "correct": 179,
+    "accuracy": 0.895
+  },
+  "ifeval": {
+    "n": 200,
+    "api_failed": 0,
+    "prompt_level_strict": 0.925,
+    "instruction_level_strict": 0.9434
+  },
+  "finished": "2026-09-27 21:03:03"
+}

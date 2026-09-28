@@ -1,0 +1,24 @@
+  # on_ok off_ok   on_s  off_s off_reasoning_tok  gold
+  0  True   True    6.6    8.5     112  18
+  1  True   True    5.7    4.9      76  3
+  2  True   True   20.8   46.2    1305  70000
+  3  True   True    3.6    7.6      71  540
+  4  True   True    6.1    7.7     135  20
+  5  True   True   11.6   12.1     212  64
+  6  True   True    5.0    6.3      83  260
+  7  True   True   16.7   14.4     256  160
+  8  True   True   16.0   22.4     367  45
+  9  True   True    6.6    7.5      98  460
+ 10  True   True    6.9   14.3     150  366
+ 11  True   True    6.0   10.1     130  694
+ 12 False  False   38.0   52.4    1264  13
+ 13  True   True   17.3   16.2     245  18
+ 14  True   True    7.7   13.3     177  60
+ 15  True   True    9.0   14.3     271  125
+ 16  True   True    9.7   43.6    1153  230
+ 17  True   True    6.0   11.0     189  57500
+ 18  True   True    7.0    7.0     110  7
+ 19  True   True    7.8   13.4     163  6
+
+thinking ON : acc=19/20 (95.0%), mean 10.7s/q
+thinking OFF: acc=19/20 (95.0%), mean 16.7s/q
