@@ -74,3 +74,4 @@ vllm:
   speculative-config: '{"method":"mtp","num_speculative_tokens":5,"rejection_sample_method":"block","draft_sample_method":"probabilistic"}'
                                                 # 5 draft tokens sampled from the drafter: ~5.1 of 6 accepted on code
   async-scheduling: true
+  long-prefill-token-threshold: 1024
