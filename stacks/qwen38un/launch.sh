@@ -29,7 +29,7 @@ export DF_EXTRA="--model-path ${MODEL_CT:-/root/.cache/huggingface/local/Qwen3.8
 # 追加在 DF_EXTRA 末尾即可生效:EXTRA_ARGS 里 DF_EXTRA 在最后,argparse last-wins。
 # ⚠️ 改这个值之后必须重测 headroom **和**吞吐(KV 变小可能影响并发档)。
 MEM_FRACTION="${MEM_FRACTION:-0.80}"
-export DF_EXTRA="$DF_EXTRA --mem-fraction-static ${MEM_FRACTION}"
+export DF_EXTRA="$DF_EXTRA --mem-fraction-static ${MEM_FRACTION} --mamba-ssm-dtype bfloat16"
 
 # 草稿模型是按 **repo id** 传给 SGLang 的(--speculative-draft-model-path
 # z-lab/Qwen3.8-27B-DFlash2),即便已预缓存,HF hub 仍会发 HEAD 探更新 →

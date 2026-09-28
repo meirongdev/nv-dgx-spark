@@ -395,9 +395,12 @@ outright (read 2026-09-20, after months of the docs saying only "12"):
 slot ratio that radix caching costs. The KV pool is **4.7× the context**, so
 *staring at KV can never explain 12* — which is why it stayed a bare number.
 Three knobs exist (`--mamba-full-memory-ratio`, `--max-mamba-cache-size`,
-`--mamba-ssm-dtype bfloat16`); ⏳ **none tried** — raising it restarts the primary
-and needs a re-measure, and 0.80's throughput is itself unmeasured (above), so the
-two would confound. The c16 fallback to 356 tok/s is this cap's direct
+`--mamba-ssm-dtype bfloat16`). ✅ **One has now been tried** (2026-09-28, in
+`launch.sh` and in the live boot args) — and **it bought nothing**: the boot still
+prints `max_mamba_cache_size=64, 5 state slots per request` →
+**`max_running_requests` stays 12**, `ssm_state` still 4.57 GB, i.e. the promised
+"halve the state size" never happened. The cap moves with the **other two** knobs
+(more memory), not with the dtype. 0.80's throughput is still unmeasured (above). The c16 fallback to 356 tok/s is this cap's direct
 consequence — **an owned to-do, not a mystery.**
 **Never 0.95** — upstream hard-rebooted a box on it. Override chain:
 start.sh 0.95 → start-dflash.sh 0.90 → our `DF_EXTRA` 0.80, argparse last-wins.
