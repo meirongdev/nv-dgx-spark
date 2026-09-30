@@ -1,0 +1,103 @@
+{
+ "tag": "qwen38un-baseline",
+ "url": "http://100.97.87.120:8888/v1/chat/completions",
+ "model": "qwen3.8-27b-sglang",
+ "think_off": {
+  "chat_template_kwargs": {
+   "enable_thinking": false
+  }
+ },
+ "when": "2026-09-30 21:32:47 +0800",
+ "rows": [
+  {
+   "c": 1,
+   "agg": 18.7,
+   "per_stream": 18.7,
+   "tokens": 168,
+   "reasoning_tokens": 0,
+   "wall_s": 8.96,
+   "lat_median_s": 8.96,
+   "lat_max_s": 8.96
+  },
+  {
+   "c": 2,
+   "agg": 70.5,
+   "per_stream": 35.3,
+   "tokens": 578,
+   "reasoning_tokens": 0,
+   "wall_s": 8.2,
+   "lat_median_s": 6.6,
+   "lat_max_s": 8.2
+  },
+  {
+   "c": 4,
+   "agg": 78.5,
+   "per_stream": 19.6,
+   "tokens": 1365,
+   "reasoning_tokens": 0,
+   "wall_s": 17.38,
+   "lat_median_s": 11.39,
+   "lat_max_s": 17.38
+  },
+  {
+   "c": 6,
+   "agg": 80.2,
+   "per_stream": 13.4,
+   "tokens": 1910,
+   "reasoning_tokens": 0,
+   "wall_s": 23.81,
+   "lat_median_s": 15.05,
+   "lat_max_s": 23.81
+  },
+  {
+   "c": 8,
+   "agg": 123.3,
+   "per_stream": 15.4,
+   "tokens": 2571,
+   "reasoning_tokens": 0,
+   "wall_s": 20.85,
+   "lat_median_s": 12.65,
+   "lat_max_s": 20.85
+  },
+  {
+   "c": 12,
+   "agg": 176.5,
+   "per_stream": 14.7,
+   "tokens": 3570,
+   "reasoning_tokens": 0,
+   "wall_s": 20.22,
+   "lat_median_s": 11.54,
+   "lat_max_s": 20.22
+  },
+  {
+   "c": 16,
+   "agg": 216.9,
+   "per_stream": 13.6,
+   "tokens": 4912,
+   "reasoning_tokens": 0,
+   "wall_s": 22.64,
+   "lat_median_s": 11.51,
+   "lat_max_s": 22.64
+  },
+  {
+   "c": 20,
+   "agg": 210.4,
+   "per_stream": 10.5,
+   "tokens": 6678,
+   "reasoning_tokens": 0,
+   "wall_s": 31.74,
+   "lat_median_s": 15.25,
+   "lat_max_s": 31.73
+  },
+  {
+   "c": 24,
+   "agg": 212.6,
+   "per_stream": 8.9,
+   "tokens": 7741,
+   "reasoning_tokens": 0,
+   "wall_s": 36.4,
+   "lat_median_s": 17.75,
+   "lat_max_s": 36.4
+  }
+ ]
+}

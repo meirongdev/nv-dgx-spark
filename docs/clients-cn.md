@@ -9,12 +9,13 @@
 <!-- BEGIN generated:clients -->
 | 栈 | 端点 | served name | 关思考的 kwarg | CoT 字段 | ctxWindow |
 |---|---|---|---|---|---|
-| **qwen38un(主)** | `100.97.87.120:8888` | `qwen3.8-27b-sglang` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| **hibrid48tp2(主)** | `100.97.87.120:8000` | `qwen3.8-flash-next-tp2` | `{"chat_template_kwargs": {"enable_thinking": false}}` | `reasoning` | 262144 |
 | gemma | `127.0.0.1:8000` | `mlx-community__gemma-4-26B-A4B-it-qat-nvfp4` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
 | glm53 | `100.97.87.120:8888` | `GLM-5.3-Flash-EXL3` | `{"reasoning_effort":"low"}` ⚠️ **关不掉**,这是最低档 | `reasoning` | 850000 |
-| hibrid48 | `100.67.164.92:18300` | `qwen3.8-flash-next` | `{"chat_template_kwargs": {"enable_thinking": false}}` | `reasoning` | 262144 |
+| hibrid48 | `100.97.87.120:8000` | `qwen3.8-flash-next` | `{"chat_template_kwargs": {"enable_thinking": false}}` | `reasoning` | 262144 |
 | omlx | `127.0.0.1:8000` | `mlx-community__Qwen3.6-35B-A3B-nvfp4` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
 | qwen38 | `100.97.87.120:8888` | `qwen38-27b` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
+| qwen38un | `100.97.87.120:8888` | `qwen3.8-27b-sglang` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
 
 > ⚠️ **关思考的 kwarg 和 CoT 字段逐栈都不同,而且写错都是静默的**(gotcha #9)。
 > 上表由 `make stack-table` 从 `stacks/*/stack.env` 生成 —— 不要手改这里,改注册表。
@@ -30,7 +31,7 @@
 | | `qwen38fn` | `fndgx` |
 |---|---|---|
 | served name | `qwen38-flash-next` | `qwen3.8-flash-next` ← 只差一个点 |
-| 端点 | `100.97.87.120:8000` | `100.67.164.92:18300` |
+| 端点 | `100.97.87.120:8000` | `100.97.87.120:8000` |
 | CoT 字段 | `reasoning_content` | **`reasoning`** |
 
 它们是**同一个模型的两种装法**(TP=2 两台 / 单机 PLE-mmap),但 CoT 字段不同 ——
@@ -59,10 +60,8 @@ Claude Code 发的 `high` 和 `max` —— 因为上游 `serve.sh` 的 `EFFORT_A
 ## codex CLI
 
 ```bash
-codex --profile dgx          # → :8888  qwen3.8-27b-sglang(2026-09-19 起,主力,S1)
-codex --profile fndgx        # → :18300 qwen3.8-flash-next(2026-09-20 起,单机,S2)
-codex --profile qwen38       # → :8888  qwen38-27b(⚠️ 与 dgx 抢同一个端口,见下)
-codex --profile litellm      # → llm.meirong.dev 网关 → custom_dgx/qwen3.8-27b-sglang
+codex --profile dgx          # → 100.97.87.120:8000 qwen3.8-flash-next-tp2(2026-09-30 起,主力 hibrid48tp2,两台 TP=2;目前只在 B 上切了)
+# 2026-09-30 起 B 上已删:fndgx / qwen38 / litellm 三个 profile(目标栈都已停,见下「B 的清理」);A 上 fndgx 还在
 codex --profile mac          # → 同一个网关,但点名 Mac 兜底模型 mac/ornith
 codex --profile local        # → 127.0.0.1:8000  Mac 本地 omlx(gemma-4 26B QAT)
 codex --profile m2           # → 100.89.15.120:8000  M2 那台的 omlx(不经 DGX)
@@ -121,12 +120,64 @@ codex                        # 默认:ChatGPT 额度;A 的 config.toml 写 gpt-5
 | overlay | `model` | `model_provider` → `base_url` | `model_catalog_json` | effort |
 |---|---|---|---|---|
 | `dgx.config.toml` | `qwen3.8-27b-sglang` | `dgx` → `100.97.87.120:8888/v1` | `dgx-models.json` | `none` |
-| `fndgx.config.toml` | `qwen3.8-flash-next` | `fndgx` → `100.67.164.92:18300/v1` | `fndgx-models.json` | `medium` |
+| `fndgx.config.toml` | `qwen3.8-flash-next` | `fndgx` → `100.97.87.120:8000/v1` | `fndgx-models.json` | `medium` |
 | `qwen38.config.toml` | `qwen38-27b` | `qwen38` → `100.97.87.120:8888/v1` | `qwen38-models.json` | `medium` |
 | `litellm.config.toml` | `custom_dgx/qwen3.8-27b-sglang` | `litellm`(provider 定义在 `config.toml`) | `litellm-models.json` | `medium` |
 | `mac.config.toml` | `mac/ornith` | `litellm`(同上) | (无) | `high` |
 | `local.config.toml` | `mlx-community__gemma-4-26B-A4B-it-qat-nvfp4` | `local-omlx` → `127.0.0.1:8000/v1` | (无) | (未设) |
 | `m2.config.toml` | `gpt-5.5` | `m2` → `100.89.15.120:8000/v1` | (无) | `high` |
+
+⚠️ **B 的主机名是 `mbpm5.local`**(2026-09-30 按上表的 per-profile `*-models.json` 布局认出)。
+**2026-09-30 在 B 上的 `dgx` 行已变**(`tomllib`/`grep` 实测,旧文件备份为
+`dgx.config.toml.bak-20260930-221042`、`dgx-models.json.bak-20260930-221042`):
+
+| 时点 | `model` | `base_url` | effort |
+|---|---|---|---|
+| 切换前(文件 mtime **09-21 05:02**) | `qwen38-flash-next` ← 09-20 已删栈的 slug | `100.97.87.120:8888/v1` | `xhigh` |
+| 切换后 | `qwen3.8-flash-next-tp2` | `100.97.87.120:8000/v1` | `xhigh`(未改) |
+
+切换前那一行**与上表 09-20 23:15 的记录都不符**(上表写 `qwen3.8-27b-sglang` / `none`);
+`bak-20260920-005044`(09-19 23:30)还是 `qwen3.8-27b-sglang` / `xhigh` —— 即 09-21 05:02
+有一次写入把 slug 退回了旧值,原因不明,而 SGLang 什么名都收,九天没有任何报错。
+`dgx-models.json` 现只有一条 `qwen3.8-flash-next-tp2`(档位 none/low/medium/xhigh,本栈实测;
+high/minimal/max 400)。验证:`codex exec --profile dgx` 回 `OK`,头部无 "Model metadata not found"。
+
+🧹 **B 的清理(2026-09-30,切栈之后;贴实测,不贴意图)**
+
+先归档、再删:`~/dgx-client-config-backup-20260930.tar.gz`(35 个路径,相对 `$HOME`,`tar -tzf`
+逐一核过)装着**所有被删的文件和被改文件的改前版本**。恢复单个文件:
+`tar -C ~ -xzf ~/dgx-client-config-backup-20260930.tar.gz .codex/fndgx.config.toml`。
+
+| 动作 | 对象 | 理由 |
+|---|---|---|
+| 删 | `fndgx.config.toml` + `fndgx-models.json` | 目标 hibrid48 已停;catalog 还在描述 09-20 的 RadixArk fndgx |
+| 删 | `qwen38.config.toml` + `qwen38-models.json` | 目标 qwen38 已停 |
+| 删 | `litellm.config.toml` + `litellm-models.json` | 模型 `custom_dgx/qwen3.8-27b-sglang` 是网关指向已停 qwen38un 的路由(`/v1/models` 实测还列着它) |
+| 删 | 20 个 `*.bak*`(dgx ×9、config ×2、litellm ×4、qwen38 ×1、bifrost ×1、`models_cache.json.bak` ×2、…)+ `~/.qwen/settings.json.bak-*` ×5 + repo 的 `.qwen/.env.bak-*` | 都在归档里;repo 里那份 `.env.bak` 不在 `.gitignore` 覆盖范围内,留着会被误提交 |
+| 删 | qwen `/model` 条目 `qwen3.8-27b-sglang` / `qwen3.8-flash-next` / `qwen38-27b` | 目标都已停 |
+| 改 | `~/.codex/config.toml` 的 litellm provider 注释 | provider **保留** —— `mac` profile 在用 |
+| 改 | repo `.qwen/.env` 文件头、`~/.zshrc` 三段注释 | 还写着 DeepSeek-V4-Flash / `:8000` / `flashnext` |
+| 改 | `~/.zshrc` 的 `alias codex-dgx` | `codex --profile litellm` → `codex --profile dgx`(原目标已失效) |
+| 留 | `dgx` / `local` / `m2` / `mac` 四个 profile;qwen 的三条 omlx 条目 | `local`/`m2` 的 omlx 当时没开(`/v1/models` 不通),但它们是按需启动的,不算死配置 |
+
+清理后 `ls ~/.codex`(模型相关):`config.toml`、`dgx.config.toml`、`dgx-models.json`、
+`local.config.toml`、`m2.config.toml`、`mac.config.toml`、`models_cache.json`
+(另有未动的 `config-backup-20260617-113755.tar.gz` 与 `hooks.json.bak`)。
+qwen `/model`:`qwen3.8-flash-next-tp2` + 三条 omlx(两条 gemma 同 id、不同 baseUrl —— picker 靠 baseUrl 区分)。
+
+⚠️⚠️ **删掉的 profile 不会报错 —— codex 0.157.1 静默退回 base 配置(实测)。**
+清理后跑 `codex exec --profile fndgx "hi"`:没有 "profile not found",照常启动;session 记录
+(`~/.codex/sessions/2026/09/30/rollout-…22-48-46-….jsonl`)写的是 `model_provider: openai`、
+`model: gpt-6-luna`,并回了 "Hi! What would you like to work on?"。也就是说,**敲一个不存在的
+profile 名 = 静默用 ChatGPT 默认模型**,以为在用本地 DGX、其实请求发去了云端 —— gotcha #9 的
+形状。按习惯敲 `--profile fndgx` / `qwen38` / `litellm` 的人不会得到任何提示。
+想让它响:留一个"墓碑" profile(`model_provider` 指一个必然连不上的地址,如
+`http://127.0.0.1:9/v1`),比删干净更安全;本次**没有**这样做,只记在这里。
+
+⚠️ **B 的 `m2` profile 没动,但它多半是坏的**:`model = "gpt-5.5"` 指着 M2 的 omlx
+(`100.89.15.120:8000`),而 omlx 不会提供 OpenAI 模型;A 上同名 profile 写的是
+`mlx-community__Qwen3.6-35B-A3B-nvfp4`,B 的 qwen 条目也说那台跑的是它。当天 M2 不在线,
+没法实测,所以只记下、没改。
 
 - **B 上是七个 overlay。**`-p/--profile` 的官方语义(`codex --help`,0.155.1)是
   "Layer `$CODEX_HOME/<name>.config.toml` on top of the base user config" ——
@@ -425,7 +476,7 @@ Qwen3.6-35B-A3B 另有一层:2026-09-21 实测 omlx 对 `reasoning.effort`
 | | `qwen38-flash-next` | `qwen3.8-flash-next` |
 |---|---|---|
 | 机器 | S1+S2,TP=2,k3s(**已删除**) | **只有 S2**,docker |
-| base_url | `100.97.87.120:8000` | **`100.67.164.92:18300`** |
+| base_url | `100.97.87.120:8000` | **`100.97.87.120:8000`** |
 | codex profile | (无) | `--profile fndgx` |
 
 **2026-09-20 实测 effort 枚举(vLLM + EFFORT_ALIAS=1)—— 七个值全是 200:**
@@ -544,7 +595,7 @@ CLI 会按模型名匹配并**预留输出 token**:`contextLimit = max(0, contex
 > 加新栈时照此办理:**光看配置写对了不算验证。**
 >
 > ✅ **2026-09-20 对 `qwen3.8-flash-next`(fndgx,同样带点)照此验过**:
-> `modelProviders` 里补了这一条(`100.67.164.92:18300`,ctx 262144),并用一个
+> `modelProviders` 里补了这一条(`100.97.87.120:8000`,ctx 262144),并用一个
 > 项目级 `.qwen/settings.json` 真发了一次 —— CLI 正常回话、**没有 "hard limit: 0"**,
 > 引擎侧 `POST /v1/chat/completions 200`。所以 262144 对它也是安全的。
 > ⚠️ 第一次探测是**假的**:只导出 `OPENAI_BASE_URL`/`OPENAI_MODEL` 环境变量、在

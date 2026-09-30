@@ -1,0 +1,17 @@
+=== qwen38un-baseline: http://100.97.87.120:8888/v1/chat/completions  model=qwen3.8-27b-sglang  think_off={"chat_template_kwargs": {"enable_thinking": false}} ===
+=== 热身(不计入)===
+  c2   热身 聚合    62.6 tok/s   每流  31.3   出   560 tok /   9.0s   单请求延迟 中位   7.2s 最慢   9.0s   reasoning 0
+
+=== 并发梯子 [1, 2, 4, 6, 8, 12, 16, 20, 24] ===
+  c1   聚合    18.7 tok/s   每流  18.7   出   168 tok /   9.0s   单请求延迟 中位   9.0s 最慢   9.0s   reasoning 0
+  c2   聚合    70.5 tok/s   每流  35.3   出   578 tok /   8.2s   单请求延迟 中位   6.6s 最慢   8.2s   reasoning 0
+  c4   聚合    78.5 tok/s   每流  19.6   出  1365 tok /  17.4s   单请求延迟 中位  11.4s 最慢  17.4s   reasoning 0
+  c6   聚合    80.2 tok/s   每流  13.4   出  1910 tok /  23.8s   单请求延迟 中位  15.1s 最慢  23.8s   reasoning 0
+  c8   聚合   123.3 tok/s   每流  15.4   出  2571 tok /  20.8s   单请求延迟 中位  12.6s 最慢  20.8s   reasoning 0
+  c12  聚合   176.5 tok/s   每流  14.7   出  3570 tok /  20.2s   单请求延迟 中位  11.5s 最慢  20.2s   reasoning 0
+  c16  聚合   216.9 tok/s   每流  13.6   出  4912 tok /  22.6s   单请求延迟 中位  11.5s 最慢  22.6s   reasoning 0
+  c20  聚合   210.4 tok/s   每流  10.5   出  6678 tok /  31.7s   单请求延迟 中位  15.2s 最慢  31.7s   reasoning 0
+  c24  聚合   212.6 tok/s   每流   8.9   出  7741 tok /  36.4s   单请求延迟 中位  17.8s 最慢  36.4s   reasoning 0
+
+峰值: c16 = 216.9 tok/s 聚合
+→ /Users/matthew/projects/meirongdev/nv-dgx-spark/benchmarks/hibrid48tp2-2026-09-30/ladder-qwen38un-baseline.json

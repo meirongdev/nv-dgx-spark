@@ -1,0 +1,43 @@
+{
+ "tag": "qwen38un-c1-recheck",
+ "url": "http://100.97.87.120:8888/v1/chat/completions",
+ "model": "qwen3.8-27b-sglang",
+ "think_off": {
+  "chat_template_kwargs": {
+   "enable_thinking": false
+  }
+ },
+ "when": "2026-09-30 21:33:31 +0800",
+ "rows": [
+  {
+   "c": 1,
+   "agg": 42.1,
+   "per_stream": 42.1,
+   "tokens": 168,
+   "reasoning_tokens": 0,
+   "wall_s": 3.99,
+   "lat_median_s": 3.99,
+   "lat_max_s": 3.99
+  },
+  {
+   "c": 1,
+   "agg": 41.1,
+   "per_stream": 41.1,
+   "tokens": 168,
+   "reasoning_tokens": 0,
+   "wall_s": 4.09,
+   "lat_median_s": 4.09,
+   "lat_max_s": 4.09
+  },
+  {
+   "c": 1,
+   "agg": 42.9,
+   "per_stream": 42.9,
+   "tokens": 168,
+   "reasoning_tokens": 0,
+   "wall_s": 3.91,
+   "lat_median_s": 3.91,
+   "lat_max_s": 3.91
+  }
+ ]
+}

@@ -1,0 +1,61 @@
+{
+ "tag": "hibrid48tp2",
+ "base": "http://100.67.164.92:18300",
+ "model": "qwen3.8-flash-next-tp2",
+ "window_s": 60.0,
+ "max_tokens": 1500,
+ "prompt": "Write a Python LRU cache with O(1) get and put (a class with a docstring and type hints), then explain in prose, in a few paragraphs, how it works and why each operation is O(1).",
+ "when": "2026-09-30 22:35:21 +0800",
+ "rows": [
+  {
+   "c": 1,
+   "gen_tok_s": 83.7,
+   "per_stream": 83.7,
+   "tok_per_step": 4.1,
+   "running_min": 1.0,
+   "running_max": 1.0,
+   "kv_usage_max": 0.015,
+   "window_s": 65.4
+  },
+  {
+   "c": 8,
+   "gen_tok_s": 306.5,
+   "per_stream": 38.3,
+   "tok_per_step": 4.1,
+   "running_min": 7.0,
+   "running_max": 8.0,
+   "kv_usage_max": 0.117,
+   "window_s": 65.4
+  },
+  {
+   "c": 16,
+   "gen_tok_s": 421.7,
+   "per_stream": 26.4,
+   "tok_per_step": 4.04,
+   "running_min": 13.0,
+   "running_max": 16.0,
+   "kv_usage_max": 0.234,
+   "window_s": 65.4
+  },
+  {
+   "c": 32,
+   "gen_tok_s": 576.1,
+   "per_stream": 18.0,
+   "tok_per_step": 4.08,
+   "running_min": 29.0,
+   "running_max": 32.0,
+   "kv_usage_max": 0.469,
+   "window_s": 63.2
+  },
+  {
+   "c": 64,
+   "gen_tok_s": 783.9,
+   "per_stream": 12.2,
+   "tok_per_step": 4.25,
+   "running_min": 61.0,
+   "running_max": 64.0,
+   "kv_usage_max": 0.937,
+   "window_s": 67.8
+  }
+ ]
+}

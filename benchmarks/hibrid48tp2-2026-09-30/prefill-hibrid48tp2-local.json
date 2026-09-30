@@ -1,0 +1,74 @@
+{
+ "tag": "hibrid48tp2-local",
+ "rows": [
+  {
+   "target": 8000,
+   "attempt": "首发",
+   "prompt_tokens": 7853,
+   "cached_tokens": 0,
+   "ttft_s": 2.32,
+   "prefill_tok_s": 3380.0
+  },
+  {
+   "target": 8000,
+   "attempt": "暖",
+   "prompt_tokens": 7853,
+   "cached_tokens": 0,
+   "ttft_s": 2.33,
+   "prefill_tok_s": 3367.0
+  },
+  {
+   "target": 32000,
+   "attempt": "首发",
+   "prompt_tokens": 32795,
+   "cached_tokens": 0,
+   "ttft_s": 9.56,
+   "prefill_tok_s": 3431.0
+  },
+  {
+   "target": 32000,
+   "attempt": "暖",
+   "prompt_tokens": 32796,
+   "cached_tokens": 0,
+   "ttft_s": 9.59,
+   "prefill_tok_s": 3421.0
+  },
+  {
+   "target": 64000,
+   "attempt": "首发",
+   "prompt_tokens": 67022,
+   "cached_tokens": 0,
+   "ttft_s": 19.67,
+   "prefill_tok_s": 3408.0
+  },
+  {
+   "target": 64000,
+   "attempt": "暖",
+   "prompt_tokens": 67022,
+   "cached_tokens": 0,
+   "ttft_s": 19.72,
+   "prefill_tok_s": 3399.0
+  },
+  {
+   "target": 128000,
+   "attempt": "首发",
+   "prompt_tokens": 137054,
+   "cached_tokens": 0,
+   "ttft_s": 41.43,
+   "prefill_tok_s": 3308.0
+  },
+  {
+   "target": 128000,
+   "attempt": "暖",
+   "prompt_tokens": 137056,
+   "cached_tokens": 0,
+   "ttft_s": 41.42,
+   "prefill_tok_s": 3309.0
+  }
+ ],
+ "mem_min_gib": {
+  "local": 8.032905578613281,
+  "192.168.200.101": 9.712894439697266
+ },
+ "when": "2026-09-30 22:47:34 +0800"
+}

@@ -1,0 +1,11 @@
+=== hibrid48tp2-c1-recheck: http://100.67.164.92:18300/v1/chat/completions  model=qwen3.8-flash-next-tp2  think_off={"chat_template_kwargs": {"enable_thinking": false}} ===
+=== 热身(不计入)===
+  c2   热身 聚合   133.4 tok/s   每流  66.7   出   566 tok /   4.2s   单请求延迟 中位   3.3s 最慢   4.2s   reasoning 0
+
+=== 并发梯子 [1, 1, 1] ===
+  c1   聚合    99.4 tok/s   每流  99.4   出   389 tok /   3.9s   单请求延迟 中位   3.9s 最慢   3.9s   reasoning 0
+  c1   聚合    98.0 tok/s   每流  98.0   出   395 tok /   4.0s   单请求延迟 中位   4.0s 最慢   4.0s   reasoning 0
+  c1   聚合    98.9 tok/s   每流  98.9   出   389 tok /   3.9s   单请求延迟 中位   3.9s 最慢   3.9s   reasoning 0
+
+峰值: c1 = 99.4 tok/s 聚合
+→ /Users/matthew/projects/meirongdev/nv-dgx-spark/benchmarks/hibrid48tp2-2026-09-30/ladder-hibrid48tp2-c1-recheck.json

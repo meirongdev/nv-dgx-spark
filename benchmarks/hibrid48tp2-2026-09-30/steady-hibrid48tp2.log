@@ -1,0 +1,7 @@
+=== hibrid48tp2: http://100.67.164.92:18300 model=qwen3.8-flash-next-tp2 window=60s max_tokens=1500 levels=[1, 8, 16, 32, 64] ===
+  c1   gen    83.7 tok/s   per-stream  83.7   tok/step 4.10   running 1-1   kv_max  1.5%   (65s)
+  c8   gen   306.5 tok/s   per-stream  38.3   tok/step 4.10   running 7-8   kv_max 11.7%   (65s)
+  c16  gen   421.7 tok/s   per-stream  26.4   tok/step 4.04   running 13-16   kv_max 23.4%   (65s)
+  c32  gen   576.1 tok/s   per-stream  18.0   tok/step 4.08   running 29-32   kv_max 46.9%   (63s)
+  c64  gen   783.9 tok/s   per-stream  12.2   tok/step 4.25   running 61-64   kv_max 93.7%   (68s)
+→ /Users/matthew/projects/meirongdev/nv-dgx-spark/benchmarks/hibrid48tp2-2026-09-30/steady-hibrid48tp2.json

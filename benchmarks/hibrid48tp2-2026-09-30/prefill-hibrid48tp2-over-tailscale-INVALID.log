@@ -1,0 +1,27 @@
+=== hibrid48tp2: http://100.67.164.92:18300 model=qwen3.8-flash-next-tp2 sizes=[8000, 32000, 128000] ===
+  ~  8K 首发:   16082 tok  TTFT   7.37s  prefill   2183 tok/s  cached 0
+  ~  8K 暖:   16085 tok  TTFT   5.88s  prefill   2736 tok/s  cached 0
+  ~ 32K 首发:   67021 tok  TTFT  24.00s  prefill   2792 tok/s  cached 0
+  ~ 32K 暖:   67022 tok  TTFT  25.21s  prefill   2658 tok/s  cached 0
+Traceback (most recent call last):
+  File "/Users/matthew/projects/meirongdev/nv-dgx-spark/benchmarks/hibrid48tp2-2026-09-30/prefill.py", line 53, in <module>
+    with urllib.request.urlopen(req, timeout=1800) as r:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 400: Bad Request

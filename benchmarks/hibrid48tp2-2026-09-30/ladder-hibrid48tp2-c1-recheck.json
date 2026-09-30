@@ -1,0 +1,43 @@
+{
+ "tag": "hibrid48tp2-c1-recheck",
+ "url": "http://100.67.164.92:18300/v1/chat/completions",
+ "model": "qwen3.8-flash-next-tp2",
+ "think_off": {
+  "chat_template_kwargs": {
+   "enable_thinking": false
+  }
+ },
+ "when": "2026-09-30 22:06:22 +0800",
+ "rows": [
+  {
+   "c": 1,
+   "agg": 99.4,
+   "per_stream": 99.4,
+   "tokens": 389,
+   "reasoning_tokens": 0,
+   "wall_s": 3.91,
+   "lat_median_s": 3.91,
+   "lat_max_s": 3.91
+  },
+  {
+   "c": 1,
+   "agg": 98.0,
+   "per_stream": 98.0,
+   "tokens": 395,
+   "reasoning_tokens": 0,
+   "wall_s": 4.03,
+   "lat_median_s": 4.03,
+   "lat_max_s": 4.03
+  },
+  {
+   "c": 1,
+   "agg": 98.9,
+   "per_stream": 98.9,
+   "tokens": 389,
+   "reasoning_tokens": 0,
+   "wall_s": 3.93,
+   "lat_median_s": 3.93,
+   "lat_max_s": 3.93
+  }
+ ]
+}

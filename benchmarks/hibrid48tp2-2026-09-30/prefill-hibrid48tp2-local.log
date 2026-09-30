@@ -1,0 +1,13 @@
+=== hibrid48tp2-local: http://localhost:18300 model=qwen3.8-flash-next-tp2 sizes=[8000, 32000, 64000, 128000] ===
+  ~  8K 首发:    7853 tok  TTFT   2.32s  prefill   3380 tok/s  cached 0
+  ~  8K 暖:    7853 tok  TTFT   2.33s  prefill   3367 tok/s  cached 0
+  ~ 32K 首发:   32795 tok  TTFT   9.56s  prefill   3431 tok/s  cached 0
+  ~ 32K 暖:   32796 tok  TTFT   9.59s  prefill   3421 tok/s  cached 0
+  ~ 64K 首发:   67022 tok  TTFT  19.67s  prefill   3408 tok/s  cached 0
+  ~ 64K 暖:   67022 tok  TTFT  19.72s  prefill   3399 tok/s  cached 0
+  ~128K 首发:  137054 tok  TTFT  41.43s  prefill   3308 tok/s  cached 0
+  ~128K 暖:  137056 tok  TTFT  41.42s  prefill   3309 tok/s  cached 0
+  MemAvailable 最低: local 8.03 GiB  192.168.200.101 9.71 GiB
+→ /home/admin/prefill-hibrid48tp2-local.json
+{
+ "tag": "hibrid48tp2-local",
