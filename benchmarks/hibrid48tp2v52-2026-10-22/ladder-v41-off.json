@@ -1,0 +1,133 @@
+{
+ "tag": "v41-off",
+ "url": "http://localhost:8000/v1/chat/completions",
+ "model": "qwen3.8-flash-next-tp2",
+ "think_off": {
+  "chat_template_kwargs": {
+   "enable_thinking": false
+  }
+ },
+ "when": "2026-10-22 22:30:23 +0800",
+ "rows": [
+  {
+   "c": 1,
+   "agg": 106.9,
+   "per_stream": 106.9,
+   "tokens": 389,
+   "reasoning_tokens": 0,
+   "wall_s": 3.64,
+   "lat_median_s": 3.64,
+   "lat_max_s": 3.64
+  },
+  {
+   "c": 2,
+   "agg": 154.4,
+   "per_stream": 77.2,
+   "tokens": 698,
+   "reasoning_tokens": 0,
+   "wall_s": 4.52,
+   "lat_median_s": 4.42,
+   "lat_max_s": 4.52
+  },
+  {
+   "c": 4,
+   "agg": 149.6,
+   "per_stream": 37.4,
+   "tokens": 1366,
+   "reasoning_tokens": 0,
+   "wall_s": 9.13,
+   "lat_median_s": 6.72,
+   "lat_max_s": 9.13
+  },
+  {
+   "c": 6,
+   "agg": 201.3,
+   "per_stream": 33.6,
+   "tokens": 1906,
+   "reasoning_tokens": 0,
+   "wall_s": 9.47,
+   "lat_median_s": 7.47,
+   "lat_max_s": 9.46
+  },
+  {
+   "c": 8,
+   "agg": 235.8,
+   "per_stream": 29.5,
+   "tokens": 2785,
+   "reasoning_tokens": 0,
+   "wall_s": 11.81,
+   "lat_median_s": 9.18,
+   "lat_max_s": 11.81
+  },
+  {
+   "c": 12,
+   "agg": 278.7,
+   "per_stream": 23.2,
+   "tokens": 4151,
+   "reasoning_tokens": 0,
+   "wall_s": 14.9,
+   "lat_median_s": 11.18,
+   "lat_max_s": 14.89
+  },
+  {
+   "c": 16,
+   "agg": 331.3,
+   "per_stream": 20.7,
+   "tokens": 5486,
+   "reasoning_tokens": 0,
+   "wall_s": 16.56,
+   "lat_median_s": 12.63,
+   "lat_max_s": 16.56
+  },
+  {
+   "c": 20,
+   "agg": 361.4,
+   "per_stream": 18.1,
+   "tokens": 6947,
+   "reasoning_tokens": 0,
+   "wall_s": 19.22,
+   "lat_median_s": 14.24,
+   "lat_max_s": 19.21
+  },
+  {
+   "c": 24,
+   "agg": 401.5,
+   "per_stream": 16.7,
+   "tokens": 8072,
+   "reasoning_tokens": 0,
+   "wall_s": 20.11,
+   "lat_median_s": 15.68,
+   "lat_max_s": 20.1
+  },
+  {
+   "c": 32,
+   "agg": 144.0,
+   "per_stream": 4.5,
+   "tokens": 10973,
+   "reasoning_tokens": 0,
+   "wall_s": 76.22,
+   "lat_median_s": 54.91,
+   "lat_max_s": 76.21
+  },
+  {
+   "c": 48,
+   "agg": 536.4,
+   "per_stream": 11.2,
+   "tokens": 16349,
+   "reasoning_tokens": 0,
+   "wall_s": 30.48,
+   "lat_median_s": 22.76,
+   "lat_max_s": 30.46
+  },
+  {
+   "c": 64,
+   "agg": 600.6,
+   "per_stream": 9.4,
+   "tokens": 21321,
+   "reasoning_tokens": 0,
+   "wall_s": 35.5,
+   "lat_median_s": 26.61,
+   "lat_max_s": 35.48
+  }
+ ]
+}

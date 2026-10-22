@@ -1,0 +1,46 @@
+### v41  2026-10-22 22:25:30 +0800  model=qwen3.8-flash-next-tp2
+mem before: S1 11.91 GiB (9.8%)  S2 15.38 GiB (12.6%)
+=== v41-off: http://localhost:8000/v1/chat/completions  model=qwen3.8-flash-next-tp2  think_off={"chat_template_kwargs": {"enable_thinking": false}} ===
+=== 热身(不计入)===
+  c2   热身 聚合   132.5 tok/s   每流  66.3   出   566 tok /   4.3s   单请求延迟 中位   3.3s 最慢   4.3s   reasoning 0
+
+=== 并发梯子 [1, 2, 4, 6, 8, 12, 16, 20, 24, 32, 48, 64] ===
+  c1   聚合   106.9 tok/s   每流 106.9   出   389 tok /   3.6s   单请求延迟 中位   3.6s 最慢   3.6s   reasoning 0
+  c2   聚合   154.4 tok/s   每流  77.2   出   698 tok /   4.5s   单请求延迟 中位   4.4s 最慢   4.5s   reasoning 0
+  c4   聚合   149.6 tok/s   每流  37.4   出  1366 tok /   9.1s   单请求延迟 中位   6.7s 最慢   9.1s   reasoning 0
+  c6   聚合   201.3 tok/s   每流  33.6   出  1906 tok /   9.5s   单请求延迟 中位   7.5s 最慢   9.5s   reasoning 0
+  c8   聚合   235.8 tok/s   每流  29.5   出  2785 tok /  11.8s   单请求延迟 中位   9.2s 最慢  11.8s   reasoning 0
+  c12  聚合   278.7 tok/s   每流  23.2   出  4151 tok /  14.9s   单请求延迟 中位  11.2s 最慢  14.9s   reasoning 0
+  c16  聚合   331.3 tok/s   每流  20.7   出  5486 tok /  16.6s   单请求延迟 中位  12.6s 最慢  16.6s   reasoning 0
+  c20  聚合   361.4 tok/s   每流  18.1   出  6947 tok /  19.2s   单请求延迟 中位  14.2s 最慢  19.2s   reasoning 0
+  c24  聚合   401.5 tok/s   每流  16.7   出  8072 tok /  20.1s   单请求延迟 中位  15.7s 最慢  20.1s   reasoning 0
+  c32  聚合   144.0 tok/s   每流   4.5   出 10973 tok /  76.2s   单请求延迟 中位  54.9s 最慢  76.2s   reasoning 0
+  c48  聚合   536.4 tok/s   每流  11.2   出 16349 tok /  30.5s   单请求延迟 中位  22.8s 最慢  30.5s   reasoning 0
+  c64  聚合   600.6 tok/s   每流   9.4   出 21321 tok /  35.5s   单请求延迟 中位  26.6s 最慢  35.5s   reasoning 0
+
+峰值: c64 = 600.6 tok/s 聚合
+→ /home/admin/bench-ab/ladder-v41-off.json
+mem after ladder: S1 7.26 GiB (6.0%)  S2 10.24 GiB (8.4%)
+=== v41-think: http://localhost:8000/v1/chat/completions  model=qwen3.8-flash-next-tp2  think_off={"chat_template_kwargs": {"enable_thinking": true}} ===
+=== 热身(不计入)===
+  c2   热身 聚合   113.8 tok/s   每流  56.9   出   713 tok /   6.3s   单请求延迟 中位   5.5s 最慢   6.3s   reasoning 528
+
+=== 并发梯子 [1, 1, 2, 4] ===
+  c1   聚合    76.5 tok/s   每流  76.5   出   298 tok /   3.9s   单请求延迟 中位   3.9s 最慢   3.9s   reasoning 167
+  c1   聚合    79.4 tok/s   每流  79.4   出   298 tok /   3.8s   单请求延迟 中位   3.8s 最慢   3.8s   reasoning 167
+  c2   聚合   132.4 tok/s   每流  66.2   出   800 tok /   6.0s   单请求延迟 中位   5.7s 最慢   6.0s   reasoning 562
+  c4   聚合   140.3 tok/s   每流  35.1   出  1600 tok /  11.4s   单请求延迟 中位   9.6s 最慢  11.4s   reasoning 1235
+
+峰值: c4 = 140.3 tok/s 聚合
+→ /home/admin/bench-ab/ladder-v41-think.json
+=== v41: http://localhost:8000 model=qwen3.8-flash-next-tp2 sizes=[8000, 32000, 128000] ===
+  ~  8K 首发:    7851 tok  TTFT   2.31s  prefill   3404 tok/s  cached 0
+  ~  8K 暖:    7852 tok  TTFT   2.31s  prefill   3393 tok/s  cached 0
+  ~ 32K 首发:   32790 tok  TTFT   9.49s  prefill   3454 tok/s  cached 0
+  ~ 32K 暖:   32796 tok  TTFT   9.50s  prefill   3451 tok/s  cached 0
+  ~128K 首发:  137057 tok  TTFT  40.85s  prefill   3355 tok/s  cached 0
+  ~128K 暖:  137055 tok  TTFT  40.98s  prefill   3345 tok/s  cached 0
+  MemAvailable 最低: local 6.59 GiB  192.168.200.102 9.72 GiB
+→ /home/admin/bench-ab/prefill-v41.json
+mem after prefill: S1 6.63 GiB (5.4%)  S2 9.72 GiB (8.0%)
+### v41 done 22:32:53

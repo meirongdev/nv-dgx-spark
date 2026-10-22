@@ -1,0 +1,53 @@
+{
+ "tag": "v52-think",
+ "url": "http://localhost:8000/v1/chat/completions",
+ "model": "qwen3.8-flash-next-tp2-v52",
+ "think_off": {
+  "chat_template_kwargs": {
+   "enable_thinking": true
+  }
+ },
+ "when": "2026-10-22 23:07:37 +0800",
+ "rows": [
+  {
+   "c": 1,
+   "agg": 87.0,
+   "per_stream": 87.0,
+   "tokens": 300,
+   "reasoning_tokens": 169,
+   "wall_s": 3.45,
+   "lat_median_s": 3.45,
+   "lat_max_s": 3.45
+  },
+  {
+   "c": 1,
+   "agg": 91.4,
+   "per_stream": 91.4,
+   "tokens": 247,
+   "reasoning_tokens": 116,
+   "wall_s": 2.7,
+   "lat_median_s": 2.7,
+   "lat_max_s": 2.7
+  },
+  {
+   "c": 2,
+   "agg": 141.8,
+   "per_stream": 70.9,
+   "tokens": 545,
+   "reasoning_tokens": 231,
+   "wall_s": 3.84,
+   "lat_median_s": 3.63,
+   "lat_max_s": 3.84
+  },
+  {
+   "c": 4,
+   "agg": 152.0,
+   "per_stream": 38.0,
+   "tokens": 1498,
+   "reasoning_tokens": 1325,
+   "wall_s": 9.86,
+   "lat_median_s": 8.77,
+   "lat_max_s": 9.85
+  }
+ ]
+}

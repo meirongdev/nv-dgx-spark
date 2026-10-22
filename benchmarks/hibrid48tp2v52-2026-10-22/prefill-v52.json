@@ -1,0 +1,58 @@
+{
+ "tag": "v52",
+ "rows": [
+  {
+   "target": 8000,
+   "attempt": "首发",
+   "prompt_tokens": 7852,
+   "cached_tokens": 0,
+   "ttft_s": 2.29,
+   "prefill_tok_s": 3434.0
+  },
+  {
+   "target": 8000,
+   "attempt": "暖",
+   "prompt_tokens": 7851,
+   "cached_tokens": 0,
+   "ttft_s": 2.33,
+   "prefill_tok_s": 3372.0
+  },
+  {
+   "target": 32000,
+   "attempt": "首发",
+   "prompt_tokens": 32795,
+   "cached_tokens": 0,
+   "ttft_s": 9.59,
+   "prefill_tok_s": 3419.0
+  },
+  {
+   "target": 32000,
+   "attempt": "暖",
+   "prompt_tokens": 32793,
+   "cached_tokens": 0,
+   "ttft_s": 9.57,
+   "prefill_tok_s": 3427.0
+  },
+  {
+   "target": 128000,
+   "attempt": "首发",
+   "prompt_tokens": 137055,
+   "cached_tokens": 0,
+   "ttft_s": 41.08,
+   "prefill_tok_s": 3336.0
+  },
+  {
+   "target": 128000,
+   "attempt": "暖",
+   "prompt_tokens": 137054,
+   "cached_tokens": 0,
+   "ttft_s": 41.13,
+   "prefill_tok_s": 3333.0
+  }
+ ],
+ "mem_min_gib": {
+  "local": 12.158973693847656,
+  "192.168.200.102": 15.323471069335938
+ },
+ "when": "2026-10-22 23:09:24 +0800"
+}

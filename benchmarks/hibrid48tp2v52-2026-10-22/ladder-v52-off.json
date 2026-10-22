@@ -1,0 +1,133 @@
+{
+ "tag": "v52-off",
+ "url": "http://localhost:8000/v1/chat/completions",
+ "model": "qwen3.8-flash-next-tp2-v52",
+ "think_off": {
+  "chat_template_kwargs": {
+   "enable_thinking": false
+  }
+ },
+ "when": "2026-10-22 23:06:59 +0800",
+ "rows": [
+  {
+   "c": 1,
+   "agg": 111.6,
+   "per_stream": 111.6,
+   "tokens": 389,
+   "reasoning_tokens": 0,
+   "wall_s": 3.48,
+   "lat_median_s": 3.48,
+   "lat_max_s": 3.48
+  },
+  {
+   "c": 2,
+   "agg": 158.7,
+   "per_stream": 79.3,
+   "tokens": 698,
+   "reasoning_tokens": 0,
+   "wall_s": 4.4,
+   "lat_median_s": 4.14,
+   "lat_max_s": 4.4
+  },
+  {
+   "c": 4,
+   "agg": 175.6,
+   "per_stream": 43.9,
+   "tokens": 1484,
+   "reasoning_tokens": 0,
+   "wall_s": 8.45,
+   "lat_median_s": 6.74,
+   "lat_max_s": 8.45
+  },
+  {
+   "c": 6,
+   "agg": 197.7,
+   "per_stream": 33.0,
+   "tokens": 1891,
+   "reasoning_tokens": 0,
+   "wall_s": 9.56,
+   "lat_median_s": 7.21,
+   "lat_max_s": 9.56
+  },
+  {
+   "c": 8,
+   "agg": 242.2,
+   "per_stream": 30.3,
+   "tokens": 2635,
+   "reasoning_tokens": 0,
+   "wall_s": 10.88,
+   "lat_median_s": 8.53,
+   "lat_max_s": 10.88
+  },
+  {
+   "c": 12,
+   "agg": 322.4,
+   "per_stream": 26.9,
+   "tokens": 4057,
+   "reasoning_tokens": 0,
+   "wall_s": 12.58,
+   "lat_median_s": 10.13,
+   "lat_max_s": 12.58
+  },
+  {
+   "c": 16,
+   "agg": 377.1,
+   "per_stream": 23.6,
+   "tokens": 5419,
+   "reasoning_tokens": 0,
+   "wall_s": 14.37,
+   "lat_median_s": 11.68,
+   "lat_max_s": 14.36
+  },
+  {
+   "c": 20,
+   "agg": 427.9,
+   "per_stream": 21.4,
+   "tokens": 6938,
+   "reasoning_tokens": 0,
+   "wall_s": 16.21,
+   "lat_median_s": 12.75,
+   "lat_max_s": 16.21
+  },
+  {
+   "c": 24,
+   "agg": 467.9,
+   "per_stream": 19.5,
+   "tokens": 8324,
+   "reasoning_tokens": 0,
+   "wall_s": 17.79,
+   "lat_median_s": 14.14,
+   "lat_max_s": 17.78
+  },
+  {
+   "c": 32,
+   "agg": 554.0,
+   "per_stream": 17.3,
+   "tokens": 10752,
+   "reasoning_tokens": 0,
+   "wall_s": 19.41,
+   "lat_median_s": 15.22,
+   "lat_max_s": 19.4
+  },
+  {
+   "c": 48,
+   "agg": 680.4,
+   "per_stream": 14.2,
+   "tokens": 16213,
+   "reasoning_tokens": 0,
+   "wall_s": 23.83,
+   "lat_median_s": 19.36,
+   "lat_max_s": 23.82
+  },
+  {
+   "c": 64,
+   "agg": 753.1,
+   "per_stream": 11.8,
+   "tokens": 21423,
+   "reasoning_tokens": 0,
+   "wall_s": 28.45,
+   "lat_median_s": 22.61,
+   "lat_max_s": 28.43
+  }
+ ]
+}
