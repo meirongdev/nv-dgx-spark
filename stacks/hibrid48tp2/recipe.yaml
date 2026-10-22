@@ -5,7 +5,8 @@
 #
 #   1. port:              8000                    → 18300   (S2 的既有 Flash-Next 端点位置)
 #   2. host:              127.0.0.1               → 0.0.0.0 (客户端走 Tailscale,不在本机)
-#   3. served-model-name: Qwen/Qwen3.8-Flash-Next → qwen3.8-flash-next-tp2
+#   3. served-model-name: Qwen/Qwen3.8-Flash-Next → qwen3.8-flash-next-tp2-v41
+#      (2026-10-22 前是 qwen3.8-flash-next-tp2;那个名字随主力移交给 hibrid48tp2v52)
 #                                                  (注册表要求 served 名全局唯一;
 #                                                   qwen3.8-flash-next 已归 hibrid48)
 #
@@ -75,7 +76,7 @@ env:
                                                 # memory, so 4 is faster: +10 % tok/s at 32 concurrent, +7 % at 64, same at 1
 
 vllm:
-  served-model-name: qwen3.8-flash-next-tp2     # 本地偏离 3 (上游 Qwen/Qwen3.8-Flash-Next)
+  served-model-name: qwen3.8-flash-next-tp2-v41 # 本地偏离 3 (上游 Qwen/Qwen3.8-Flash-Next)
   engram-config: '{"cpu_offload": false}'      # vLLM 0.30 defaults to keeping the n-gram table in pinned host memory; this
                                                 # image serves it from the GPU (the layout every number was measured on)
   gdn-prefill-backend: flashinfer               # +5 % prefill over triton from 8k to 256k tokens, same decode speed

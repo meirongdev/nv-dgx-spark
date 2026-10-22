@@ -1,0 +1,104 @@
+# ============================================================
+# 本文件是上游 myllmbox/qwen38-flash-next-cluster-recipe @ v5.2 (d2721ec) recipe.yaml 的副本,
+# 与 S1 上运行时真正读的那份(/home/admin/hibrid48tp2v52-recipe/recipe.yaml)保持同步。
+# 本地偏离三处(行内都标了「本地偏离 N」):
+#
+#   1. model:             INT4-AutoRound          → myllmbox/Qwen3.8-Flash-Next-hibrid48
+#      + kv-cache-memory: 29G                     → 33G(上游给 hibrid48 的那一行,原样取消注释)
+#      —— 与 hibrid48tp2(v4.1)同一份权重,A/B 只换 kit/引擎;两台都是 hardlink,零下载。
+#   2. host:              127.0.0.1               → 0.0.0.0
+#   3. served-model-name: Qwen/Qwen3.8-Flash-Next → qwen3.8-flash-next-tp2
+#      (A/B 期间是 …-v52;2026-10-22 升主力时从 hibrid48tp2 接过这个名字)
+#
+# 端口保持上游 8000(与 hibrid48tp2 同,两者互斥)。ib_links: 2 保留上游值 —— 这两台
+# 第二个 RDMA 半口没有 IPv4,run.sh 会打印警告并退回单轨(见 stack.env)。
+# 上游 README 实测(2×GB10,RDMA,v5.2,INT4-AutoRound,双轨):mixed c1 100.4 / c64 968.4,
+# thinking-on c1 93.2 avg,128K prefill 3,939 tok/s,1K TTFT 0.36 s。hibrid48 在 v5.2 上
+# 上游只说 "~10 % slower",没有表。
+# ============================================================
+
+# The one and only model config. run.sh reads THIS — the boxes themselves live in cluster.env (written by
+# setup.sh on first run, machine-specific, never committed).
+# Flag mapping: `name: value` -> --name value | `name: true` -> --name | `name: false` -> omitted.
+# Cluster flags (--nnodes 2 --node-rank N --master-addr/--master-port --tensor-parallel-size 2 --headless on the
+# worker) and the per-box NCCL/gloo interface pins are added by run.sh from cluster.env — never put them here.
+
+server:
+  image: myllmbox/qwen38-flash-next-cluster-vllm:v5.2   # pinned public tag (digest in README)
+  cpuset: "5-9,15-19"                           # the GB10's 10 fast Cortex-X925 cores
+  # model: azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound   # INT4-AutoRound, ~122G — the default and fastest
+  model: myllmbox/Qwen3.8-Flash-Next-hibrid48   # 本地偏离 1 (上游默认 INT4-AutoRound) — NVFP4, ~99G: ~10 % slower, more creative
+  # model: myllmbox/Qwen3.8-Flash-Next-hibrid48-uncensored   # same, abliterated body, NO guardrails. GATED on Hugging Face:
+                                                # accept its agreement, then hf auth login or export HF_TOKEN
+                                                # (switching model? swap the kv-cache-memory line under vllm: too)
+  port: 8000                                    # OpenAI API on the head box
+  host: 0.0.0.0                                 # 本地偏离 2 (上游 127.0.0.1) — 客户端走 Tailscale
+  master_port: 25000                            # torch.distributed rendezvous, on the interconnect
+  ib_links: 2                                   # RDMA devices per box: 2 = both halves of the ConnectX-7 (needs an IPv4 on the
+                                                # second interface, else run.sh stays on 1)
+  models_dir: ./models                          # downloaded on the first run, synced to the worker at the same path
+  cache_dir: ./cache                            # compile/autotune caches (per box); deletable, the next boot rebuilds
+  patches: ""                                   # optional vLLM patches from patches/, space-separated. See patches/README.md
+
+env:
+  MBX_FUSED_DRAFT: "1"
+  MBX_PLE_REPLICATE: "0"                        # half the n-gram table per box; "1" = full table (~14G more per box)
+  PYTHONUNBUFFERED: "1"
+  TORCH_NCCL_ASYNC_ERROR_HANDLING: "1"
+  TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: "180"       # die in 3 min on a stuck collective
+  VLLM_MARLIN_USE_ATOMIC_ADD: "1"
+  TORCH_CUDA_ARCH_LIST: "12.1a"
+  FLASHINFER_CUDA_ARCH_LIST: "12.1a"
+  MBX_SKINNY_GEMM_SM12X: "1"                    # GB10 skinny-GEMM plans (TP=2 table by sethforprivacy)
+  VLLM_ENABLE_ROCE_ALLREDUCE: "1"               # one-shot RoCE all-reduce (b12x) up to 2MB, NCCL above
+  B12X_ROCE_CACHE_DIR: /cache/b12x-roce
+  # RoCE v2 over the ConnectX link; interfaces, HCAs and the GID index are set per box by run.sh
+  NCCL_IB_GID_INDEX: "3"                        # fallback only — run.sh probes the live value
+  NCCL_IB_ROCE_VERSION_NUM: "2"
+  NCCL_IB_ADDR_FAMILY: "AF_INET"
+  NCCL_CROSS_NIC: "1"
+  NCCL_IB_MERGE_NICS: "1"                       # dual rail: both ConnectX halves as one NIC
+  NCCL_IB_QPS_PER_CONNECTION: "1"
+  NCCL_IB_SPLIT_DATA_ON_QPS: "0"
+  NCCL_IGNORE_CPU_AFFINITY: "1"
+  NCCL_CUMEM_ENABLE: "0"
+  NCCL_NVLS_ENABLE: "0"
+  NCCL_MAX_NCHANNELS: "4"
+
+vllm:
+  served-model-name: qwen3.8-flash-next-tp2     # 本地偏离 3 (上游 Qwen/Qwen3.8-Flash-Next) — 注册表要求全局唯一
+  engram-config: '{"cpu_offload": false}'       # n-gram table on the GPU
+  gdn-prefill-backend: flashinfer
+  moe-backend: marlin                           # hibrid48; run.sh drops it for INT4
+  pipeline-parallel-size: 1
+  distributed-executor-backend: mp
+  gpu-memory-utilization: 0.70                  # the KV pool is sized by kv-cache-memory below, not by this
+  # kv-cache-memory: "29000000000"              # INT4-AutoRound: 29G per box = 1,829,182 KV tokens
+  kv-cache-memory: "33000000000"                # 本地偏离 1 的配套 (上游给 hibrid48 的那一行) — 33G per box = 2,079,675 KV tokens
+  compilation-config: '{"cudagraph_mode":"FULL_AND_PIECEWISE","cudagraph_capture_sizes":[1,2,3,4,5,6,7,8,10,12,14,15,16,18,20,21,24,25,28,30,32,35,36,40,42,44,45,48,49,50,52,54,55,56,60,63,64,65,66,70,72,75,77,78,80,84,88,90,91,96,98,100,104,105,112,120,128,140,144,160,168,192,196,200,224,240,256,280,288,320,336,384,392,448,512],"compile_ranges_endpoints":[32]}'
+                                                # full graphs for every draft depth 3..7 × up to 64 seats
+  block-size: 1632                              # required at K=5–7
+  load-format: fastsafetensors
+  max-model-len: 262144
+  # YaRN, up to 400k context per request (supported; tested by the community on this model): swap max-model-len for these two lines
+  # max-model-len: 409600                       # 400k = 262,144 × 1.5625
+  # hf-overrides: '{"text_config":{"rope_parameters":{"rope_type":"yarn","factor":1.5625,"original_max_position_embeddings":262144,"rope_theta":10000000,"partial_rotary_factor":0.25,"mrope_section":[11,11,10],"mrope_interleaved":true}}}'
+  max-num-seqs: 64
+  max-num-batched-tokens: 8192                  # also the image-input encoder budget
+  enable-prefix-caching: true
+  enable-auto-tool-choice: true
+  tool-call-parser: qwen3_xml
+  reasoning-parser: qwen3
+  speculative-config: '{"method":"mtp","num_speculative_tokens":7,"rejection_sample_method":"block","draft_sample_method":"probabilistic"}'
+                                                # up to 7 sampled drafts, depth chosen live (mtp_depth below)
+  use-replayssm: true
+  async-scheduling: true
+
+# dynamic draft depth → cache/mbx-depth.json on both boxes (edit it to change it without a restart)
+mtp_depth:
+  mode: dynamic                                 # dynamic | off = fixed K=7
+  min: 3                                        # lowest draft depth
+  window: 48                                    # steps of history per decision (8–128)
+  promote: [60, 45]                             # +2 / +1 depth above this % acceptance of the deepest position
+  demote: [25, 15]                              # −1 / −2 depth below this %
+  log: false                                    # true = one log line per decision
