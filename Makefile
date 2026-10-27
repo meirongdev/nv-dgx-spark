@@ -1,4 +1,4 @@
-.PHONY: venv install ping facts cmd inventory all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download run stop restart status logs logs-worker boot-log load preflight info test stacks stack-info switch stack-table stack-check preflight-test memwatch memwatch-check memwatch-reset memwatch-test clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
+.PHONY: venv install ping facts cmd inventory all clean tmux-cmd tmux-attach tmux-list tmux-kill modelscope-download run stop restart status logs logs-worker boot-log load preflight info test stacks stack-info switch stack-table stack-check preflight-test memwatch memwatch-check memwatch-reset memwatch-install memwatch-status memwatch-uninstall memwatch-test clock-cap-apply clock-cap-reset clock-cap-status clock-cap-verify clock-cap-install clock-cap-uninstall node-exporter-deploy node-exporter-status node-exporter-stop node-exporter-logs smartctl-exporter-deploy smartctl-exporter-status smartctl-exporter-stop smartctl-exporter-logs
 
 # Ansible inventory file
 INVENTORY := inventory.ini
@@ -303,7 +303,12 @@ preflight-test:
 # ===========================================================================
 # GB10 统一内存上,引擎预占的 ~100GB 会**绕过容器 cgroup**,所以只有节点级
 # available 内存看得见它。看门狗在节点 OOM 之前把栈整体停掉(不留僵尸 TP 组)。
-# 不自动恢复:`make run` 才会把引擎拉回来。建议放 tmux 里常驻。
+# 不自动恢复:`make run` 才会把引擎拉回来。
+#
+# 首选形态(2026-10-27 起):`make memwatch-install` 装成栈 head 上的 systemd 服务
+# dgx-memwatch@<stack> —— 本机读、本机停、对端走 200G,**不经 Tailscale、不靠 Mac 在线**。
+# `make memwatch`(Mac 上 tmux 循环)保留作临时/调试用;那晚 Tailscale 到 S2 断了 40+ 分钟,
+# 它对 S2 一直 "unreachable (skip)"。
 #
 # ⚠️ 换主力栈时**这里没有任何东西要改** —— 看门狗自己去读 stacks/PRIMARY。
 #    (在此之前它靠 Makefile 里一段 ifeq 阶梯 + 脚本里的一组 WATCH_* 默认值,
@@ -316,8 +321,18 @@ memwatch-check:            # 单次打印各节点 available%(只读)
 memwatch:                  # 常驻循环(防 OOM,建议放 tmux)
 	@$(MEMWATCH) $(STACK)
 
-memwatch-reset:            # 清除已触发状态,解除保持
+memwatch-reset:            # 清除已触发状态,解除保持(操作机 + 节点驻留实例都清)
 	@$(MEMWATCH) --reset $(STACK)
+	@scripts/memwatch-node.sh reset $(STACK)
+
+memwatch-install:          # 装/更新到栈 head 的 systemd(改过 mem-watch.sh 或 stack.env 后必须重跑)
+	@scripts/memwatch-node.sh install $(STACK)
+
+memwatch-status:           # 节点驻留实例:是否在跑、副本是否落后、节点视角 available%
+	@scripts/memwatch-node.sh status $(STACK)
+
+memwatch-uninstall:        # 停用节点驻留实例(换栈时对旧栈跑)
+	@scripts/memwatch-node.sh uninstall $(STACK)
 
 # 去抖逻辑回归(纯本地,不碰集群)。改 tick() 前必跑。
 memwatch-test:

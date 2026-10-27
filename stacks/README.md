@@ -81,6 +81,9 @@ OOM 掉一台**没有 BMC** 的机器(gotcha #2)。`stack-check` 会核对
   或一个裸命令名(自检做 `command -v`)。`bin/x.sh` 这种「相对但不带 ./」两边都过不了。
   2026-09-20 修此处之前,`qwen38` 就卡在这里 —— 而 `memwatch-test` 当时只验字段
   非空,一路报 PASS。
+  阈值不是通用的就写进注册表:`STACK_MEMWATCH_WARN_PCT` / `STACK_MEMWATCH_CRIT_PCT` /
+  `STACK_MEMWATCH_CRIT_CONSEC`(不写 = 8 / 5 / 2)。节点驻留的看门狗
+  (`make memwatch-install`)只从这里读 —— 它没有命令行可抄。
 - **preflight 拦得住它。** 填 `STACK_WEIGHTS` / `STACK_WEIGHTS_SHARDS` /
   `STACK_IMAGE`,通用 preflight 就会替你数分片、查镜像。
 

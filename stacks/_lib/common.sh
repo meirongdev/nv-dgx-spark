@@ -117,6 +117,12 @@ stack_field(){
   ( . "$STACKS_DIR/$id/stack.env" 2>/dev/null; echo "${!var:-}" )
 }
 
+# --- 节点:身份 IP(tailnet)→ 200G CX7 内网 IP ----------------------------------
+# 注册表里的节点一律用 tailnet IP 当身份。节点之间互相够得着却不该绕 Tailscale 的
+# 东西(驻留节点的内存看门狗,scripts/memwatch-node.sh)走这张表。这是主机事实,
+# 不是栈事实,所以在这里而不在 stack.env。
+STACK_NODE_IC_MAP="${STACK_NODE_IC_MAP:-100.97.87.120=192.168.200.101 100.67.164.92=192.168.200.102}"
+
 # --- SSH ---------------------------------------------------------------------
 STACK_SSH_USER="${STACK_SSH_USER:-admin}"
 STACK_SSH_KEY="${STACK_SSH_KEY:-$HOME/.ssh/vgio}"

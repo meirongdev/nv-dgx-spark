@@ -93,6 +93,18 @@ check "一个容器在跑 → 1" "1" "$(engine_running)"
 eval "$_real_ssh_head"
 
 echo
+echo "=== 驻留节点:谁走本机、谁走 200G ==="
+# 驻留形态的全部意义是「不经 Tailscale」。映射错了的话它会悄悄退回 tailnet IP ——
+# 照样能跑,直到下一次 DERP 抖动。
+ON_NODE="" NODE_ADDRS="nodeA=icA nodeB=icB"
+check "操作机形态:原样走身份 IP" "nodeB" "$(node_route nodeB)"
+ON_NODE="nodeA"
+check "驻留 nodeA:自己 → local" "local" "$(node_route nodeA)"
+check "驻留 nodeA:对端 → 内网地址" "icB" "$(node_route nodeB)"
+check "映射里没有的节点 → 退回身份 IP" "nodeC" "$(node_route nodeC)"
+ON_NODE=""
+
+echo
 echo "=== 身份来自注册表(不再有写死的默认栈)==="
 # 旧版这两条断言钉的是「默认值等于 v4flash」。那正是问题本身 —— 换栈漏改时,
 # 看门狗会带着一个看起来很正常的旧身份继续跑。现在钉的是相反的东西:
@@ -143,6 +155,16 @@ for id in $(stack_ids_active); do
   check "栈 $id 的看门狗动作可用" "ok" "$r"
   [ -n "$(cfg "$id" NODES)" ] && r=ok || r="缺 STACK_MEMWATCH_NODES"
   check "栈 $id 声明了要盯哪些节点" "ok" "$r"
+  w="$(cfg "$id" WARN_PCT)"; c="$(cfg "$id" CRIT_PCT)"
+  [ "$w" -gt "$c" ] 2>/dev/null && r=ok || r="warn=$w crit=$c —— warn 线必须高于 crit 线"
+  check "栈 $id 的阈值自洽" "ok" "$r"
+done
+# 驻留节点要靠这张表绕开 Tailscale:每个被盯的节点都得有内网地址。
+for id in $(stack_ids_active); do
+  for n in $(cfg "$id" NODES); do
+    case " $STACK_NODE_IC_MAP " in *" $n="*) r=ok ;; *) r="$n 不在 STACK_NODE_IC_MAP 里" ;; esac
+    check "栈 $id 的节点 $n 有 200G 地址" "ok" "$r"
+  done
 done
 
 rm -f "$WATCH_STATE" "$WATCH_LOG"

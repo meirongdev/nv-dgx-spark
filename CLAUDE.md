@@ -815,19 +815,31 @@ is what ran 2026-09-20 → 09-30 and is the rollback.
 - **Never build on S1 without stopping the running stack first** — even the
   "lightweight" prebuilt-wheel path compiles native deps from source and OOM'd
   the head node on 2026-07-04, taking the whole tmux server down with it.
-- **Host memory watchdog** (`make memwatch`, run it in tmux) scales BOTH ranks to
+- **Host memory watchdog** scales BOTH ranks to
   0 before a node OOMs — vLLM's ~100 GB pre-allocation bypasses the container
   cgroup on GB10, so node-level available memory is the only signal that sees it.
-  No auto-restore; bring it back with `make run`. ✅ The watchdog reads
-  `stacks/PRIMARY` — there is nothing to change when the primary moves, and it
-  refuses to start (exit 3) if it cannot actually stop that stack. A k8s cgroup
+  No auto-restore; bring it back with `make run`. It refuses to start (exit 3) if
+  it cannot actually stop that stack. A k8s cgroup
   memory limit was tried and **rejected** — `docs/auto-mitigation-cn.md`.
-  ⚠️ **One instance guards one stack** (all of its nodes). Today that is one
-  instance: `WATCH_WARN_PCT=5 WATCH_CRIT_PCT=2 WATCH_CRIT_CONSEC=10 make
-  memwatch STACK=hibrid48tp2v52`, watching both boxes. When two single-node stacks
-  are live you need two instances, each in its own tmux session
-  (e.g. `WATCH_WARN_PCT=3 WATCH_CRIT_PCT=1 make memwatch STACK=hibrid48`).
-  State/log files are per-stack, so they don't collide.
+  ✅ **Preferred form since 2026-10-27: node-resident** — `make memwatch-install
+  [STACK=]` installs systemd `dgx-memwatch@<stack>` on the stack's head: it reads
+  its own `/proc/meminfo`, runs the stop action locally and reaches the peer over
+  the 200G link (`STACK_NODE_IC_MAP` in `stacks/_lib/common.sh`) — **no
+  Tailscale, no Mac**. `make memwatch-status` shows it, says whether the deployed
+  copy has fallen behind the repo, and reads available% from the node's side.
+  Why: the old form (`make memwatch` in a tmux on the Mac) sees the boxes through
+  Tailscale DERP; on 2026-10-27 Mac → S2 was down 40+ min while S2 and the 200G
+  link were fine, and it logged S2 as `unreachable (skip)` the whole time.
+  ⚠️ The node runs a **copy** — after editing `scripts/mem-watch.sh` or a
+  `stack.env`, re-run `make memwatch-install`. `make switch` does **not** move it:
+  `memwatch-uninstall STACK=<old>` + `memwatch-install STACK=<new>` are on its
+  printed checklist (not automatic, so glm53 — 1.8% headroom — can't be killed by a
+  switch; install itself refuses when a node is already ≤ crit, `FORCE=1` overrides).
+  Thresholds are registry fields now (`STACK_MEMWATCH_{WARN_PCT,CRIT_PCT,CRIT_CONSEC}`;
+  `WATCH_*` env still wins) — before, they lived only in comments and tmux command lines.
+  ⚠️ **One instance guards one stack** (all of its nodes). Two single-node stacks
+  live = two instances (`dgx-memwatch@qwen38un` on S1, `dgx-memwatch@hibrid48` on
+  S2). State/log files are per-stack, so they don't collide.
   ⚠️ `hibrid48` idles at ~2.4% host available **by design** (bilikaz's recipe
   leaves ~2G), so at the stock crit=5% its watchdog fires on startup — exactly
   the glm53 situation.
@@ -1079,6 +1091,9 @@ largest source of silent breakage — gotcha #9).
 - `scripts/mem-watch.sh` — host memory watchdog (`make memwatch*`). Reads
   `stacks/PRIMARY`; refuses to start (exit 3) if it cannot actually stop that stack.
   `scripts/mem-watch.sh --config [id]` prints what it would guard.
+- `scripts/memwatch-node.sh` — `make memwatch-{install,status,reset,uninstall}`:
+  deploys that same script as systemd `dgx-memwatch@<id>` on the stack's head
+  (node-resident, no Tailscale in the loop) and reads back its startup banner.
 - `scripts/gb10-clock-cap.sh` — GPU clock cap apply/verify/install. `verify`
   drives a real generation, so it takes model/port/thinking-kwarg from the
   registry; `CAP_STACK=<id>` aims it elsewhere.

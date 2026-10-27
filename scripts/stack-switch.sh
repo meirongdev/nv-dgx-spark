@@ -61,7 +61,10 @@ cat <<EOF
   make status STACK=$TO          # 起来了,且 /v1/models 报新的 served name
   make test   STACK=$TO          # 冒烟 + 身份闸门
   make clock-cap-verify          # 必须打印"负载:生成 300 token";打印"生成失败"=没跟上
-  make memwatch                  # 启动时自检能不能真停掉本栈,指错就 exit 3
+  make memwatch-uninstall STACK=$FROM   # 旧栈的驻留看门狗下线
+  make memwatch-install   STACK=$TO     # 新栈的装到它的 head 上;读回横幅,自检停不掉就 exit 3
+                                 # (不自动做:glm53 余量 1.8%,默认阈值一装就会停栈 ——
+                                 #  install 会因"已 ≤ crit"拒装,要人决定阈值或 FORCE=1)
   make stack-check               # 文档表格与注册表一致
   ./scripts/qwen-model-switch.sh status   # 客户端三文件一致
 

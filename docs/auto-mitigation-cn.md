@@ -75,7 +75,10 @@ GB10 的 128 GB LPDDR5X 是 **CPU 与 GPU 共享的相干统一内存**。V4-Fla
 - `Makefile`：
   - `make memwatch-check` —— 单次打印两节点 available%（只读）；
   - `make memwatch` —— 常驻循环（建议放 tmux，`ctrl-c` 退出）；
-  - `make memwatch-reset` —— 清除已触发状态、解除保持。
+  - `make memwatch-reset` —— 清除已触发状态、解除保持(操作机和节点驻留实例都清)。
+  - `make memwatch-install` / `memwatch-status` / `memwatch-uninstall` —— **节点驻留形态**
+    (2026-10-27 起首选,`scripts/memwatch-node.sh`):把同一份脚本装成栈 head 上的 systemd
+    服务 `dgx-memwatch@<stack>`,见 §2.7。
 
 ### 2.3 为什么不是 k8s cgroup 内存上限（2026-08-15 上线前实测否决）
 
@@ -114,7 +117,10 @@ GB10 的 128 GB LPDDR5X 是 **CPU 与 GPU 共享的相干统一内存**。V4-Fla
 
 ### 2.5 行为模型
 
-- 轮询两台节点（S1 `100.97.87.120`、S2 `100.67.164.92`，tailnet SSH `admin`@`~/.ssh/vgio`）；
+- 轮询该栈的节点(`STACK_MEMWATCH_NODES`)。操作机形态经 tailnet SSH(`admin`@`~/.ssh/vgio`);
+  **节点驻留形态**本机直接读 `/proc/meminfo`,对端走 200G 内网(`STACK_NODE_IC_MAP`),见 §2.7;
+- 阈值逐栈:`STACK_MEMWATCH_{WARN_PCT,CRIT_PCT,CRIT_CONSEC}`(注册表,2026-10-27 起),
+  `WATCH_*` 环境变量优先;不写则为 §2.4 的 8 / 5 / 2;
 - 探不到节点 = **不算数**（fail-open，沿用仓库探针哲学：数据缺失必须放行，不误杀）；
 - 触发后写 state 文件 `/tmp/.<stack>-memwatch-fired` 并**保持**——
   **不自动恢复**，引擎只在你 `make run STACK=<id>` 时回来，避免「停掉 → 内存松 →
@@ -134,9 +140,32 @@ tail -f ${TMPDIR:-/tmp}/<stack>-memwatch.log
 make memwatch-reset          # 触发后先复位,再 make run STACK=<id> 拉起
 ```
 
-> **局限**：守护挂在操作机（Mac）上，操作机要在线才有效；节点自身不自保。
-> 节点自保若要做，得是节点上一个读 `free -h` 并直接执行该栈停机命令的本地守护
-> （k3s 下线后，原先「在 S2 放一份本地 kubectl」的路子已不存在）。见 §4 展望。已实测：`make memwatch-check` 两节点返回 11%，`WARN_PCT=8` 当前不误报；
+> **局限（操作机形态）**：守护挂在操作机（Mac）上，操作机要在线、Tailscale 要通才有效。
+> 2026-10-27 实测：Mac → S2 的 DERP 路径断了 40+ 分钟（S2 本身和 200G 线都好好的），
+> 这段时间看门狗对 S2 一直 `unreachable (skip)` —— 等于没守。→ 节点驻留形态（§2.7）。
+
+### 2.7 节点驻留形态（2026-10-27 起首选）
+
+`make memwatch-install [STACK=<id>]`(`scripts/memwatch-node.sh`)做的事：
+
+1. 把 `scripts/mem-watch.sh`、`stacks/_lib/common.sh`、`stacks/<id>/stack.env` 按仓库相对路径
+   拷到 head 的 `~/dgx-memwatch/`;
+2. 写每实例环境 `~/dgx-memwatch/<id>.env`:`WATCH_ON_NODE=<head>`(打开驻留形态)+
+   `WATCH_LOG`;make 命令行上显式给的 `WATCH_*` 覆盖也写进来并打印;
+3. **先用节点视角读一遍**:有节点读不到 → 拒装;有节点已经 ≤ crit → 拒装(装上就会停栈,
+   glm53 在默认阈值下就是这样),`FORCE=1` 才放行;
+4. 装模板单元 `/etc/systemd/system/dgx-memwatch@.service`(`User=admin`,
+   `Restart=on-failure`,`RestartPreventExitStatus=3`),`enable` + **`restart`**(在跑的旧副本
+   必须换成新逻辑),再把启动横幅读回来。
+
+驻留后的行为:本机内存直接读、停机动作本机执行、对端经 `STACK_NODE_IC_MAP`(200G 内网)
+SSH —— **整条防线不经过 Tailscale,也不依赖 Mac**。TP=2 栈的 NCCL 本来就靠这条线,它断了
+栈也已经不在了。启动自检多一条:每个对端现在就要读得到,否则 `exit 4`(systemd 30 s 后重试 ——
+断电后对端晚起是会自己好的情况;`exit 3` 是配置错,不重试)。
+
+⚠️ 节点上跑的是**副本**:改了脚本或 `stack.env` 要重跑 `make memwatch-install`;
+`make memwatch-status` 比对 sha256,落后会直说。`make switch` 不会替你搬它 ——
+换栈清单里有 `memwatch-uninstall STACK=<旧>` + `memwatch-install STACK=<新>`。已实测：`make memwatch-check` 两节点返回 11%，`WARN_PCT=8` 当前不误报；
 > `make memwatch` 已在守护时两 rank 均在跑（replicas=2），逻辑就绪。
 
 ---
@@ -216,7 +245,7 @@ vLLM 侧真正有用的三个指标：`vllm:kv_cache_usage_perc`、`vllm:num_req
 | 宿主机看门狗 + 自动 scale 0（§2） | ✅ **已实现** | `scripts/mem-watch.sh` + `make memwatch*` |
 | ~~k8s cgroup 内存上限~~ | ❌ 已废弃 | 实测统一内存绕过 cgroup，兜不住（§2.3） |
 | Prometheus 告警（§3） | ✅ **已落地**（2026-08-15） | homelab prometheus-rules.yaml；A1–A3 已按实测否决/删除，见 §3.2 落地对账 |
-| 节点自保版看门狗（§2.6 展望） | 后续 | 在节点上放一个读 `free -h`、直接执行本栈停机命令的本地守护，脱离操作机也能自保（k3s 下线后不再是 kubectl 方案） |
+| 节点自保版看门狗（§2.7） | ✅ **已实现**（2026-10-27） | `make memwatch-install`:栈 head 上的 systemd `dgx-memwatch@<stack>`,对端走 200G,脱离操作机和 Tailscale |
 | 智能 PDU（电源侧） | 后续（硬件） | S2 那次真正适用的手段，见 fallback §1.1 |
 
 > **检查清单（落地判据）**：

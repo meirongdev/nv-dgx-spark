@@ -19,15 +19,23 @@
 #   (make memwatch-reset)才会解除 —— 引擎只会在你 `make run STACK=v4flash` 时回来,
 #   避免"scale 0 → 内存松动 → 又拉起 → 又掉"的抖动。
 #
-# 位置:跑在这台操作机(有 SSH 到两台节点)。局限:操作机要在线;
-#       节点本身不自保(见文档 §4 展望)。
+# 位置:两种,同一份脚本。
+#   1. **驻留节点(首选,2026-10-27 起)** —— `make memwatch-install` 把它装成栈 head 上的
+#      systemd 服务 dgx-memwatch@<stack>(scripts/memwatch-node.sh)。此时 WATCH_ON_NODE=<head>:
+#      本机直接读 /proc/meminfo、停机动作本机执行,对端走 200G 内网(STACK_NODE_IC_MAP),
+#      **整条防线不经过 Tailscale**。
+#   2. 操作机(Mac)上的 tmux 循环(`make memwatch`)—— 旧形态,全程走 Tailscale。
+#      2026-10-27 实测它的局限:DERP 一抖就把整台节点判成 unreachable 并跳过,S2 那晚
+#      有 40+ 分钟没人守;Mac 睡眠时整条防线都不在。
 #
 # 用法:
 #   scripts/mem-watch.sh --once      # 单次打印各节点 available%(只读,验证用)
 #   scripts/mem-watch.sh --reset     # 清除已触发状态(解除保持)
 #   scripts/mem-watch.sh             # 常驻循环(建议放 tmux,ctrl-c 退出)
 # 环境变量可覆盖:WATCH_NODES / INTERVAL / WARN_PCT / CRIT_PCT / CRIT_CONSEC /
-#   WATCH_SSH_USER / WATCH_SSH_KEY / NOTIFY=1(macOS 桌面通知)
+#   WATCH_SSH_USER / WATCH_SSH_KEY / NOTIFY=1(macOS 桌面通知) /
+#   WATCH_ON_NODE(驻留节点时本机的身份 IP)/ WATCH_NODE_ADDRS(身份 IP=内网 IP 映射)
+#   阈值默认取注册表的 STACK_MEMWATCH_{WARN_PCT,CRIT_PCT,CRIT_CONSEC},WATCH_* 优先。
 #   WATCH_STACK / WATCH_DOCKER_* —— **换主力栈时必须一起改**,否则看门狗会对着
 #   一个不存在的容器/停机脚本使劲(启动自检已会挡住这种情况)。
 #   正常路径是只改 Makefile 顶部的 MEMWATCH_STACK,由 make memwatch* 注入。
@@ -65,9 +73,15 @@ WATCH_NODES="${WATCH_NODES:-${STACK_MEMWATCH_NODES:-${STACK_NODES_IPS:-${STACK_H
 SSH_USER="${WATCH_SSH_USER:-${STACK_SSH_USER:-admin}}"
 SSH_KEY="${WATCH_SSH_KEY:-${STACK_SSH_KEY:-$HOME/.ssh/vgio}}"
 INTERVAL="${WATCH_INTERVAL:-10}"            # 两次轮询间隔(秒)
-WARN_PCT="${WATCH_WARN_PCT:-8}"
-CRIT_PCT="${WATCH_CRIT_PCT:-5}"
-CRIT_CONSEC="${WATCH_CRIT_CONSEC:-2}"       # 连续多少次低于临界才动作
+# 阈值是**逐栈**的(hibrid48 开机就只剩 ~2.4%,通用的 5% 会让它开机即触发),所以落在
+# 注册表里。在此之前它们只存在于 stack.env 的注释和某个 tmux 会话的命令行里 ——
+# 驻留节点的 systemd 服务没有命令行可抄。
+WARN_PCT="${WATCH_WARN_PCT:-${STACK_MEMWATCH_WARN_PCT:-8}}"
+CRIT_PCT="${WATCH_CRIT_PCT:-${STACK_MEMWATCH_CRIT_PCT:-5}}"
+CRIT_CONSEC="${WATCH_CRIT_CONSEC:-${STACK_MEMWATCH_CRIT_CONSEC:-2}}"   # 连续多少次低于临界才动作
+# 驻留节点形态:ON_NODE 是本机的身份 IP(= 注册表里的 tailnet IP)。为空 = 操作机形态。
+ON_NODE="${WATCH_ON_NODE:-}"
+NODE_ADDRS="${WATCH_NODE_ADDRS:-${STACK_NODE_IC_MAP:-}}"
 STACK="${WATCH_STACK:-${STACK_ID:-unknown}}"
 # 2026-09-20:k3s 运行时整体下线(两台机器上的集群已卸载),本脚本只剩 docker 一种
 # 形态。默认值也一并从 k8s 改成 docker —— 旧默认在注册表读不到 STACK_RUNTIME 时
@@ -90,10 +104,36 @@ DOCKER_HOST_IP="${WATCH_DOCKER_HOST:-${STACK_HEAD:-100.97.87.120}}"
 DOCKER_DIR="${WATCH_DOCKER_DIR:-${STACK_DIR:-/home/admin}}"
 DOCKER_CONTAINERS="${WATCH_DOCKER_CONTAINERS:-${STACK_CONTAINERS:-}}"
 DOCKER_STOP="${WATCH_DOCKER_STOP:-${STACK_MEMWATCH_STOP:-${STACK_STOP_CMD:-}}}"
-SSH_KEY_W="$SSH_KEY"
-SSH_USER_W="$SSH_USER"
-ssh_head(){ ssh -i "$SSH_KEY_W" -o StrictHostKeyChecking=no -o BatchMode=yes \
-                -o ConnectTimeout=15 "$SSH_USER_W@$DOCKER_HOST_IP" "$@"; }
+
+# --- 一个节点从这里怎么够得着 -----------------------------------------------------
+# 输出 local(就是本机)、内网地址,或原样的身份 IP(操作机形态 / 映射里没有)。
+# 驻留节点时对端走 200G 内网:2026-10-27 那晚 Tailscale 到 S2 断了 40+ 分钟,
+# 200G 线一包没丢 —— 而 TP=2 栈的 NCCL 本来就靠它,它断了栈也已经不在了。
+node_route(){
+  local node="$1" pair
+  [ -n "$ON_NODE" ] || { echo "$node"; return; }
+  [ "$node" = "$ON_NODE" ] && { echo local; return; }
+  for pair in $NODE_ADDRS; do
+    [ "${pair%%=*}" = "$node" ] && { echo "${pair#*=}"; return; }
+  done
+  echo "$node"
+}
+
+# 节点上没有操作机的 ~/.ssh/vgio,用的是 admin 自己的默认 key —— key 文件不在就不传 -i。
+_ssh(){
+  local host="$1" timeout="$2"; shift 2
+  if [ -f "$SSH_KEY" ]; then
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout="$timeout" "$SSH_USER@$host" "$@"
+  else
+    ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout="$timeout" "$SSH_USER@$host" "$@"
+  fi
+}
+
+# 在 head 上执行(驻留在 head 时就是本机执行,不绕 ssh)。
+ssh_head(){
+  local r; r="$(node_route "$DOCKER_HOST_IP")"
+  if [ "$r" = local ]; then bash -c "$*"; else _ssh "$r" 15 "$@"; fi
+}
 
 # 每节点各自的连续临界计数(仅单次循环内累计)+ 上次报告状态(warn 时不刷屏)
 #
@@ -119,11 +159,12 @@ notify(){ [ "$NOTIFY" = 1 ] && osascript -e "display notification \"$*\" with ti
 
 # --- 读单台节点 available%,输出 0-100 整数;失败输出 N/A 并返回 1 ---
 node_avail_pct(){
-  local node="$1" data avail total pct kv line
-  data="$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=6 \
-      "$SSH_USER@$node" \
-      "awk '/MemAvailable|MemTotal/{gsub(/:/,\"\",\$1); print \$1,\$2}' /proc/meminfo" 2>/dev/null)" \
-    || { echo N/A; return 1; }
+  local node="$1" data avail total pct kv line r
+  local q="awk '/MemAvailable|MemTotal/{gsub(/:/,\"\",\$1); print \$1,\$2}' /proc/meminfo"
+  r="$(node_route "$node")"
+  if [ "$r" = local ]; then data="$(bash -c "$q" 2>/dev/null)"
+  else data="$(_ssh "$r" 6 "$q" 2>/dev/null)"
+  fi || { echo N/A; return 1; }
   avail=-1; total=-1
   while IFS=' ' read -r k v; do
     [ "$k" = MemAvailable ] && avail="$v"
@@ -210,9 +251,10 @@ case "${1:-loop}" in
   --config)
     # 打印从注册表推导出来的身份(不出网)。用途:排查"看门狗到底在守谁",
     # 以及让 test-mem-watch.sh 能在不碰集群的情况下钉住这套映射。
-    printf 'STACK=%s\nMODE=%s\nNODES=%s\nDOCKER_HOST=%s\nDOCKER_DIR=%s\nDOCKER_CONTAINERS=%s\nDOCKER_STOP=%s\nSTATE=%s\n' \
+    printf 'STACK=%s\nMODE=%s\nNODES=%s\nDOCKER_HOST=%s\nDOCKER_DIR=%s\nDOCKER_CONTAINERS=%s\nDOCKER_STOP=%s\nSTATE=%s\nWARN_PCT=%s\nCRIT_PCT=%s\nCRIT_CONSEC=%s\nON_NODE=%s\n' \
       "$STACK" "$MODE" "$WATCH_NODES" \
-      "$DOCKER_HOST_IP" "$DOCKER_DIR" "$DOCKER_CONTAINERS" "$DOCKER_STOP" "$STATE"
+      "$DOCKER_HOST_IP" "$DOCKER_DIR" "$DOCKER_CONTAINERS" "$DOCKER_STOP" "$STATE" \
+      "$WARN_PCT" "$CRIT_PCT" "$CRIT_CONSEC" "$ON_NODE"
     exit 0
     ;;
   --help|-h)
@@ -229,16 +271,29 @@ if [ "$MODE" != docker ]; then
   err "本脚本只能守 docker 栈;请修 stacks/$STACK/stack.env 的 STACK_RUNTIME。"
   exit 3
 fi
-log "=== mem-watch starting: mode=docker stack=$STACK head=$DOCKER_HOST_IP dir=$DOCKER_DIR containers=[$DOCKER_CONTAINERS] nodes=[$WATCH_NODES] interval=${INTERVAL}s warn=${WARN_PCT}% crit=${CRIT_PCT}% x${CRIT_CONSEC} ==="
+_routes=""; for _n in $WATCH_NODES; do _routes="$_routes $_n→$(node_route "$_n")"; done
+log "=== mem-watch starting: mode=docker stack=$STACK on=${ON_NODE:-operator} head=$DOCKER_HOST_IP dir=$DOCKER_DIR containers=[$DOCKER_CONTAINERS] nodes=[${_routes# }] interval=${INTERVAL}s warn=${WARN_PCT}% crit=${CRIT_PCT}% x${CRIT_CONSEC} ==="
 
 # ⚠️ 最重要的一条自检:确认**真要动手时动得了**。指错栈/指错形态的后果是
 # 看门狗照常巡检、照常记日志,却在真要动手时对着一组不存在的对象使劲 —— 一道
 # 静默失效的防线比没有防线更危险。宁可现在就不启动。
 # ssh 必须通,且停机动作必须在、可执行。两者缺一,动手时就是空转。
 ssh_head true 2>/dev/null || {
-  err "ssh 不通:$SSH_USER_W@$DOCKER_HOST_IP(key=$SSH_KEY_W) —— 看门狗动不了手。"
+  err "ssh 不通:$SSH_USER@$(node_route "$DOCKER_HOST_IP")(key=$SSH_KEY) —— 看门狗动不了手。"
   exit 3
 }
+# 驻留节点时,每个要盯的对端都必须现在就够得着 —— 否则它会被一直 "unreachable (skip)",
+# 看起来在守,其实没守(正是从 Mac 挪过来要治的那个形状)。
+# 退出码用 4 而不是 3:断电重启后对端可能晚起几分钟,这是**会自己好**的情况 ——
+# systemd 单元对 4 重试、对 3(配置错)不重试(RestartPreventExitStatus=3)。
+if [ -n "$ON_NODE" ]; then
+  for _n in $WATCH_NODES; do
+    [ "$(node_avail_pct "$_n")" = N/A ] && {
+      err "驻留在 $ON_NODE,但读不到 $_n 的内存(经 $(node_route "$_n"))—— 检查 STACK_NODE_IC_MAP 和 $ON_NODE → 对端的 ssh。"
+      exit 4
+    }
+  done
+fi
 # 停机动作有两种合法形态,各自要做**真**检查 —— 只认其中一种的话,另一种栈
 # 会在这里被判死而根本不启动。2026-09-20 实测:qwen38 的停机动作是裸命令
 # `docker rm -f qwen38-27b`,旧逻辑把它当路径拼成 `/home/admin/docker`,于是
