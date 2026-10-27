@@ -83,6 +83,16 @@ reset; PCT_A=6 PCT_B=50; tick >/dev/null; tick >/dev/null
 check "available=6 高于临界 → 不动手(仅 warn 区)" "" "$SCALED"
 
 echo
+echo "=== engine_running:探不到时必须是 0,不能是空串 ==="
+# 2026-10-27 之前 ssh 失败时它输出空串,主循环 `[ "" -gt 0 ]` 刷 "integer expected"。
+_real_ssh_head="$(declare -f ssh_head)"
+ssh_head(){ return 255; }
+check "ssh 失败 → 0" "0" "$(engine_running)"
+ssh_head(){ printf '1\n'; }
+check "一个容器在跑 → 1" "1" "$(engine_running)"
+eval "$_real_ssh_head"
+
+echo
 echo "=== 身份来自注册表(不再有写死的默认栈)==="
 # 旧版这两条断言钉的是「默认值等于 v4flash」。那正是问题本身 —— 换栈漏改时,
 # 看门狗会带着一个看起来很正常的旧身份继续跑。现在钉的是相反的东西:

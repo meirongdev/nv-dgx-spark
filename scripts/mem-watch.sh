@@ -138,8 +138,11 @@ node_avail_pct(){
 # --- 检查 vLLM 当前有没有在跑(replicas 求和),返回>0 表示在跑 ---
 engine_running(){
   # 探不到(ssh 挂了)时回 0 = 本轮不巡检(fail-open,遵循仓库探针哲学)。
+  # ⚠️ 必须在 END 里打印:ssh 失败时管道是空的,`awk '{print $1+0}'` 一行都不执行,
+  #    输出空串 → 调用处 `[ "" -gt 0 ]` 报 "integer expected"。结果碰巧也是"跳过本轮",
+  #    但 2026-10-27 之前日志里刷满了这一行(Tailscale 每抖一次刷一条)。
   ssh_head "docker ps --filter name=$DOCKER_CONTAINERS --format '{{.Names}}' 2>/dev/null | wc -l" \
-    2>/dev/null | tr -d '[:space:]' | awk '{print $1+0}'
+    2>/dev/null | tr -d '[:space:]' | awk '{n+=$1} END{print n+0}'
 }
 
 # --- 触发自救:两个 rank 一起停掉 ---
