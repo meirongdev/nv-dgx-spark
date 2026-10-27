@@ -54,8 +54,10 @@ stack `hibrid48tp2` is now a stopped rollback renamed `qwen3.8-flash-next-tp2-v4
 `qwen38un` and `hibrid48` are stopped rollbacks too. **The whole TP=2 failure class
 is back**: gotcha #1's zombie collectives, cross-node NCCL/RoCE, the lockstep
 restart rule — never restart one rank; `make restart` and the kit's `./stop.sh`
-move both. One watchdog guards both nodes: `memwatch-hibrid48tp2v52`
-(`WATCH_WARN_PCT=5 WATCH_CRIT_PCT=2 WATCH_CRIT_CONSEC=10`, see `## Current state`).
+move both. One watchdog guards both nodes, **resident on S1 since 2026-10-27**:
+systemd `dgx-memwatch@hibrid48tp2v52` (warn 5% / crit 2% ×10, now registry fields;
+S2 read over the 200G link, not Tailscale) — `make memwatch-status`. The Mac tmux
+session `memwatch-hibrid48tp2v52` was stopped the same night.
 
 ⚠️ **Four different engines are in play** (vLLM / vLLM+EXL3 overlay / SGLang /
 vLLM+PLE-mmap) and **six different thinking-kwarg semantics**. There is no shared
@@ -153,7 +155,22 @@ Full account: `benchmarks/hibrid48tp2v52-2026-10-22/README.md`.
   ~160K-token prompt stalls everyone's decode for ~50 s (chunked prefill) — v5.2
   does not change that.
 - ⏳ Unmeasured on v5.2: INT4-AutoRound (upstream default, needs ~122 GB),
-  dual rail, multimodal, day-scale memory.
+  dual rail, multimodal.
+- **Day-scale memory, first read (10-27, Prometheus daily min)**: after a ~0.9 GiB
+  drop on day 2, S1 loses ~0.1 GiB/day (10.90 → 9.80 GiB over 10-24 → 10-27); S2
+  13.95 → 13.40. So v5.2 **does** creep, at about v4.1's rate — roughly a month to the
+  5% warn line. Three points only.
+- **Watchdog moved onto S1 (10-27)**: `dgx-memwatch@hibrid48tp2v52` (systemd). The
+  same night Mac → S2 over Tailscale was down 40+ min (S2 and the 200G link fine) and
+  the Mac-side watchdog had logged S2 `unreachable (skip)` since 22:41 — i.e. S2 was
+  unguarded. Verified: banner shows `100.67.164.92→192.168.200.102 100.97.87.120→local`;
+  a drill (own state/log, stop action `echo`, crit 99%) fired after 2 ticks, ran the
+  stop locally, held; the live stack was untouched.
+- ⏳ **Upstream kit v5.3 (10-21) / v5.3.1 (10-23) not adopted.** v5.3.1's prefill
+  checkpoints (64-token cache hits) target what this workload pays most: ~6.5K tokens
+  recomputed per request, TTFT p50 1.6 s / p90 4.6 s (5-day Prometheus). Not a drop-in:
+  vLLM 0.32, NVIDIA FP4-Local default checkpoint (HF-only), hibrid48 unmeasured upstream
+  on v5.3, gmu 0.75 + fp8 KV. Needs its own same-weights A/B.
 
 ## Previous state (2026-09-30) — primary was `hibrid48tp2`, TP=2 across both boxes
 
