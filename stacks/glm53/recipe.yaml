@@ -108,7 +108,7 @@ env_delta:
 #
 # 本 kit 两个 QSFP 口都接着,四个 IB 设备(rocep1s0f0/f1, roceP2p1s0f0/f1);
 # 承载 NCCL 的是 192.168.200.x 所在的 enp1s0f0np0 → rocep1s0f0。
-# 第二条线的测试结论见 CLAUDE.md「第二根 QSFP 线」—— 保持两根都插着。
+# 第二条线的测试结论见 docs/gb10-tuning-cn.md §6—— 保持两根都插着。
 
 # ---------------------------------------------------------------------------
 # 启动方式 —— ⚠️ **必须带 SKIP_BUILD=1**
@@ -120,7 +120,7 @@ launch: |
 #
 # start.sh 的 ensure_image() 在「镜像里烤的 glm53.recipe.stamp 标签」与
 # 「本地 repo 现算的 overlay_recipe_hash()」不一致时,**默认 BUILD=1 重新构建镜像**。
-# 而 CLAUDE.md「统一内存约束」明令:**决不在 S1 上构建而不先停栈** ——
+# 而 AGENTS.md 硬规则 #3 明令:**决不在 S1 上构建而不先停栈** ——
 # 2026-07-04 连"轻量预编译 wheel"路径都把 head 节点 OOM 了,连带干掉整个 tmux server。
 #
 # 而这两个戳**永远不可能相等**,因为 overlay_recipe_hash() 是这么算的:

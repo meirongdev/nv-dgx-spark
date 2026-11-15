@@ -1,7 +1,7 @@
 # nv-dgx-spark
 
-Deployment tooling for vLLM inference on a two-node **NVIDIA DGX Spark (GB10
-Blackwell)** cluster — 128 GB unified memory per node, joined by a 200G ConnectX-7
+Deployment tooling for LLM inference (vLLM, SGLang, TensorFold) on a two-node
+**NVIDIA DGX Spark (GB10 Blackwell)** cluster — 128 GB unified memory per node, joined by a 200G ConnectX-7
 link, reachable over Tailscale.
 
 Everything is driven through the `Makefile`. Detailed runbooks live in `docs/`
@@ -26,9 +26,10 @@ from it by `make stack-table` — don't hand-edit it.
 | Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2<br>`STACK=qwen38un` | 1 | `:8888` `qwen3.8-27b-sglang` | sglang / docker | rollback (S1 单机) —— 2026-09-30 让位给 hibrid48tp2 |
 <!-- END generated:stacks -->
 
-> ⚠️ **No two of these can run at the same time** — they want the same GPU
-> memory, and several share a port. `make run` refuses to start while another
-> stack is up; its preflight walks the whole registry.
+> ⚠️ **Two stacks conflict when they use the same node's GPU** — and a TP=2 stack
+> uses both nodes, so it conflicts with everything. Several share a port.
+> `make run` refuses to start an overlapping stack; its preflight walks the whole
+> registry.
 
 > **Switching which stack is primary?** `make switch TO=<id>`. "Which stack is
 > current" used to be hardcoded in ~8 places that each failed *silently* — three
@@ -58,7 +59,7 @@ make info                      # current primary in detail
 make run                       # preflight (mutual exclusion) + start the primary
 make status                    # containers + /v1/models + free -h
 make test                      # smoke test, gated on the served name matching
-make logs   STACK=glm53 WORKER=1   # rank1 — glm53 is the only multi-node stack left
+make logs   WORKER=1           # rank1 of a TP=2 stack (the primary is TP=2)
 
 make switch TO=glm53           # change the primary stack, with acceptance checks
 make stack-check               # registry self-consistent + doc tables current
@@ -71,11 +72,11 @@ qwen                           # ./scripts/qwen-model-switch.sh flips the boot d
 **Adding a model?** `stacks/README.md` — create `stacks/<id>/`, fill one
 `stack.env`, change nothing else.
 
-Two rules worth knowing before you touch anything:
+Three rules worth knowing before you touch anything:
 
 1. **Never restart a single rank of a TP=2 stack.** The survivor hangs inside the
    collective *without exiting* — `/health` and `/v1/models` keep returning 200
-   while every real generation times out. Use `make <stack>-restart` (both ranks).
+   while every real generation times out. Use `make restart` (both ranks).
 2. **Don't quote a single tok/s number.** Speculative-decoding throughput is
    content-driven: on V4-Flash the same config measures 31 tok/s on prose and 84
    on count-to-300. See `docs/benchmarking-cn.md`.
@@ -87,18 +88,20 @@ Two rules worth knowing before you touch anything:
 
 ## Documentation map
 
-Start with `CLAUDE.md` — it is the operational index for both agents and humans
-(`AGENTS.md` and `QWEN.md` are symlinks to it). Then:
+Start with `AGENTS.md` — the short operational index for both agents and humans
+(`CLAUDE.md`, `QWEN.md` and `.github/copilot-instructions.md` are symlinks to it).
+Then:
 
 ### Per-stack — lives with the stack, not in `docs/`
 
 | Where | What's in it |
 |---|---|
 | **[`stacks/README.md`](stacks/README.md)** | **The contract: what adding a model requires (one `stack.env`, no edits elsewhere)** |
-| `stacks/<id>/recipe.yaml` | Why this stack's parameters are what they are, with the measurements. Every stack has one |
+| `stacks/<id>/recipe.yaml` | Why this stack's parameters are what they are, with the measurements |
+| `stacks/<id>/notes.md` | How to operate it, and what happened while it was primary or rollback (dated) |
 | [`stacks/qwen38/runbook-cn.md`](stacks/qwen38/runbook-cn.md) | Single-node fallback: deploy from scratch, the traps |
 | [`stacks/fndgx/runbook-cn.md`](stacks/fndgx/runbook-cn.md) | Flash-Next single-node on S2: from-zero procedure |
-| ⚠️ *(gap)* | `glm53` / `qwen38un` have no runbook — only `recipe.yaml` comments |
+| ⚠️ *(gap)* | `glm53` / `qwen38un` have no runbook — only `recipe.yaml` + `notes.md` |
 
 ### Runbooks — shared across stacks
 
@@ -117,24 +120,24 @@ Start with `CLAUDE.md` — it is the operational index for both agents and human
 | [`docs/gotchas-cn.md`](docs/gotchas-cn.md) | **10 traps, each paid for in downtime.** Scan the headings before debugging anything |
 | [`docs/benchmarking-cn.md`](docs/benchmarking-cn.md) | How to measure throughput correctly + the current baseline |
 | [`docs/clients-cn.md`](docs/clients-cn.md) | codex / Qwen Code setup, reasoning-effort semantics, rebuilding on a new machine |
-| [`docs/auto-mitigation-cn.md`](docs/auto-mitigation-cn.md) | Crash-hardening spec: cgroup memory limit (this repo) + Prometheus alerting rules (homelab) |
+| [`docs/auto-mitigation-cn.md`](docs/auto-mitigation-cn.md) | Crash-hardening spec: host memory watchdog (this repo, node-resident systemd) + Prometheus alerting rules (homelab) |
 
 ### Design decisions
 
 | Doc | Decision |
 |---|---|
-| [`docs/k3s-migration-design-cn.md`](docs/k3s-migration-design-cn.md) | Why k3s + Cilium, and the migration record. ⚠️ **History only — the cluster was uninstalled 2026-09-20**; §6 (ClusterMesh) was already **rejected 2026-08-13** |
-| [`benchmarks/bench-full-2026-08-05/README.md`](benchmarks/bench-full-2026-08-05/README.md) | Performance baseline, and why the forum "NVFP4 KV" recipe was **rejected** |
+| [`docs/k3s-migration-design-cn.md`](docs/k3s-migration-design-cn.md) | Why k3s + Cilium, the migration record, and §12 the 2026-09-20 removal (Cilium BPF on `tailscale0`) + what retired with it. ⚠️ **History only**; §6 (ClusterMesh) was **rejected 2026-08-13** |
+| [`benchmarks/bench-full-2026-08-05/README.md`](benchmarks/bench-full-2026-08-05/README.md) | V4-Flash baseline (stack deleted), and why the forum "NVFP4 KV" recipe was **rejected** |
 
 ## Repository layout
 
 ```
 Makefile              generic verbs (run/stop/status/logs/test/switch); knows no stack names
-CLAUDE.md             operational index (AGENTS.md, QWEN.md → symlinks)
+AGENTS.md             operational index (CLAUDE.md, QWEN.md → symlinks)
 stacks/               THE REGISTRY — one directory per model
   PRIMARY               one line: which stack is primary
   _lib/                 stackctl + the docker adapter + whole-registry preflight
-  <id>/                 stack.env (identity) + recipe.yaml (why) + optional hooks
+  <id>/                 stack.env (identity) + recipe.yaml (why) + notes.md (ops + history) + optional hooks
 scripts/              cross-stack tools — none hardcodes a stack identity
 playbooks/            Ansible: the two metrics exporters
 docs/                 only what is SHARED across stacks (per-stack docs live in stacks/<id>/)

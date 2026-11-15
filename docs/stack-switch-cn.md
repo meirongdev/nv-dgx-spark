@@ -49,7 +49,7 @@ make switch TO=<stack-id>
 | `scripts/qwen-model-switch.sh` 的 case 分支表 | 没了。目标就是注册表,`--help` 现场列出来 |
 | 各栈 preflight 里手写的互斥名单(O(n²)) | 没了。`preflight.sh` **遍历注册表**,新栈一落地所有既有栈自动检查它 |
 | 各栈 smoke test 里的 `MODEL` 默认值 | 没了。由 stackctl 注入;手跑不给身份会**硬失败**而不是测错栈 |
-| `CLAUDE.md` / `README.md` / `docs/clients-cn.md` 的栈表格 | `make stack-table` 生成,`make stack-check` 校验,不一致就非 0 |
+| `AGENTS.md` / `README.md` / `docs/clients-cn.md` 的栈表格 | `make stack-table` 生成,`make stack-check` 校验,不一致就非 0 |
 
 还白拿了两道以前没有的闸门:
 
@@ -117,9 +117,10 @@ grep -E 'Prefill batch'`,或直接 `make logs STACK=<id>`)。
 > `codex exec` 才顺带证明 **catalog 命中**(抬头下没有
 > `Model metadata for <slug> not found` 警告)——而 catalog 正是窗口的唯一来源。
 
-### 3.3 `CLAUDE.md` 的 `## Current state`
+### 3.3 `AGENTS.md` 的 `## Current state`
 
-表格是生成的,**那一段散文不是**。通读它,问自己:
+表格是生成的,**那一段散文不是**。重写它(不要在后面追加"上一个状态"段落 ——
+旧主力的经过移到 `stacks/<旧 id>/notes.md`),然后问自己:
 
 > 一个只读过这一段的人,会不会据此得出错误结论?
 
@@ -135,7 +136,9 @@ grep -E 'Prefill batch'`,或直接 `make logs STACK=<id>`)。
 make status                # 起来了,且 /v1/models 报新的 served name
 make test                  # 冒烟 + 身份闸门
 make clock-cap-verify      # ← 哨兵:必须打印"负载:生成 300 token"
-make memwatch              # 启动自检:停不掉当前栈就 exit 3
+make memwatch-uninstall STACK=<旧 id>   # 看门狗不跟着 switch 走
+make memwatch-install                   # 启动自检:停不掉当前栈就 exit 3
+make memwatch-status                    # 读回启动横幅 + 节点视角 available%
 make stack-check           # 注册表自洽 + 文档表格没过期
 ./scripts/qwen-model-switch.sh status
 ```
@@ -152,4 +155,5 @@ available%,在自检之前就 `exit 0` 了。绑定自检只在常驻模式启�
 
 - `stacks/README.md` —— 新增一个模型的契约
 - `docs/gotchas-cn.md` #9 / #10 —— 跨栈标识静默失效的实例与判据
-- `CLAUDE.md` —— 栈表格(生成)+ Current state(人写)
+- `AGENTS.md`(`CLAUDE.md` / `QWEN.md` 是指向它的符号链接)—— 栈表格(生成)+ Current state(人写)
+- `stacks/<id>/notes.md` —— 每个栈的运维要点与按日期的经过

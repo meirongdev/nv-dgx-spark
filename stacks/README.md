@@ -24,6 +24,7 @@ stacks/
     ├── launch.sh             启动包装(docker 栈按需)
     ├── preflight.sh          本栈专属的额外闸门(按需)
     ├── Makefile.mk           本栈专属的 make 目标(按需)
+    ├── notes.md              怎么运维它 + 它当主力/回滚时发生过什么(按日期,按需)
     └── runbook-cn.md         从零部署 + 踩过的坑(按需)
 ```
 
@@ -33,8 +34,8 @@ stacks/
 
 ### 1. 建目录,写 `stack.env`
 
-抄一份形态最接近的:单节点 docker 看 `qwen38un/`,跑上游编排器的看 `glm53/`
-(它同时也是唯一的双节点 TP=2 范例),包第三方编排器的看 `fndgx/`。
+抄一份形态最接近的:单节点 docker 看 `qwen38un/`,跑上游双机 recipe(TP=2)的看 `dsv41/`
+或 `glm53/`,包第三方编排器的看 `fndgx/`。
 
 必填六项(缺任何一项,所有工具都会**拒绝启动**而不是带着半个身份跑):
 
@@ -124,7 +125,7 @@ make test      STACK=<id>    # 含身份闸门:/v1/models 必须报出 STACK_MOD
 | `scripts/gb10-clock-cap.sh` | 同上,verify 的 model/port/思考 kwarg 全从注册表取 |
 | `scripts/qwen-model-switch.sh` | 目标列表 = 注册表,`--help` 现场列出来 |
 | 各栈的 preflight | 互斥是**遍历注册表**得出的,不是手写名单 —— 新栈一落地,所有既有栈自动开始检查它 |
-| `CLAUDE.md` / `README.md` / `docs/clients-cn.md` 的表格 | `make stack-table` 生成,`make stack-check` 校验 |
+| `AGENTS.md` / `README.md` / `docs/clients-cn.md` 的表格 | `make stack-table` 生成,`make stack-check` 校验 |
 
 ---
 

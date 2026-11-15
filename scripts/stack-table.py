@@ -3,7 +3,7 @@
 # stack-table.py —— 把 stacks/ 注册表渲染成文档里的表格,并校验它们没过期。
 #
 # 为什么存在:换主力栈这件事,最贵的一次代价不是改错了某个参数,而是
-# **一份文档都没改**(091b6e4 改了 13 个文件、0 份文档)。CLAUDE.md 是每个
+# **一份文档都没改**(091b6e4 改了 13 个文件、0 份文档)。AGENTS.md(原 CLAUDE.md)是每个
 # session 全量载入的索引,它错一天,就有一天所有判断建立在错误前提上 ——
 # 2026-09-03 clock-cap 的静默失效正是这么来的。
 #
@@ -111,7 +111,7 @@ def t_clients(rs, prim):
     return "\n".join(rows)
 
 TABLES = {"stacks": t_stacks, "clients": t_clients}
-TARGETS = [("CLAUDE.md", "stacks"), ("README.md", "stacks"), ("docs/clients-cn.md", "clients")]
+TARGETS = [("AGENTS.md", "stacks"), ("README.md", "stacks"), ("docs/clients-cn.md", "clients")]
 
 def apply(write):
     rs, prim = registry(), primary()

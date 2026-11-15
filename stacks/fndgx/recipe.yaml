@@ -160,7 +160,7 @@ CTX实验:
     leaves out whatever was already resident」。我们启动时
     `Free memory on device (113.24/121.69 GiB)` —— 已经有 8.45 GiB 被别的东西占着
     (S2 上常驻 k3s server + Cilium + gnome-shell + node-exporter)。
-    ⚠️ 但别把这条当结论:CLAUDE.md 记过 glm53 那次**把 k3s 整个停掉只换回 0.11 GiB**。
+    ⚠️ 但别把这条当结论:stacks/glm53/notes.md 记过 glm53 那次**把 k3s 整个停掉只换回 0.11 GiB**。
     真要查就是:停 k3s/桌面 → 重启本栈 → 读 Available KV cache memory。**没做。**
 
   ⚠️ 顺带一个**不要照做**的诱惑:同一行日志说

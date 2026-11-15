@@ -86,7 +86,7 @@ snapshot_download("unsloth/Qwen3.8-27B-NVFP4", local_dir="/home/admin/models/Qwe
 ```
 
 > 用 `local_dir=` 而不是 `cache_dir=`,直接写真实文件,
-> 规避 HF-cache 绝对符号链接在容器内解析失败的老坑(见 CLAUDE.md)。
+> 规避 HF-cache 绝对符号链接在容器内解析失败的老坑(见 docs/gotchas-cn.md #6)。
 > 下载后可用 `find <dir> -type l` 确认无符号链接。
 
 ### 3.2 镜像(daocloud 镜像站)
@@ -193,7 +193,7 @@ flag 留着无害但没作用。
 
 ### 5.3 `docker run` 会注入代理
 
-同 CLAUDE.md 里记的老坑:`~/.docker/config.json` 的 `proxies.default` 是**客户端**配置,
+同 docs/gotchas-cn.md #4 记的老坑:`~/.docker/config.json` 的 `proxies.default` 是**客户端**配置,
 会给每个 `docker run` 注入 `HTTP(S)_PROXY`。本栈从本地路径加载模型不需要外网,
 但如果代理是死的,某些库的 phone-home 会卡住。启动脚本里已显式清空,并加了
 `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`。

@@ -177,7 +177,7 @@ node-exporter-deploy:
 		-e "node_exporter_port=$(NODE_EXPORTER_PORT)"
 
 # docker ps + a /metrics probe per host. Uses ssh (not ansible -a) to avoid the
-# Jinja2-eats-{{.Names}} trap with docker --format (see CLAUDE.md gotcha).
+# Jinja2-eats-{{.Names}} trap with docker --format (docs/gotchas-cn.md #7).
 node-exporter-status:
 	@for h in $(HOSTS); do \
 		echo "=== $$h ==="; \
@@ -278,7 +278,7 @@ endif
 	@bash scripts/stack-switch.sh $(TO)
 
 # ---- 注册表与文档的一致性 ---------------------------------------------------
-# stack-table 重新生成 CLAUDE.md / README.md / docs/clients-cn.md 里的栈表格;
+# stack-table 重新生成 AGENTS.md / README.md / docs/clients-cn.md 里的栈表格;
 # stack-check 只校验不改写,不一致就**非 0 退出**。
 # 这是"文档静默过期"那一类事故的机械化防线:091b6e4 换了主力栈却一份文档都没动,
 # CLAUDE.md 因此在 24 小时里持续告诉每个 session 错误的主力栈。

@@ -75,7 +75,7 @@ cat <<EOF
     脚本够不着 —— 曾经静默不一致过:catalog 写 65536、config 写 1000000,
     于是一直按 64K 在跑,没有任何提示。见 docs/clients-cn.md。
   · **实际发一个请求**验证客户端,不要只看配置文件写对没有。
-  · CLAUDE.md 的 \`## Current state\`:表格是生成的,那一段散文不是。
+  · AGENTS.md 的 \`## Current state\`:表格是生成的,那一段散文不是。
     通读它,问自己:只读过这一段的人,会不会据此得出错误结论?
   · 基准:新栈的数字在 stacks/$TO/recipe.yaml 和 benchmarks/ 里,
     别把上一个栈的 tok/s 继续挂在文档上(docs/benchmarking-cn.md)。

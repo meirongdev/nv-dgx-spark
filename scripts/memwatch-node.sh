@@ -16,7 +16,7 @@
 #   scripts/memwatch-node.sh uninstall [id]   # disable + stop(文件和日志留着)
 #
 # ⚠️ 节点上跑的是**副本**。改了 scripts/mem-watch.sh 或 stack.env 之后,那个进程还在跑旧
-#    逻辑 —— "git log 说修好了,不代表修之前起的守护进程也修好了"(CLAUDE.md)。重跑 install;
+#    逻辑 —— "git log 说修好了,不代表修之前起的守护进程也修好了"(AGENTS.md 硬规则 #10)。重跑 install;
 #    status 会比对 sha256 把落后的文件报出来。
 # ============================================================
 set -uo pipefail
