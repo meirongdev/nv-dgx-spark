@@ -17,10 +17,11 @@ from it by `make stack-table` — don't hand-edit it.
 <!-- BEGIN generated:stacks -->
 | 栈 | 节点 | 端点 | 引擎 / 运行时 | 状态 |
 |---|---|---|---|---|
-| **Qwen3.8-Flash-Next hibrid48 双机 TP=2 (myllmbox cluster kit v5.2, K≤7 动态 MTP)**<br>`STACK=hibrid48tp2v52` | 2 | `:8000` `qwen3.8-flash-next-tp2` | vllm-hibrid48-cluster-v52 / docker | **primary (2026-10-22 起) —— 占两台 TP=2** |
+| **DeepSeek-V4.1-Flash-1017 EXL3 2.9bpw 双机 TP=2 (MiaAI-Lab recipe, TensorFold Zig, DSpark 草稿)**<br>`STACK=dsv41` | 2 | `:8000` `DeepSeek-V4.1-Flash-1017` | tensorfold-zig / docker | **primary (2026-11-14 起) —— 占两台 TP=2** |
 | GLM-5.3-Flash EXL3 4bpw<br>`STACK=glm53` | 2 | `:8888` `GLM-5.3-Flash-EXL3` | vllm-exl3 / docker | rollback (TP=2, GLM) —— 850K ctx |
 | Qwen3.8-Flash-Next NVFP4 单机 (bilikaz hibrid48, K=5 MTP)<br>`STACK=hibrid48` | 1 | `:18300` `qwen3.8-flash-next` | vllm-hibrid48 / docker | rollback (S2 单机) —— 2026-09-30 让位给 hibrid48tp2 |
 | Qwen3.8-Flash-Next NVFP4 双机 TP=2 (myllmbox cluster hibrid48, K=5 MTP)<br>`STACK=hibrid48tp2` | 2 | `:8000` `qwen3.8-flash-next-tp2-v41` | vllm-hibrid48-cluster / docker | rollback (kit v4.1) —— 2026-10-22 让位给 hibrid48tp2v52 |
+| Qwen3.8-Flash-Next hibrid48 双机 TP=2 (myllmbox cluster kit v5.2, K≤7 动态 MTP)<br>`STACK=hibrid48tp2v52` | 2 | `:8000` `qwen3.8-flash-next-tp2` | vllm-hibrid48-cluster-v52 / docker | rollback (kit v5.2) —— 2026-11-14 让位给 dsv41 |
 | Qwen3.8-27B-NVFP4 (censored, no speculator)<br>`STACK=qwen38` | 1 | `:8888` `qwen38-27b` | vllm / docker | retired-ish —— 24.9 tok/s |
 | Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2<br>`STACK=qwen38un` | 1 | `:8888` `qwen3.8-27b-sglang` | sglang / docker | rollback (S1 单机) —— 2026-09-30 让位给 hibrid48tp2 |
 <!-- END generated:stacks -->

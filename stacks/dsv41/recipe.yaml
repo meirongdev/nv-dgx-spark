@@ -1,0 +1,123 @@
+# dsv41 —— DeepSeek-V4.1-Flash-1017 EXL3 2.9 bpw on 2× DGX Spark(TensorFold 原生 Zig 引擎,TP=2)
+#
+# 这不是一个要被某个工具读取的配置文件:上游 recipe 的全部参数都在它自己的 scripts/config.sh
+# (默认值)+ scripts/local.sh(本地偏离,= stacks/dsv41/local.sh)。本文件只记**为什么**。
+
+upstream:
+  repo: MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks
+  commit: c7f2b85            # 2026-11-09 "Merge pull request #129 … rdma-proxy-cpus"
+  on_head: /home/admin/dsv41-recipe        # S1,git clone 原样,只多一个 scripts/local.sh
+  engine: >-
+    TensorFold 原生 Zig 引擎(BertholomusAI 的 deepseek-v41-zig 分支 @ fbbc971 + 上游 zig/patches 0001–0068),
+    rank0 = tensorfold-native serve(API),rank1 = tf-dsv41-lanes(无端点)。
+    解码期的跨节点交换走 RoCE(RDMA=1),其余走 NCCL。DSpark 草稿 = checkpoint 自带的 draft blocks(DRAFTS=1)。
+
+weights:
+  checkpoint:
+    repo: Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw
+    revision: 45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b   # 上游 config.sh 的钉子(EAQ v1,上游推荐)
+    size: 196.2 GiB / 39 片(+ quantization_config.json 等共 41 个 LFS 文件)
+    note: 上游自己说 model card 没有对未量化模型的 perplexity / KL 数据 —— 质量未经本仓库验证。
+  engram:
+    repo: deepseek-ai/DeepSeek-V4.1-Flash-1017
+    revision: 1bae0e1088993b9b82de08f59de5be5a34e42170
+    files: [model-00047-of-00048.safetensors, model-00048-of-00048.safetensors, config.json, model.safetensors.index.json]
+    size: 189.1 GiB(两张未量化 n-gram 表;量化包不含它们)
+  source: >-
+    ModelScope(节点到不了 huggingface.co;hf-mirror 对大 LFS reset)。ModelScope 不带 HF commit,
+    所以 fetch-weights.sh 用 weights-manifest.json(2026-11-14 从 HF API 取:逐文件 size + LFS sha256 +
+    git blob oid)逐个校验:LFS 41/41 + 小文件 23/23 通过;Engram 两片的 sha256 与上游 prepare.sh 里
+    写死的 want_sha 相同。小文件先走 hf-mirror(UA 不能是 Python-urllib,否则 403),慢就退 ModelScope。
+  layout: >-
+    HF cache 布局,snapshots/<rev>/ 下是真实文件(不是指向 blobs/ 的符号链接,gotcha #6),refs/main 写死。
+    下载点是 S2(当时 S1 只剩 3.2% 可用内存,不在在线 rank 旁边做大写入);停服务后 sync-to-head.sh
+    走 200G 拷到 S1。prepare.sh 里的 `hf download` 到不了 HF,走它自己的
+    "could not reach Hugging Face; using the snapshot already here" 分支。
+
+image:
+  tag: tensorfold-dsv41:exl3-tp2-8a98ae503d85     # 后缀 = 上游 image_hash(),本仓库在 Mac 上复算一致
+  built_by: 上游 scripts/prepare.sh(zig/Dockerfile:Zig 0.17.0,两次 -j20 的 Zig+nvcc 编译,~6 min)
+  why_not_prebuilt: 上游 ghcr 上只有 exl3-tp2-7c9bf5d36350(早期 commit 3eebd05 的钉子),与 c7f2b85 的补丁集对不上。
+  base: >-
+    nvcr.io/nvidia/pytorch:26.07-py3。节点直连 nvcr.io 被 reset(连 token 都拿不到);走 xray 代理按 blob 拉
+    只有 ~0.3 MB/s(10.5 GiB 要 ~10 h,fetch-base-image.sh 留作后备);**nvcr.nju.edu.cn 能直接 docker pull**,
+    几分钟拉完。拉下来的 image ID 15b8de8b… == NGC 官方 arm64 config digest,再 tag 成 nvcr.io/… 名字。
+  build_network: >-
+    构建期要 pypi(safetensors,base 里已有)、zig.linus.dev(135 s 拉完)、github(bertholomus/TensorFold 两个
+    commit)。⚠️ GitHub 是瓶颈:2026-11-14 从 S1 直连 / xray socks / privoxy http 三路都只有 13–47 KB/s,
+    上游 prepare.sh 的第一次构建在 `git fetch --depth 1` 第 90 s 被掐断(GnuTLS recv error -110)。
+    `ls-remote` 能通不代表能拉 —— 小响应过得去,几 MB 的 pack 过不去。
+  build_workaround: >-
+    build-image-local-git.sh:Mac 上 depth-1 拉两个钉住的 commit 进一个裸库(9.1 MB,15 s)→ Tailscale(hkg
+    中继,~90 KB/s)送到 S1 /home/admin/dsv41-gitsrv → git daemon 只听 docker 网桥 172.17.0.1:9418 →
+    与 prepare.sh 一字不差的 docker build,只把 TF_REPO build-arg 换成 git://172.17.0.1/TensorFold.git。
+    tag/label 仍是上游 image_hash()(默认 TF_REPO 算出的 8a98ae503d85),Dockerfile 自己断言
+    rev-parse HEAD == TF_REF,所以内容即上游那一个,之后 prepare.sh 判 "already built"。
+    kit(16 MB)同法:Mac 拉 → S1 本地 fetch 进 $HF_CACHE/tensorfold-dsv41/kit-abe07c7d,origin 仍指 GitHub;
+    MANIFEST 218/223 当场对上,其余 5 个(4 张 RoPE 表 + 图像路由 bias)本就由 prepare.sh 生成。
+    ⚠️ macOS tar 会夹带 AppleDouble `._*` 文件,git 把 `._pack-*.idx` 当成坏 pack —— 解包后 `find -name '._*' -delete`。
+
+local_deviations:   # 全在 scripts/local.sh
+  WORKER: admin@192.168.200.102     # S2 走 200G 线;FABRIC_PEER 不用设
+  PORT: 8000                        # 用户选定:沿用旧主力端口(上游默认 8888)
+  CONTEXT: 262144                   # 上游默认 1048576;上游 README:"on a head that carries other software,
+                                    # 524288 is the practical limit"。S1 带桌面 + spark-dashboard + 8 个登录会话。
+                                    # KV 本身很小(上游:1M ≈ 1.8 GiB / rank),这档买的是 head 余量。
+                                    # 2026-11-15 由 524288 再降到 262144(用户定):对齐网关兜底 Ornith 的 262k、
+                                    # 满窗 prefill ≈ 2 min 不撞 300 s 客户端超时、多留 head 余量。理由全文在 local.sh。
+  PATH: 补 ~/.local/bin(hf CLI 在那里;prepare.sh 没有 hf 直接 die)
+  untouched: >-
+    其余全是上游默认:PARALLEL=4、THINKING=1、DRAFTS=1、RDMA=1、GRAPHS=1 / GRAPH_CAP=128、MAX_TOKENS=32768、
+    TEMPERATURE 1.0 / TOP_P 0.95 / TOP_K 20、MIN_AVAIL_GIB=112、MEMGUARD_GIB=2.5、SPILL / KV_SHARD 关、API_KEY 关。
+
+host_prerequisites:
+  nfs: >-
+    S2(worker)经 NFS 只读读 S1 的 ~/.cache/huggingface(上游唯一的正式模式)。S1 装 nfs-kernel-server
+    (apt -s 看过:1 个包,0 删除),/etc/exports 加一行导出给 192.168.200.102。S2 已有 nfs-common。
+  single_rail: >-
+    上游要求把一个 QSFP 口的两个 PCIe twin netdev 都配 IPv4 才走双轨;这两台只有 enp1s0f0np0 有地址
+    (enP2p1s0f0np0 没有,同 hibrid48tp2v52 的记录)→ 单轨 rocep1s0f0 / GID 3(DRY_RUN 实测)。
+  clocks: 上游测量在两台都锁 2200 MHz。这两台 2026-09-20 → 11-15 不锁(~2470–2490);2026-11-15 S2 两次带载断电后两台重新锁 2200(make clock-cap-install,负载下实测 2175 / 2186 MHz)。
+  polkitd: >-
+    停旧栈时 S1 polkitd 2.9 GiB / S2 4.25 GiB RSS(glm53 当年踩过的同一个泄漏,上游 #193)——
+    重启它还回内存,对 MIN_AVAIL_GIB=112 的闸门有实际意义。
+
+memory:
+  upstream_guard: >-
+    scripts/memguard.sh 两台各一个:MemAvailable < 2.5 GiB 持续 4 s,或 < 1 GiB 两个采样,就 kill 本 rank 容器。
+    上游原话:引擎运行时**没有任何东西**把 MemAvailable 托在线上;prefill 工作区、prompt cache、graph 全从余量里出。
+  repo_guard: >-
+    dgx-memwatch@dsv41(节点驻留 S1,systemd),warn 5% / crit 2% ×10;S2 经 200G 读。crit 2% ≈ 2.44 GiB,
+    与 memguard 的 2.5 GiB/4 s 几乎重合且更慢(100 s)—— 它是 memguard 挂掉时的兜底,不是第一道。
+  measured: >-
+    2026-11-14:start.sh 加载后 S1 8.2 GiB / S2 10.7 GiB;几分钟后空闲 S1 6.96 GiB(5.7%,看门狗记 warn)/
+    S2 10.26 GiB(8.4%)。rank0 boot 行:"model 104.08 GiB; 4 streams at once, 0.00 GiB each at a 524288-token
+    window, of 0.0 GiB left after a 12.2 GiB reserve" —— 与上游 docs/memory-and-safety.md 描述的 head 一致:
+    引擎不托底,prefill 工作区直接从 MemAvailable 里出。⏳ 长 prompt 期间的最低点、天级漂移均未测。
+    2026-11-15 改 CONTEXT=262144 重启后:rank0 boot 行 "model 103.58 GiB; 4 streams at once, 0.00 GiB each at a
+    262144-token window, of 0.0 GiB left after a 12.2 GiB reserve",loaded in 24.7 s,S1 MemAvailable 8.04 GiB
+    (524288 时空闲 6.96 GiB,多出约 1 GiB)。make test 全过。
+
+client_notes:
+  thinking: >-
+    实测(make test):只有 chat_template_kwargs.enable_thinking 生效,顶层被忽略;CoT 在 reasoning_content;
+    /v1/responses effort none…max 全 200,temperature 0 下 low/medium/high/xhigh 逐 token 相同,只有 none / max 有别。
+  any_model_name: >-
+    ⚠️ TensorFold 接受任意 model 名(200,响应改写成真名)—— gotcha #10。仍写着 qwen3.8-flash-next-tp2 的
+    下游会被 DeepSeek 静默接住,不会触发网关 fallback。
+  codex: >-
+    TensorFold /v1/responses 只收 function 工具(responses_translate.zig:173,硬编码 + golden 测试)。
+    codex 0.167 默认还发 namespace(子 agent、codex_apps MCP)/ tool_search / web_search → 400。
+    B 的 dgx profile:catalog multi_agent_version="disabled" + supports_search_tool=false,
+    profile web_search="disabled" + [features] apps=false。features.multi_agent=false 单独**不够**(抓包实测)。
+  qwen_code: >-
+    ⚠️ Qwen Code 对 `deepseek-v4*` 预留 384000 输出 token(scripts/qwen-model-switch.sh 头注释)。
+    ✅ 2026-11-15 查 0.27.0 源码 + 实发验证:名字会先转小写,确实命中 /^deepseek-(?:v4|flash)/ 的 384k 输出上限,
+    但 0.27.0 的 hard limit 由 contextWindowSize 直接算(computeThresholds),**不再**减 384000;输出上限只经
+    min(384k, OUTPUT_TOKEN_CEILING=64k) 截成单次 max_tokens。ctx 262144 下 `qwen -p` 实发正常,没有 "hard limit: 0"。
+
+measured:
+  load: "loaded in 31.0s(rank 权重文件刚写完、在页缓存里);冷启动 ⏳"
+  outage: "2026-11-14 23:11 停旧主力 → 23:53 LIVE ≈ 42 min(含 GitHub 绕路 ~15 min)"
+  smoke: "make test 全过;validate.py:21,875-token prompt 9.5 s(≈2,300 tok/s 含 TTFT)"
+  throughput: "⏳ 未测 —— 上游 tools/bench.py;上游数字是 2,200 MHz 锁频下的,我们 11-15 起也锁 2,200"

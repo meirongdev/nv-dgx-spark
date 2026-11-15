@@ -37,6 +37,9 @@ REPO_ENV="$REPO/.qwen/.env"
 #     (contextLimit = max(0, ctxWin - 384000)),低于 ~384k 的值会把硬阈值钳到 0,
 #     于是**每一个请求**都报 "hard limit: 0",哪怕 prompt 只有 4k。所以是 1000000,
 #     不是某个看起来更"安全"的小数字。
+#     ⚠️ 2026-11-15 实测 Qwen Code **0.27.0** 已不这样算:hard limit 直接由 contextWindowSize 推
+#     (computeThresholds),384k 只作为单次 max_tokens 的上限、再被 64k 截住。dsv41 的 ctx 262144
+#     实发正常、无 "hard limit: 0"。旧版 CLI 仍可能踩上面那个坑,升降级 CLI 后先实发验证。
 #   · Qwen3.8-27B / Flash-Next / 27B-Uncensored 都是原生 262144;报 1M 会让 CLI
 #     发出服务端随后拒绝的 prompt。
 #   ⚠️ `qwen3.8-27b-sglang` **带点**,与 `qwen38-*` 不同形,所以"不命中 384k 预留"

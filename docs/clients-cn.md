@@ -9,11 +9,12 @@
 <!-- BEGIN generated:clients -->
 | 栈 | 端点 | served name | 关思考的 kwarg | CoT 字段 | ctxWindow |
 |---|---|---|---|---|---|
-| **hibrid48tp2v52(主)** | `100.97.87.120:8000` | `qwen3.8-flash-next-tp2` | `{"chat_template_kwargs": {"enable_thinking": false}}` | `reasoning` | 262144 |
+| **dsv41(主)** | `100.97.87.120:8000` | `DeepSeek-V4.1-Flash-1017` | `{"chat_template_kwargs": {"enable_thinking": false}}` | `reasoning_content` | 262144 |
 | gemma | `127.0.0.1:8000` | `mlx-community__gemma-4-26B-A4B-it-qat-nvfp4` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
 | glm53 | `100.97.87.120:8888` | `GLM-5.3-Flash-EXL3` | `{"reasoning_effort":"low"}` ⚠️ **关不掉**,这是最低档 | `reasoning` | 850000 |
 | hibrid48 | `100.67.164.92:18300` | `qwen3.8-flash-next` | `{"chat_template_kwargs": {"enable_thinking": false}}` | `reasoning` | 262144 |
 | hibrid48tp2 | `100.97.87.120:8000` | `qwen3.8-flash-next-tp2-v41` | `{"chat_template_kwargs": {"enable_thinking": false}}` | `reasoning` | 262144 |
+| hibrid48tp2v52 | `100.97.87.120:8000` | `qwen3.8-flash-next-tp2` | `{"chat_template_kwargs": {"enable_thinking": false}}` | `reasoning` | 262144 |
 | omlx | `127.0.0.1:8000` | `mlx-community__Qwen3.6-35B-A3B-nvfp4` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
 | qwen38 | `100.97.87.120:8888` | `qwen38-27b` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |
 | qwen38un | `100.97.87.120:8888` | `qwen3.8-27b-sglang` | `{"enable_thinking": false}` | `reasoning_content` | 262144 |

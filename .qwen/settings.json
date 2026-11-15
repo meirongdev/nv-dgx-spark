@@ -5,7 +5,7 @@
     }
   },
   "model": {
-    "name": "qwen3.8-flash-next-tp2",
+    "name": "DeepSeek-V4.1-Flash-1017",
     "generationConfig": {
       "timeout": 300000,
       "maxRetries": 8,

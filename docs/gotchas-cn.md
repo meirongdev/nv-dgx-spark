@@ -307,6 +307,20 @@ completion_tokens = 100                          ← 照常用它加载的那个
 
 未知的 `chat_template_kwargs` 同理:**静默忽略**,不报错。
 
+**TensorFold(`dsv41`,2026-11-14)同类,形状略不同:** 任意 model 名都 200,但响应里的
+`model` 字段被**改写成它自己的真名**(`DeepSeek-V4.1-Flash-1017`),不是回显你发的名字。
+
+```console
+$ curl -s localhost:8000/v1/chat/completions -d '{"model":"qwen3.8-flash-next-tp2", …}'
+200 {"model": "DeepSeek-V4.1-Flash-1017", "choices": [...]}     ← 旧主力的名字,新模型照常答
+$ curl -s localhost:8000/v1/chat/completions -d '{"model":"no-such-model", …}'
+200 {"model": "DeepSeek-V4.1-Flash-1017", ...}
+```
+
+换栈时这一条的代价最大:端口没变(`:8000`)的话,所有还写着旧名字的下游(网关路由、
+cronjob、Open Notebook)**不会失败、也不会触发网关的 fallback**,而是静默地换成了另一个
+模型 —— 思考默认开、CoT 字段也不同(gotcha #9)。
+
 ### 为什么危险
 
 本仓库有一整类检查依赖「model 名写错 → 服务端 404 → 闸门拦住」。

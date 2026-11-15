@@ -16,10 +16,11 @@ one is primary, the rest are ways back:
 <!-- BEGIN generated:stacks -->
 | 栈 | 节点 | 端点 | 引擎 / 运行时 | 状态 |
 |---|---|---|---|---|
-| **Qwen3.8-Flash-Next hibrid48 双机 TP=2 (myllmbox cluster kit v5.2, K≤7 动态 MTP)**<br>`STACK=hibrid48tp2v52` | 2 | `:8000` `qwen3.8-flash-next-tp2` | vllm-hibrid48-cluster-v52 / docker | **primary (2026-10-22 起) —— 占两台 TP=2** |
+| **DeepSeek-V4.1-Flash-1017 EXL3 2.9bpw 双机 TP=2 (MiaAI-Lab recipe, TensorFold Zig, DSpark 草稿)**<br>`STACK=dsv41` | 2 | `:8000` `DeepSeek-V4.1-Flash-1017` | tensorfold-zig / docker | **primary (2026-11-14 起) —— 占两台 TP=2** |
 | GLM-5.3-Flash EXL3 4bpw<br>`STACK=glm53` | 2 | `:8888` `GLM-5.3-Flash-EXL3` | vllm-exl3 / docker | rollback (TP=2, GLM) —— 850K ctx |
 | Qwen3.8-Flash-Next NVFP4 单机 (bilikaz hibrid48, K=5 MTP)<br>`STACK=hibrid48` | 1 | `:18300` `qwen3.8-flash-next` | vllm-hibrid48 / docker | rollback (S2 单机) —— 2026-09-30 让位给 hibrid48tp2 |
 | Qwen3.8-Flash-Next NVFP4 双机 TP=2 (myllmbox cluster hibrid48, K=5 MTP)<br>`STACK=hibrid48tp2` | 2 | `:8000` `qwen3.8-flash-next-tp2-v41` | vllm-hibrid48-cluster / docker | rollback (kit v4.1) —— 2026-10-22 让位给 hibrid48tp2v52 |
+| Qwen3.8-Flash-Next hibrid48 双机 TP=2 (myllmbox cluster kit v5.2, K≤7 动态 MTP)<br>`STACK=hibrid48tp2v52` | 2 | `:8000` `qwen3.8-flash-next-tp2` | vllm-hibrid48-cluster-v52 / docker | rollback (kit v5.2) —— 2026-11-14 让位给 dsv41 |
 | Qwen3.8-27B-NVFP4 (censored, no speculator)<br>`STACK=qwen38` | 1 | `:8888` `qwen38-27b` | vllm / docker | retired-ish —— 24.9 tok/s |
 | Qwen3.8-27B-Uncensored NVFP4 + SGLang + DFlash2<br>`STACK=qwen38un` | 1 | `:8888` `qwen3.8-27b-sglang` | sglang / docker | rollback (S1 单机) —— 2026-09-30 让位给 hibrid48tp2 |
 <!-- END generated:stacks -->
@@ -46,21 +47,23 @@ to an S2 stack and let both onto S2's GPU — that is gotcha #2 on a box with no
 two-node fixture — delete it and check that `hibrid48tp2` (or a synthetic fixture)
 keeps the most expensive case in gotcha #2 tested.
 
-⚠️ **One stack is running right now, and it spans both boxes** — `hibrid48tp2v52`
-(primary since 2026-10-22: same hibrid48 weights as `hibrid48tp2`, myllmbox kit
-**v5.2**; head/API on **S1** `:8000`, rank1 on S2). It took over the served name
-`qwen3.8-flash-next-tp2` and alias `fntp2`, so no client changed; the kit-v4.1
-stack `hibrid48tp2` is now a stopped rollback renamed `qwen3.8-flash-next-tp2-v41`.
-`qwen38un` and `hibrid48` are stopped rollbacks too. **The whole TP=2 failure class
-is back**: gotcha #1's zombie collectives, cross-node NCCL/RoCE, the lockstep
-restart rule — never restart one rank; `make restart` and the kit's `./stop.sh`
-move both. One watchdog guards both nodes, **resident on S1 since 2026-10-27**:
-systemd `dgx-memwatch@hibrid48tp2v52` (warn 5% / crit 2% ×10, now registry fields;
-S2 read over the 200G link, not Tailscale) — `make memwatch-status`. The Mac tmux
-session `memwatch-hibrid48tp2v52` was stopped the same night.
+⚠️ **One stack is running right now, and it spans both boxes** — `dsv41`
+(primary since 2026-11-14: **DeepSeek-V4.1-Flash-1017** EXL3 2.9 bpw on MiaAI-Lab's
+two-Spark recipe, TensorFold's native Zig engine; head/API on **S1** `:8000`, rank1
+on S2). **The served name changed** to `DeepSeek-V4.1-Flash-1017` — and ⚠️ TensorFold
+**accepts any model name** (200, rewrites it to its own in the response), so every
+client still asking for `qwen3.8-flash-next-tp2` is now **silently** served by
+DeepSeek (gotcha #10). `hibrid48tp2v52` (Qwen3.8-Flash-Next, kit v5.2) is now a
+stopped rollback that still owns the name `qwen3.8-flash-next-tp2`; `hibrid48tp2`,
+`qwen38un` and `hibrid48` are stopped rollbacks too. **The TP=2 failure class
+applies**: never restart one rank — the upstream `./start.sh restart` / `./stop.sh`
+and `make restart` move both. Two memory guards: upstream's `scripts/memguard.sh`
+on **both** boxes (kills the rank's container at MemAvailable < 2.5 GiB for 4 s,
+or < 1 GiB at once), and this repo's systemd `dgx-memwatch@dsv41` resident on S1
+(warn 5% / crit 2% ×10, S2 over the 200G link) — `make memwatch-status`.
 
-⚠️ **Four different engines are in play** (vLLM / vLLM+EXL3 overlay / SGLang /
-vLLM+PLE-mmap) and **six different thinking-kwarg semantics**. There is no shared
+⚠️ **Five different engines are in play** (vLLM / vLLM+EXL3 overlay / SGLang /
+vLLM+PLE-mmap / TensorFold Zig) and **six different thinking-kwarg semantics**. There is no shared
 default. They live in each stack's `STACK_THINK_KWARG` / `STACK_THINK_OFF` /
 `STACK_COT_FIELD`, and `docs/clients-cn.md` carries the generated cross-stack
 table. Getting this wrong is silent — gotcha #9. ⚠️ **The same model can have two
@@ -76,8 +79,18 @@ one file (`stacks/PRIMARY`) that every tool reads. What is still manual — code
 own config files, and the prose in `## Current state` below — is printed by that
 command and listed in `docs/stack-switch-cn.md`.
 
-- **Flash-Next TP=2, kit v5.2** (`hibrid48tp2v52`, **primary** since 2026-10-22,
-  S1+S2): same hibrid48 checkpoint (hardlinks), vLLM 0.30 + RecoverSSM, dynamic
+- **DeepSeek-V4.1-Flash-1017 TP=2** (`dsv41`, **primary** since 2026-11-14, S1+S2):
+  Mia EAQ v1 EXL3 2.9 bpw (196 GiB) + Engram's two unquantized tables (189 GiB),
+  TensorFold Zig engine (BertholomusAI fork + upstream patches 0001–0068), DSpark
+  drafts, RoCE exchanges, 4 streams, **262,144-token window** (since 2026-11-15, was
+  524,288; upstream default 1M) — and ⚠️ with `POOL` unset the 4 streams **share**
+  those 262,144 positions (each request reserves prompt + `max_tokens`, default
+  32,768); a 5th request queues (`/health` `live.waiting`), measured. Thinking **on** by default.
+  Images, tool calls, 21.9K-token prompt all pass upstream's `validate.py`.
+  ⏳ **No throughput or quality numbers of our own yet** (upstream's, at 2,200 MHz:
+  80.7 tok/s prose / 118.1 code single-stream, ~2,100 tok/s prefill flat to 256K).
+- **Flash-Next TP=2, kit v5.2** (`hibrid48tp2v52`, rollback since 2026-11-14, was
+  primary 2026-10-22 → 11-14, S1+S2): same hibrid48 checkpoint (hardlinks), vLLM 0.30 + RecoverSSM, dynamic
   K≤7 MTP in full CUDA graphs, one-shot RoCE all-reduce; 64 seats, 2.08M-token KV
   pool. Same-night A/B vs kit v4.1 (`benchmarks/hibrid48tp2v52-2026-10-22/`):
   **thinking-on c1 87–91 vs 77–79 (+14–15%)**, thinking-off c1 111.6 vs 106.9,
@@ -114,13 +127,90 @@ the registry can run them any more, and rebuilding either means rebuilding a
 cluster. **Numbers below that compare against them are history, not options.**
 
 **Target hosts** (edit `HOSTS` in Makefile to change):
-- `100.97.87.120` — server 1 / `spark-ccf3` (`hibrid48tp2v52`'s head/API; rollback `qwen38un`; glm53's rank0)
-- `100.67.164.92` — server 2 / `spark-2435` (`hibrid48tp2v52`'s rank1; rollback `hibrid48`; glm53's rank1)
+- `100.97.87.120` — server 1 / `spark-ccf3` (`dsv41`'s head/API + NFS server; rollback `qwen38un`; glm53's / hibrid48tp2*'s rank0)
+- `100.67.164.92` — server 2 / `spark-2435` (`dsv41`'s rank1; rollback `hibrid48`; glm53's / hibrid48tp2*'s rank1)
 - SSH: `admin` + `~/.ssh/vgio`
 - `192.168.200.101/102` — the internal 200G CX7 link. Carries the TP=2 NCCL
   traffic (bypassing the CNI) and inter-node file copies.
 
-## Current state (2026-10-22) — primary is `hibrid48tp2v52` (kit v5.2), same weights
+## Current state (2026-11-14) — primary is `dsv41` (DeepSeek-V4.1-Flash-1017, TensorFold, TP=2)
+
+**New model, new engine, same boxes and same port — different served name.**
+`dsv41` runs `MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks` @ `c7f2b85` as-is
+under `/home/admin/dsv41-recipe` on S1; the only local deviations are in its
+`scripts/local.sh` (= `stacks/dsv41/local.sh`): `WORKER=admin@192.168.200.102`,
+`PORT=8000` (user's choice, keeps client URLs), `CONTEXT=262144` (524288 until
+2026-11-15: aligned with the gateway's 262K Ornith fallback, less prefill memory), PATH for `hf`.
+Why each number: `stacks/dsv41/recipe.yaml`. Switched 2026-11-14: old primary
+stopped 23:11, `DeepSeek-V4.1-Flash-1017 is now LIVE` 23:53 (**~42 min outage**).
+
+- ✅ **Inputs are byte-checked against HF's pinned revisions** although they came from
+  ModelScope (nodes can't reach HF): `stacks/dsv41/fetch-weights.sh` +
+  `weights-manifest.json` — 41/41 LFS sha256 + 23/23 small-file git oids for the
+  checkpoint (`45ee5d0f`), 2/2 + 2/2 for Engram (`1bae0e10`). Downloaded on S2
+  (~220 MB/s), copied to S1 over 200G after the stop (387 GiB in 241 s).
+- ✅ **Image built locally** (`tensorfold-dsv41:exl3-tp2-8a98ae503d85`, the upstream
+  `image_hash()`; ghcr only has an older pin). Base `nvcr.io/nvidia/pytorch:26.07-py3`
+  came from **`nvcr.nju.edu.cn`** (direct nvcr.io resets; image ID `15b8de8b…` = NGC's
+  arm64 config digest). ⚠️ **GitHub was 13–47 KB/s from both nodes on every path**
+  (direct / xray socks / privoxy) and reset the build's `git fetch` at 90 s →
+  `stacks/dsv41/build-image-local-git.sh`: the two pinned TensorFold commits fetched
+  on the Mac, served to the build from a `git daemon` on the docker bridge; tag/label
+  unchanged and the Dockerfile asserts the commit, so it is upstream's image.
+- ✅ `make test STACK=dsv41` all green, measured on the live endpoint:
+  only `chat_template_kwargs.enable_thinking` toggles thinking (top-level ignored);
+  CoT in **`reasoning_content`** (`reasoning` always empty — the **opposite** of the
+  Qwen primaries); `/v1/responses` accepts every effort none…max, and at temperature 0
+  low/medium/high/xhigh are **token-identical** (only `none` and `max` differ);
+  RDMA really carries the exchanges (1.2 GB on the HCA in one generation); upstream
+  `tools/validate.py`: text, thinking, tool call + result, **image**, 21.9K-token
+  prompt (9.5 s), concurrent == solo — all pass.
+- ⚠️ **TensorFold accepts any model name** (gotcha #10 now covers it too): a request
+  for `qwen3.8-flash-next-tp2` gets 200 from DeepSeek, with `"model":
+  "DeepSeek-V4.1-Flash-1017"` in the reply. So the homelab consumers that hardcode the
+  old name (LiteLLM routes, jobs-sg, Open Notebook) did **not** fail over — they are
+  being served by a different model with thinking on. ⏳ Homelab follow-up not done:
+  `~/projects/homelab/docs/runbooks/dgx-model-swap-homelab-followup.md`; also the
+  `dgx-inference` scrape/alerts expect `vllm:*` metrics, which TensorFold doesn't emit.
+- ⚠️ **codex needed more than a model-name change**: TensorFold's `/v1/responses`
+  accepts **function tools only** (hard-coded, golden-tested) and codex 0.167 also
+  sends `namespace` (sub-agents, codex_apps MCP), `tool_search` and `web_search`
+  tools → 400. Fixed in B's dgx profile only: catalog `multi_agent_version =
+  "disabled"` (setting `features.multi_agent=false` is **not** enough) +
+  `supports_search_tool = false`, profile `web_search = "disabled"` +
+  `[features] apps = false`. Verified with a real request and an exec tool round
+  trip. Any MCP server that connects later brings namespace tools back → 400 again.
+- **Memory (MemAvailable)**: after load S1 8.2 → **6.96 GiB idle (5.7%)**, S2 10.3
+  GiB (8.4%); the S1 watchdog logs `warn` at idle. Before the switch the cleanup that
+  made room: `polkitd` restarted on both (2.85 / **4.15 GiB** → ~9 MiB — the leak
+  glm53 hit; it regrows ~0.3–0.4 GiB/week), 6 orphaned 56-day-old `nvidia-smi`
+  killed, stale `psm_*` in `/dev/shm` removed (0.6 / 0.2 GiB), S2's 2-month-old xrdp
+  desktop session ended. S1's xrdp desktop was left alone (user's call).
+- Clients on B (`mbpm5.local`): codex `dgx` and Qwen Code (boot default + a
+  `/model` entry) point at `DeepSeek-V4.1-Flash-1017` — both verified with real
+  requests. Pre-switch copies: `~/dgx-client-config-backup-20261114.tar.gz`.
+  Window on both clients is **262144** since 2026-11-15 (server `CONTEXT` lowered from
+  524288). The old "Qwen Code reserves 384K for `deepseek-v4*`" trap does not apply to
+  Qwen Code **0.27.0** (measured: hard limit derives from `contextWindowSize`, real
+  requests at 262144 work) — older CLIs may still hit it (`scripts/qwen-model-switch.sh`).
+- ⚠️ **2026-11-15: S2 lost power twice under `dsv41` load** (03:52 → powered on 16:23 →
+  stack restarted 16:29 → dead again 16:50; no BMC, someone had to be at the box both times).
+  Not OOM (S2 MemAvailable 10.1 / 10.7 GiB at the last samples), not a software hang (journal
+  ends mid-stream, S1's 200G carrier drops = the peer NIC lost power), not a logged thermal trip
+  (96 °C on **both** boxes, ACPI critical is 104.8). Same signature as 2026-08-15
+  (`docs/s2-outage-2026-08-15-cn.md`). Response: GPU clock cap re-installed on both (2,200 MHz,
+  verified), stack restarted 17:32, `make test` green. ⏳ Open: swap S1/S2 power adapters to
+  see whether the fault follows the adapter; whether the cap alone holds.
+- Host changes: `nfs-kernel-server` installed on S1, `/etc/exports` exports
+  `~/.cache/huggingface` read-only to `192.168.200.102` (upstream's NFS mode).
+- ⏳ Unmeasured: our own throughput ladder / prefill, quality (no aider run on any
+  stack since V4-Flash), cold-load time, day-scale memory, prompts > 22K tokens.
+
+## Previous state (2026-10-22) — primary was `hibrid48tp2v52` (kit v5.2), same weights
+
+⚠️ *Superseded 2026-11-14: `hibrid48tp2v52` is now a stopped rollback (still named
+`qwen3.8-flash-next-tp2`); its watchdog `dgx-memwatch@hibrid48tp2v52` was
+uninstalled. The primary is `dsv41` (above).*
 
 **Same model, same boxes, same endpoint and name — newer upstream kit.**
 `hibrid48tp2v52` serves the hibrid48 checkpoint (hardlinks of `hibrid48tp2`'s, zero
@@ -691,7 +781,18 @@ Per-stack notes that the verbs don't carry:
   103.09 GiB free vs the 103.44 GiB `gpu-memory-utilization` wanted — short by
   0.35 GiB, surfacing only 3 minutes in as a CUDA-layer `ValueError`.
   Fix: `sudo systemctl restart polkit`. Upstream hit the same growth (their #193).
-- **hibrid48tp2v52** (primary since 2026-10-22) — the same two-box kit at **v5.2**,
+- **dsv41** (primary since 2026-11-14) — upstream MiaAI-Lab recipe as-is under
+  `/home/admin/dsv41-recipe/` on S1; `make run/stop/restart STACK=dsv41` wrap its
+  `./start.sh` / `./stop.sh`, which move **both** ranks and start/stop memguard on
+  both boxes. `./start.sh` re-runs `scripts/prepare.sh` whenever its prepared marker
+  changes (image, pins, `local.sh` paths, chat template) — ⚠️ that means a rebuild
+  needs GitHub, which these boxes reach at ~25 KB/s: use
+  `stacks/dsv41/build-image-local-git.sh` first, then prepare finds the image built.
+  Rank logs: `make logs STACK=dsv41 [WORKER=1]`; upstream checks:
+  `python3 tools/validate.py http://localhost:8000 --model DeepSeek-V4.1-Flash-1017`
+  on S1. ⚠️ Never copy large files onto S1 while it serves — upstream measured a
+  5.8 GB copy pushing MemAvailable under memguard's floor (their #117).
+- **hibrid48tp2v52** (rollback since 2026-11-14) — the same two-box kit at **v5.2**,
   under `/home/admin/hibrid48tp2v52-recipe/` on the head (**S1**), `cluster.env`
   copied from `hibrid48tp2`'s, weights hardlinked at that dir's `models/` on both
   boxes. Same container name (`qwen38-flash-next-cluster`) as `hibrid48tp2`, so the
@@ -871,7 +972,13 @@ is what ran 2026-09-20 → 09-30 and is the rollback.
 
 Full A/B data + the do-not-touch list: `docs/gb10-tuning-cn.md`.
 
-- 🔶 **THE CAP IS OFF ON BOTH NODES (2026-09-20, on request).** Units uninstalled,
+- ✅ **THE CAP IS BACK ON BOTH NODES (2026-11-15)** — `make clock-cap-install`, verified
+  under a real `dsv41` generation: rank0 mean 2175 / rank1 2186 MHz. Why: **S2 lost power
+  twice in 13 h under `dsv41` load** (03:52 and 16:50; journal cut off mid-line, no panic,
+  S1's 200G carrier dropped; MemAvailable 10+ GiB, 96 °C on both boxes, S1 fine on the same
+  load). S2 had run 74 days uncapped on the Qwen stacks before that. Suspected S2 power
+  delivery under sustained load — a hypothesis; the cap buys ~30 W of GPU rail back.
+- 🗄️ *History:* **the cap was off on both nodes 2026-09-20 → 11-15 (on request).** Units uninstalled,
   clocks reset, **verified under load**: S1 mean 2471 / max 2476 MHz, S2 mean 2490
   / max 2528 MHz — against ~2183/2184 while capped, so about **+14%**. The two
   nodes **match**, so TP=2 lockstep is satisfied. Idle readings now sit ~2470–2509.
@@ -961,7 +1068,7 @@ Full detail with reproductions and dates: **`docs/gotchas-cn.md`**.
 | 7 | `Syntax error in template` → Ansible eats `--format 'table {{.Names}}'` | any ansible + docker `--format` |
 | 8 | Foreign registries blocked/slow → daocloud + ModelScope + Tsinghua | all downloads |
 | 9 | Stack identity hardcoded (CoT field / kwarg / model name) fails **silently** | any cross-stack tool ⚠️ |
-| 10 | **SGLang accepts any model name** (200 + echoes it back) — "a wrong name 404s" is a vLLM-only assumption | identity gates ⚠️ |
+| 10 | **SGLang and TensorFold accept any model name** (200; SGLang echoes it back, TensorFold rewrites it to its own) — "a wrong name 404s" is a vLLM-only assumption | identity gates, gateway routes after a switch ⚠️ |
 
 ## Measuring throughput
 
@@ -971,7 +1078,13 @@ as the cluster (31→84 tok/s on the same config). Three traps have each produce
 wrong numbers in this repo's own docs: streaming counts *steps/s* not tok/s;
 cold **and idle** decay ≈30% silently; short replies are overhead-capped.
 
-Current baseline: **`benchmarks/hibrid48tp2v52-2026-10-22/`** — `run-ab.sh` runs
+⏳ **The primary `dsv41` has no benchmark of its own yet.** Upstream's harness is
+`tools/bench.py` in the recipe (prefill, decode, multi-stream, needle → JSON,
+`--compare A.json B.json`); its published numbers were taken at a 2,200 MHz cap and
+`CONTEXT=524288`; ours ran uncapped (~2,470 MHz) until 2026-11-15 and are capped at
+2,200 again since (S2 power deaths). Don't quote theirs as ours.
+
+Last measured baseline (now a rollback): **`benchmarks/hibrid48tp2v52-2026-10-22/`** — `run-ab.sh` runs
 the same `ladder.py` (thinking off and on) + `prefill.py` on the head against
 localhost; kit v4.1 vs v5.2 on the same weights, same night.
 Before that: **`benchmarks/hibrid48tp2-2026-09-30/`** — `ladder.py`, the 09-28
@@ -1004,11 +1117,11 @@ reasoning-effort semantics, the `contextWindowSize` hard-limit-0 trap and how to
 rebuild on a new machine: **`docs/clients-cn.md`**.
 
 ```bash
-codex --profile dgx        # → 100.97.87.120:8000 qwen3.8-flash-next-tp2 (primary hibrid48tp2v52 since 2026-10-22, same name/endpoint as before; B only so far)
+codex --profile dgx        # → 100.97.87.120:8000 DeepSeek-V4.1-Flash-1017 (primary dsv41 since 2026-11-14; B only; namespace/web_search/tool_search tools turned off — see Current state)
 codex --profile mac        # → llm.meirong.dev gateway, pinned to the Mac fallback (mac/ornith)
 codex --profile local      # → 127.0.0.1:8000 Mac-local omlx
 codex --profile m2         # → 100.89.15.120:8000 the M2 box's omlx (⚠️ on B its model is gpt-5.5 — see docs/clients-cn.md)
-qwen                       # boot default → fntp2 since 2026-09-30; ./scripts/qwen-model-switch.sh sglang to roll back
+qwen                       # boot default → dsv41 (DeepSeek-V4.1-Flash-1017, direct :8000) since 2026-11-14; ./scripts/qwen-model-switch.sh fntp2 to roll back
 # codex-dgx (alias in B's ~/.zshrc) = `codex --profile dgx` since 2026-09-30 (was: --profile litellm)
 ```
 
@@ -1177,8 +1290,10 @@ largest source of silent breakage — gotcha #9).
   identifiers verbatim in English. This file stays English. **`docs/` holds only
   what is shared across stacks** — anything true of exactly one model belongs in
   `stacks/<id>/`, so adding a model adds files instead of editing them.
-- Images on both servers: primary **`myllmbox/qwen38-flash-next-cluster-vllm:v5.2`
-  on both nodes** (image ID `4210dc4b…`), rollback `hibrid48tp2` on `:v6` (image ID
+- Images on both servers: primary **`tensorfold-dsv41:exl3-tp2-8a98ae503d85`** on both
+  nodes (built locally on S1, base `nvcr.io/nvidia/pytorch:26.07-py3` via
+  `nvcr.nju.edu.cn` — that mirror is the working NGC route); rollback `hibrid48tp2v52`
+  on `myllmbox/qwen38-flash-next-cluster-vllm:v5.2` (image ID `4210dc4b…`), rollback `hibrid48tp2` on `:v6` (image ID
   `4d03fc80…`) — neither is pullable through the domestic mirrors; see the
   `hibrid48tp2v52` note under `## Common Commands` for the partial-archive route; qwen38un
   `lmsysorg/sglang:nightly-cu134-…`; glm53
