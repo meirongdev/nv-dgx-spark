@@ -82,10 +82,14 @@ command and listed in `docs/stack-switch-cn.md`.
 - **DeepSeek-V4.1-Flash-1017 TP=2** (`dsv41`, **primary** since 2026-11-14, S1+S2):
   Mia EAQ v1 EXL3 2.9 bpw (196 GiB) + Engram's two unquantized tables (189 GiB),
   TensorFold Zig engine (BertholomusAI fork + upstream patches 0001–0068), DSpark
-  drafts, RoCE exchanges, 4 streams, **262,144-token window** (since 2026-11-15, was
-  524,288; upstream default 1M) — and ⚠️ with `POOL` unset the 4 streams **share**
-  those 262,144 positions (each request reserves prompt + `max_tokens`, default
-  32,768); a 5th request queues (`/health` `live.waiting`), measured. Thinking **on** by default.
+  drafts, RoCE exchanges over **two rails**, **8 streams** (`PARALLEL=8` since 2026-11-15
+  19:07, was upstream's 4 — upstream only measured throughput to 4), **262,144-token window**
+  (was 524,288; upstream default 1M), **`POOL=2097152`** positions (since 19:19; 1,048,576
+  from 18:54) shared by all streams and kept prompts (each request reserves prompt +
+  `max_tokens`, default 32,768; an extra request queues, `/health` `live.waiting`).
+  ⚠️ 8 streams is on trial: at POOL 1M it measured **worse** than 4 (below); rollback
+  trigger S1 MemAvailable < 3.5 GiB, and the plan if 2M + 8 doesn't beat 4 streams is
+  `PARALLEL=4` with POOL kept at 2M. Thinking **on** by default.
   Images, tool calls, 21.9K-token prompt all pass upstream's `validate.py`.
   ⏳ **No throughput or quality numbers of our own yet** (upstream's, at 2,200 MHz:
   80.7 tok/s prose / 118.1 code single-stream, ~2,100 tok/s prefill flat to 256K).
@@ -201,6 +205,23 @@ stopped 23:11, `DeepSeek-V4.1-Flash-1017 is now LIVE` 23:53 (**~42 min outage**)
   (`docs/s2-outage-2026-08-15-cn.md`). Response: GPU clock cap re-installed on both (2,200 MHz,
   verified), stack restarted 17:32, `make test` green. ⏳ Open: swap S1/S2 power adapters to
   see whether the fault follows the adapter; whether the cap alone holds.
+- **2026-11-15 18:52 restart: dual rail + `POOL=1048576`.** Real traffic before it: 57
+  requests in 40 min, 39 of them > 50K-token agent sessions (`/v1/messages`), **prefix-cache
+  hit 0%**, 50 kept-state evictions — the 262,144-position pool (= `CONTEXT` when `POOL` is
+  unset) holds ~2 such sessions. After: first 8 min 48.1% hit, 0 evictions; S1 MemAvailable
+  under load 7.0 → **5.79 GiB (below the 5% warn line)**. Dual rail: the CX7 port's PCIe
+  twin `enP2p1s0f0np0` now addressed (`/etc/netplan/60-cx7-twin.yaml`, 192.168.201.0/24,
+  MTU 9000) → boot shows `rail 0` + `rail 1`, both carry equal traffic; speed-up unmeasured.
+  ⚠️ The 08-25 "second cable dismissed" verdict stands, but its reason was wrong: the two
+  separate x4 links are the **twins** of one port; the second port shares them.
+- **What each change bought** (real traffic, homelab Prometheus `tensorfold:*`; details in
+  `stacks/dsv41/recipe.yaml` `measured.config_windows`):
+  single rail / pool 262K / 4 streams → **cache hit 18.9%, TTFT mean 36.9 s, p90 150 s**;
+  dual rail / 1M / 4 → **75.2%, 13.4 s, 44 s**; dual rail / 1M / **8** → 46.0%, 21.2 s,
+  61 s, per-request decode 25.4 → **10.9 tok/s**, aggregate unchanged (pool-bound) → 2M at
+  19:19, not yet measured. **The pool did all of it; dual rail measurably nothing** — the
+  link peaks at 7.3 Gb/s per rail (~6% of one x4) under live load; TP=2 exchanges here
+  are latency-bound, not bandwidth-bound.
 - Host changes: `nfs-kernel-server` installed on S1, `/etc/exports` exports
   `~/.cache/huggingface` read-only to `192.168.200.102` (upstream's NFS mode).
 - ⏳ Unmeasured: our own throughput ladder / prefill, quality (no aider run on any
@@ -1015,9 +1036,11 @@ Full A/B data + the do-not-touch list: `docs/gb10-tuning-cn.md`.
 - ❌ **Second QSFP cable: tested and dismissed 2026-08-25.** Both ports are cabled;
   the community reports unplugging one takes NCCL 10.25 → 22.1 GB/s. It does **not**
   reproduce here: prefill 1731 → 1734 tok/s (**+0.17%**) with the second port down on
-  both nodes. Consistent with `lspci` — the two ports sit on *separate* x4 Gen5 links
-  in separate PCIe domains, so the "two cables split one x4" mechanism doesn't apply.
-  **Leave both cables in.** `docs/gb10-tuning-cn.md` §6 — that section was corrected
+  both nodes. ⚠️ *Reason corrected 2026-11-15:* the two separate x4 Gen5 links (PCIe
+  domains 0000 and 0002) are the two **twins of one port** (`enp1s0f0np0` /
+  `enP2p1s0f0np0`); port 2 (`…f1np1`) is a second function on the **same** two links, so a
+  second cable can add no bandwidth. The lever is addressing the twin (dual rail, done
+  2026-11-15 — see `## Current state`). As of 11-15 both f1 ports read carrier 0. `docs/gb10-tuning-cn.md` §6 — that section was corrected
   three times, and the standing lesson is: someone else's GB10 perf result is a
   hypothesis until it reproduces on these boxes.
 

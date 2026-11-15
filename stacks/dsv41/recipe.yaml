@@ -65,18 +65,30 @@ local_deviations:   # 全在 scripts/local.sh
                                     # KV 本身很小(上游:1M ≈ 1.8 GiB / rank),这档买的是 head 余量。
                                     # 2026-11-15 由 524288 再降到 262144(用户定):对齐网关兜底 Ornith 的 262k、
                                     # 满窗 prefill ≈ 2 min 不撞 300 s 客户端超时、多留 head 余量。理由全文在 local.sh。
+  POOL: 2097152                     # 2026-11-15 加(用户选定)。未设时池 = CONTEXT = 262144:40 min 57 个真实请求
+                                    # (39 个 > 50K 的 agent 会话)前缀缓存命中 0%、kept state 被挤 50 次。
+                                    # 18:54 先 1048576:启动行 "compressed planes 890 MiB a rank";S1 负载下
+                                    # MemAvailable 7.0 → 5.79 GiB。19:19 再到 2097152(8 路后池位不够,见 measured.config_windows):
+                                    # "compressed planes 1780 MiB a rank"(每台 +890 MiB,与上游 ~0.9 GiB/1M 一致)。
   PATH: 补 ~/.local/bin(hf CLI 在那里;prepare.sh 没有 hf 直接 die)
   untouched: >-
-    其余全是上游默认:PARALLEL=4、THINKING=1、DRAFTS=1、RDMA=1、GRAPHS=1 / GRAPH_CAP=128、MAX_TOKENS=32768、
+    PARALLEL=8(2026-11-15 19:07,用户定;上游默认 4、只测到 4 路吞吐;理由与退回条件在 local.sh)。
+    其余全是上游默认:THINKING=1、DRAFTS=1、RDMA=1、GRAPHS=1 / GRAPH_CAP=128、MAX_TOKENS=32768、
     TEMPERATURE 1.0 / TOP_P 0.95 / TOP_K 20、MIN_AVAIL_GIB=112、MEMGUARD_GIB=2.5、SPILL / KV_SHARD 关、API_KEY 关。
 
 host_prerequisites:
   nfs: >-
     S2(worker)经 NFS 只读读 S1 的 ~/.cache/huggingface(上游唯一的正式模式)。S1 装 nfs-kernel-server
     (apt -s 看过:1 个包,0 删除),/etc/exports 加一行导出给 192.168.200.102。S2 已有 nfs-common。
-  single_rail: >-
-    上游要求把一个 QSFP 口的两个 PCIe twin netdev 都配 IPv4 才走双轨;这两台只有 enp1s0f0np0 有地址
-    (enP2p1s0f0np0 没有,同 hibrid48tp2v52 的记录)→ 单轨 rocep1s0f0 / GID 3(DRY_RUN 实测)。
+  dual_rail: >-
+    一个 QSFP 口经两条 PCIe Gen5 x4 到 GB10,显示成两个 twin netdev(enp1s0f0np0 / enP2p1s0f0np0);一条 x4
+    ≈ 112 Gb/s。第二个口 f1 共用同两条 x4,所以第二根线不加带宽(08-25 的 +0.17% 正是这个)。
+    2026-11-15 前只有 enp1s0f0np0 有地址 → 单轨;twin 没 profile,NM 的 "Wired connection 1" 每 ~4 min
+    DHCP 失败一次(每台 336 次/24 h)。现在两台 /etc/netplan/60-cx7-twin.yaml:enP2p1s0f0np0
+    192.168.201.101 / .102 /24、MTU 9000(停栈后 netplan generate + nmcli connection reload + up,只动这一口)。
+    验证:roceP2p1s0f0 GID 3 = RoCE v2 IPv4;8972 字节 -M do ping 双向通;启动行 "rail 0" + "rail 1";
+    make test 期间两轨各发 ~248 GB(均分),rcv_errors 0。⏳ 双轨本身的提速未测(在线负载下测不了基线)。
+    回退:删 60-cx7-twin.yaml → generate/reload → 重启栈(上游 probe_rails 不通会自动退回单轨)。
   clocks: 上游测量在两台都锁 2200 MHz。这两台 2026-09-20 → 11-15 不锁(~2470–2490);2026-11-15 S2 两次带载断电后两台重新锁 2200(make clock-cap-install,负载下实测 2175 / 2186 MHz)。
   polkitd: >-
     停旧栈时 S1 polkitd 2.9 GiB / S2 4.25 GiB RSS(glm53 当年踩过的同一个泄漏,上游 #193)——
@@ -121,3 +133,16 @@ measured:
   outage: "2026-11-14 23:11 停旧主力 → 23:53 LIVE ≈ 42 min(含 GitHub 绕路 ~15 min)"
   smoke: "make test 全过;validate.py:21,875-token prompt 9.5 s(≈2,300 tok/s 含 TTFT)"
   throughput: "⏳ 未测 —— 上游 tools/bench.py;上游数字是 2,200 MHz 锁频下的,我们 11-15 起也锁 2,200"
+  config_windows: >-
+    2026-11-15,真实流量(homelab Prometheus 抓的 tensorfold:* 指标,increase 窗口;B/C 都从重启后的冷缓存起算,
+    A 里混了 ~10 min 本仓库自己的 bench;合计生成随用户需求变,不是上限):
+    A 单轨 / POOL 未设(262K)/ 4 路,78 min:命中 18.9%,TTFT 均值 36.9 s、p90 150 s,单请求解码 63.5 tok/s,
+    合计生成 10.8 tok/s,平均 waiting 2.3、running 0.8(在等池位,不是等路)。
+    B 双轨 / 1M / 4 路,11 min:命中 75.2%,TTFT 13.4 s、p90 44 s,单请求解码 25.4,合计 38.1,waiting 1.6。
+    C 双轨 / 1M / 8 路,9 min:命中 46.0%,TTFT 21.2 s、p50 4.9 s(B 1.8)、p90 61 s,单请求解码 10.9,合计 35.2,
+    waiting 3.0 —— 8 路在 1M 池下更差,卡的是池位;19:19 改 2M,D 窗口待测。
+    引擎统计的单请求 prefill 速度 A 1,968 → B 1,844 tok/s:双轨没有可见收益。
+  link_utilization: >-
+    2026-11-15 60 s 真实负载逐秒读 HCA 计数:两轨流量平分,每轨单向峰值 7.3 Gb/s(单轨上限 ~112),
+    两轨两向平均合计 6.4 Gb/s;make test 期间每轨 ~10 Gb/s。TP=2 交换是延迟受限、不是带宽受限,
+    所以单轨本来就用不满。双轨的实际收益:停了 twin 上的 DHCP 噪声、与上游实测配置一致、给 KV_SHARD 留余量。
