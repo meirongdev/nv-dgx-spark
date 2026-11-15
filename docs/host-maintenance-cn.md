@@ -6,7 +6,7 @@
 | 铁律 | 为什么 |
 |---|---|
 | 先 `sudo apt-get -s upgrade`,逐行看 `Inst` | CUDA 源和 Ubuntu 官方源**同优先级 500**,能赢驱动决策 |
-| 动 apt 前先停掉该机器上的栈(`make stop` / `make stop STACK=fndgx`) | `network-manager` 的 postinst 重启 NM,会抖断 200G 的 NCCL 链路 |
+| 动 apt 前先停掉该机器上的栈(`make stop [STACK=<id>]`;TP=2 栈两台一起停) | `network-manager` 的 postinst 重启 NM,会抖断 200G 的 NCCL 链路 |
 | 升级放进 tmux,带 `--force-confold` | Tailscale 骑在 NM 托管的上联口上,SSH 一断 `dpkg` 就吃 SIGHUP;静态 DNS 也靠它保住 |
 | 删任何 nvidia 包前看 `apt-mark showmanual \| grep nvidia` | 一个 `auto` 的驱动栈,离 `autoremove` 掉整块 GPU 只差一步 |
 | `dkms` 一律显式 `-a arm64` | 裸 `dkms` 默认 `aarch64`,会**静默空转** |
@@ -27,6 +27,13 @@
 > `/var/lib/dkms/nvidia/580.173.02/6.17.0-1031-nvidia/` 下也只有 `aarch64/` 一个目录,
 > 5 个模块齐全且都报 `580.173.02`。S1 自 09-02 起就跑在这个内核上,`modinfo -n nvidia`
 > 正常指向 `updates/dkms/`。
+>
+> **当前基线(2026-09-02 起,两台一致)**:kernel `6.17.0-1031-nvidia`(`1029` + `1014`
+> 留作回退)、driver `580.173.02` / CUDA 13.0、swap 0。S2 从 `1029` 升到 `1031` 走的是**窄路径**
+> (`apt-get install linux-nvidia-hwe-24.04 linux-modules-nvidia-580-open-nvidia-hwe-24.04`,
+> 14 个 `linux-*` 包、0 个删除),而不是整套 `apt upgrade` —— 后者会从 CUDA 源把
+> **NCCL 2.30.7 → 2.31.2 只装到一台上**。⚠️ nvidia 的分支锁**不覆盖** `libnccl*` 和
+> `nvidia-container-toolkit`,所以永远逐行读 `Inst`。
 >
 > **判据要改成「每内核恰好一条」,而不是「全部是 arm64」。**
 > 但第 3 节那条铁律不变:**你自己手敲 `dkms` 命令时仍然一律显式 `-a arm64`**

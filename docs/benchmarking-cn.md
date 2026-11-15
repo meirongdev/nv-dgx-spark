@@ -1,6 +1,6 @@
 # 吞吐测量方法学(报 tok/s 之前先读这个)
 
-> 从 `CLAUDE.md` 拆出(2026-08-15)。**这一页的三个陷阱都曾在本 repo 自己的文档里
+> 从 `CLAUDE.md` 拆出(2026-08-15)。**这一页的前三个陷阱都曾在本 repo 自己的文档里
 > 产出过错误数字**——"~56 tok/s"和"6 路聚合 ~50"都是测法artifact,不是真实性能。
 
 ## 核心:单个 tok/s 数字是没有意义的
@@ -15,7 +15,27 @@ DSpark 的解码速度 = `steps/s × 每步接受的 token 数`,而**接受率�
 
 ## 当前基线
 
-`benchmarks/bench-full-2026-08-05/`(warm、temp 0、`stream:false`、thinking off):
+> 2026-11-15 重写(原本这里还是已删除的 V4-Flash 的数字)。
+
+- ⏳ **主力 `dsv41` 还没有我们自己的基准。** 上游的 harness 是 recipe 里的 `tools/bench.py`
+  (prefill、decode、multi-stream、needle → JSON,`--compare A.json B.json`)。上游公布的数字
+  (单流散文 80.7 / 代码 118.1 tok/s,prefill ~2,100 tok/s 平到 256K)是在 **2,200 MHz 上限 +
+  `CONTEXT=524288`** 下测的;我们在 11-15 之前一直无上限(~2,470 MHz),11-15 起重新 2,200,
+  `CONTEXT` 现在是 262144。**不要把上游的数字当成我们的。**
+- **最近一次实测基线(现在是回滚栈):`benchmarks/hibrid48tp2v52-2026-10-22/`** —— `run-ab.sh`
+  在 head 上对 localhost 跑同一个 `ladder.py`(thinking off 与 on)+ `prefill.py`;kit v4.1
+  对 v5.2,同权重、同一晚。
+- 更早:`benchmarks/hibrid48tp2-2026-09-30/`(09-28 的 ladder,请求体一字不差,对 hibrid48tp2
+  **和** qwen38un 都跑过,所以 Flash-Next / 27B 的三个数字共用一个 harness);GLM 自己的脚本在
+  `benchmarks/glm53-2026-09-19/`;`benchmarks/bench-full-qwen38fn-2026-09-03/`(Flash-Next 对 V4);
+  harness 本身与 V4 基线在 `benchmarks/bench-full-2026-08-05/`。
+- ⚠️ **`bench_full.py` 在 GLM 上完全不能用** —— 它写死了已删除的 V4-Flash 的 model 名**和**
+  `thinking` kwarg,而 GLM 是第三套语义:`chat_template_kwargs.reasoning_effort`
+  (`low`/`high`/`max`;`medium` 被拒)、**关不掉思考**、不传即 **Max**、CoT 在 `reasoning`
+  里而不是 `reasoning_content`。用 `benchmarks/glm53-2026-09-19/` 里的脚本。
+
+**历史:V4-Flash 基线**(`benchmarks/bench-full-2026-08-05/`,warm、temp 0、`stream:false`、
+thinking off;栈已于 2026-09-20 删除,数字不可复现):
 
 | 轴 | 实测 |
 |---|---|
@@ -28,7 +48,7 @@ DSpark 的解码速度 = `steps/s × 每步接受的 token 数`,而**接受率�
 (均值 24.9 tok/s,MTP 2.75 tok/step)——**稠密 27B 比 MoE A13B 慢 2.7 倍**,
 这是本集群最反直觉的一条结论。
 
-## 三个陷阱
+## 五个陷阱
 
 ### 1. 流式计数会按接受长度低报
 
@@ -52,6 +72,22 @@ DSpark 的解码速度 = `steps/s × 每步接受的 token 数`,而**接受率�
 
 每请求约 0.5 秒的固定开销意味着:**130 token 的回复无论多可预测都跑不出高 tok/s**。
 用 **500–1400 token** 的生成来测。
+
+### 4. 新 prompt 形状的第一个请求慢约 43%
+
+而且要付一次性的主机内存(2026-09-19 GLM 实测:22K prefill 第一次 1141 tok/s,warm 1630)。
+**报数字时永远说明是冷还是热。** 上游的性能表都是 warm 的,拿冷数字去对就是在比两件不同的事
+(fndgx 曾因此把一个错误结论挂了一小时,见 `stacks/fndgx/notes.md`)。
+
+### 5. prefill 的主机内存是超线性的
+
+吞吐平坦,内存不平坦(GLM:89K ≈ 0.2 GiB,178K ≈ 1.4 GiB)。所以 prefill 阶梯测试必须
+**在请求进行中**守着内存,不能只在两档之间看。
+
+## 需要重启引擎的旋钮怎么测
+
+`benchmarks/mtp-k-sweep-2026-09-03/` 是范本:旋钮要重启引擎时交错配对在物理上做不到,
+这时**数出来的 `tok/step`** 才是承重的那个数字。它的 `mtp_arm.py` 可以照搬。
 
 ## 接受率可以在线观测
 

@@ -6,7 +6,7 @@
 > 运行时。保留本文是因为两件事仍然有用:一是**为什么当初要上 k3s**,二是
 > §6 那个被否决的 ClusterMesh 结论——它与编排器无关,将来再动念时不必重走。
 > 拆除过程本身(尤其是 Cilium 挂在 `tailscale0` 上的 tcx BPF 为什么必须显式摘掉)
-> 记在 `CLAUDE.md` 的 `## Current state`。
+> 记在本文 §12。
 >
 > 状态:**已执行完成**(2026-08-13 01:18 切换,生产已跑在 k3s 上)。
 > 实际执行与本文的偏差、以及演练推翻的一个关键假设,见 §4.7 和 §11。
@@ -577,3 +577,61 @@ swap 仍为 0、每节点余量 17–18Gi。
   → **已否决(2026-08-13)**,且"本集群侧已 ready"不成立(撞 id、MTU 未生效、
   节点平面无法建立)。改用 homelab 侧 Endpoints 直连,见 §6.4。
 - 观察期结束前保留 S1 上已 disable 的 `deepseek-v4-flash.service` 与 eugr harness。
+
+## 12. 拆除记录(2026-09-20)与随之退役的东西
+
+> 2026-11-15 从根目录 `CLAUDE.md`(现 `AGENTS.md`)迁入。**再提议 k8s 或 V4-Flash 之前先读这一节。**
+
+### 12.1 卸载,不是停止
+
+两台上的集群是**卸载**,不是停。跑在它上面的两个栈(`qwen38fn`、`v4flash`)同时从
+注册表删除,`adapter-k3s.sh`、`k8s/`、各栈的 manifests 一并移除;**`docker` 是唯一
+运行时**。换回来的东西(拆前拆后实测):每台 **80 GB 磁盘**(`/var/lib/rancher`,
+纯重复 —— 每个镜像在两台的 docker 里都还有一份),以及主机 RSS **S1 ~0.5 GiB /
+S2 ~1.0 GiB**。在 S2 上这相当于当时 `fndgx` 仅有的 2.7 个百分点余量里的 ~0.8 个点。
+
+### 12.2 危险的不是 k3s,是 Cilium
+
+`k3s-killall.sh` 只清 `KUBE-` / `CNI-` / flannel 的 iptables 规则(docker 的链幸存 ——
+这部分安全),但**不碰 Cilium**:tcx BPF 程序(`cil_from_netdev` / `cil_to_netdev`)
+挂在两张物理网卡上,**也挂在 `tailscale0` 上 —— 这是进这两台机器唯一的远程通路**,
+而且 pin 在 bpffs 里,设计上就比 agent 活得久。卸掉 k3s 就走人,它们会在没有 agent
+的情况下一直挂着。
+
+所以每台的拆除都是**一个 detached 脚本**一次跑完:卸 k3s → 摘 tcx →
+`rm -rf /sys/fs/bpf/cilium /sys/fs/bpf/tc` → 删 `cilium_*` / `lxc*` 链路 → 清
+`CILIUM_*` iptables → 自检,失败则自动重启 `tailscaled`。
+**顺序有讲究**:agent 死后 Cilium 的数据面仍然正确工作,所以先卸 k3s 是安全的;
+反过来先摘 BPF,只会让还活着的 agent 重新挂回去。
+
+拆后两台复核:`bpftool net show` 为空,bpffs 只剩 `snap`,`iptables-save | grep -c CILIUM`
+= 0 而 DOCKER 链完好(S1 18 / S2 20),没有 k3s 单元或二进制,路由干净 —— 而且**两个
+端点都完成了一次真实生成**,不只是 `/v1/models`(gotcha #1 的教训)。
+
+### 12.3 刻意放弃的东西
+
+`qwen38fn` 是本仓库测过的**单流代码最快**的栈(62.1 tok/s),`v4flash` 握着**唯一**的
+质量基线(aider-polyglot 82.4%)。两者的 recipe 和 manifests 只在 git 历史里,不在树上;
+基准记录留在 `benchmarks/`。注册表里没有任何东西能再跑它们,重建任何一个都意味着重建
+一个集群。**文档里与它们对比的数字是历史,不是选项。**
+
+### 12.4 把 k8s 带回来是一个项目,不是一个开关
+
+旧集群是 k3s v1.36.3 + Cilium 1.19.6(kube-proxy-less)+ NVIDIA device plugin ≥ v0.17.4
+(更老的版本在 GB10 统一内存上崩),镜像靠 `k3s ctr images import` 侧载,因为什么都拉不下来。
+这些一样都没留下。
+
+⚠️ **与 homelab 的 ClusterMesh 已于 2026-08-13 评估并否决**(§6),这个结论比集群活得久:
+Spark 是**另一个 tailnet 共享过来的节点**,subnet route 和跨集群节点平面根本不可能存在。
+不要以"换个新集群也许不一样"为前提重开这个题。
+
+### 12.5 V4-Flash 引擎的硬事实(免得再用代价重新发现)
+
+- 官方 FP8 权重 ~167 GB / 48 片,**单台 GB10 装不下**,所以它一直是 TP=2。
+- 只为 DSpark 才需要 jasl/vllm fork。stock vLLM 也能跑,前提是
+  `DG_JIT_USE_NVRTC=0` + `DG_JIT_NVCC_COMPILER=…` —— 缺了它们看起来像"架构不支持",其实不是。
+- **SGLang 是死路**:它的 V4 attention 要一个没有 `sm_121` 构建的 FlashMLA kernel。
+- 完整细节在 git 历史(`stacks/v4flash/`),测量数据在 `benchmarks/`。
+
+仍然有用、仍然保留:`scripts/vllm-fix-torch.sh` 修的是从源码构建 vLLM 时 runner 镜像落到
+torch-CPU 的坑(`vllm._C: libtorch_cuda.so missing`)。那是 vLLM 构建问题,与 V4-Flash 无关。

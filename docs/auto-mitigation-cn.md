@@ -50,7 +50,7 @@ GB10 的 128 GB LPDDR5X 是 **CPU 与 GPU 共享的相干统一内存**。V4-Fla
 只能 `free -h` 看总量。这意味着：
 
 - 一旦推理栈把内存顶满，**OOM 优先咬的是宿主机进程**（sshd、k3s、node-exporter、
-  tmux server）——正是 CLAUDE.md 里反复出现的「连 tmux 一起带走」的整机冻结。
+  tmux server）——正是本仓库文档里反复出现的「连 tmux 一起带走」的整机冻结。
 - 现有两个 Pod 的 `resources.limits` **只有 `nvidia.com/gpu`，没有内存**（统一内存上
   只做调度记账，无隔离）。所以推理栈没有「内存护栏」。
 - 对策有两层：
@@ -138,7 +138,11 @@ make memwatch                # 主力栈的常驻守护(建议 tmux)
 make memwatch STACK=fndgx    # ⚠️ 第二个栈要**自己的**实例,自己的 tmux 会话
 tail -f ${TMPDIR:-/tmp}/<stack>-memwatch.log
 make memwatch-reset          # 触发后先复位,再 make run STACK=<id> 拉起
+scripts/mem-watch.sh --config [id]   # 只打印它会守哪个栈、哪些节点、什么阈值
 ```
+
+> 首选形态已是节点驻留(§2.7:`make memwatch-install` / `memwatch-status`);上面的操作机
+> 形态仍可用,但见下面的局限。
 
 > **局限（操作机形态）**：守护挂在操作机（Mac）上，操作机要在线、Tailscale 要通才有效。
 > 2026-10-27 实测：Mac → S2 的 DERP 路径断了 40+ 分钟（S2 本身和 200G 线都好好的），

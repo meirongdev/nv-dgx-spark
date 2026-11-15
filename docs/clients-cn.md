@@ -3,8 +3,9 @@
 > 从 `CLAUDE.md` 拆出(2026-08-15)。**客户端配置文件都在各自机器的家目录里,
 > 不在本 repo 内** —— 换机器需要照本文重建。
 
-两套服务都是**无鉴权**的 vLLM;未设 `--api-key` 时 vLLM 接受任意 key
-(但客户端仍然要求能解析到一个非空值,所以到处用 `dummy`)。
+所有栈都**无鉴权**,接受任意 key(但客户端仍然要求能解析到一个非空值,所以到处用
+`dummy`)。⚠️ 引擎**不全是 vLLM**:主力 `dsv41` 是 TensorFold(Zig),`qwen38un` 是 SGLang ——
+这两家都**接受任意 model 名**(gotcha #10),写错名字不会报错。
 
 <!-- BEGIN generated:clients -->
 | 栈 | 端点 | served name | 关思考的 kwarg | CoT 字段 | ctxWindow |
@@ -62,13 +63,34 @@ Claude Code 发的 `high` 和 `max` —— 因为上游 `serve.sh` 的 `EFFORT_A
 ## codex CLI
 
 ```bash
-codex --profile dgx          # → 100.97.87.120:8000 qwen3.8-flash-next-tp2(2026-09-30 起,主力 hibrid48tp2,两台 TP=2;目前只在 B 上切了)
+codex --profile dgx          # → 100.97.87.120:8000 DeepSeek-V4.1-Flash-1017(2026-11-14 起,主力 dsv41,两台 TP=2;只在 B 上切了,见下「dsv41」)
 # 2026-09-30 起 B 上已删:fndgx / qwen38 / litellm 三个 profile(目标栈都已停,见下「B 的清理」);A 上 fndgx 还在
 codex --profile mac          # → 同一个网关,但点名 Mac 兜底模型 mac/ornith
 codex --profile local        # → 127.0.0.1:8000  Mac 本地 omlx(gemma-4 26B QAT)
 codex --profile m2           # → 100.89.15.120:8000  M2 那台的 omlx(不经 DGX)
 codex                        # 默认:ChatGPT 额度;A 的 config.toml 写 gpt-5.5,B 的写 gpt-5.4-mini
 ```
+
+### dsv41(TensorFold)要的不只是改 model 名(2026-11-14,机器 B)
+
+> 2026-11-15 从根目录 `CLAUDE.md`(现 `AGENTS.md`)迁入。
+
+TensorFold 的 `/v1/responses` **只接受 function 工具**(写死的,有 golden test),而 codex 0.167
+还会发 `namespace`(sub-agent、codex_apps MCP)、`tool_search`、`web_search` 三类工具 → **400**。
+只在 B 的 `dgx` profile 里修了:catalog 里 `multi_agent_version = "disabled"`(只设
+`features.multi_agent=false` **不够**)+ `supports_search_tool = false`;profile 里
+`web_search = "disabled"` + `[features] apps = false`。用真实请求和一次 exec 工具往返验证过。
+⚠️ 以后**任何一个 MCP server 连上来**都会把 namespace 工具带回来 → 又是 400。
+
+- B 上 codex `dgx` 和 Qwen Code(启动默认 + 一条 `/model`)都指向 `DeepSeek-V4.1-Flash-1017`,
+  都用真实请求验过。切换前的副本:`~/dgx-client-config-backup-20261114.tar.gz`。
+- 两个客户端的窗口自 2026-11-15 起都是 **262144**(服务端 `CONTEXT` 从 524288 降下来)。
+- 旧的「Qwen Code 给 `deepseek-v4*` 预留 384K」陷阱(见下「hard-limit-0」)**在 Qwen Code
+  0.27.0 上不成立**:实测硬阈值由 `contextWindowSize` 推导,262144 的真实请求能跑通。更老的
+  CLI 仍可能踩到(`scripts/qwen-model-switch.sh`)。
+- ⚠️ 思考**默认开着**;只有 `chat_template_kwargs.enable_thinking` 能关(顶层的被忽略),
+  CoT 在 `reasoning_content`(`reasoning` 恒为空 —— 与 Qwen 主力栈**相反**)。
+- 机器 A 没动过。
 
 ⚠️ **订正(2026-09-20 23:15,在机器 B 上):这一节原先写的"`qwen38` / `litellm` / `mac`
 三个 profile 在本机并不存在",在 B 上是错的 —— 三个文件都在 B 的盘上,而且都早于那句"复核"。**
